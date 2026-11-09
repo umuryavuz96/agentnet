@@ -80,8 +80,10 @@ describe("teams", () => {
     expect((await j(await call("root", "POST", "/spawn", { name: "dev-4", boss: "root", team: "agmsg-old-team" }))).status).toBe(201);
     const p = await j(await panel("POST", "/teams", { name: "Panel Team", lead: "dev-4" })); expect(p.status).toBe(201);
     expect((await j(await panel("POST", "/teams/panel-team/messages", { body: "from the panel" }))).body.delivered).toBe(1); // the lead (starting agents queue their inbox)
+    const gated = await j(await call("root", "POST", "/send", { to: "dev-2", body: "before archive" }));
+    expect(gated.status).toBe(403); expect(JSON.stringify(gated.body)).toContain("lead lead-1"); // root goes through the lead too
     expect((await j(await call("root", "POST", "/teams/turntable/archive"))).body.team.state).toBe("archived");
-    expect((await j(await call("dev-1", "POST", "/send", { to: "dev-2", body: "after archive" }))).status).toBe(403);
+    expect((await j(await call("root", "POST", "/send", { to: "dev-2", body: "after archive" }))).status).toBe(200); // archived team no longer gates
     expect((await j(await call("dev-1", "GET", "/teams"))).body.teams.map((t: { id: string }) => t.id)).not.toContain("turntable");
   });
 });

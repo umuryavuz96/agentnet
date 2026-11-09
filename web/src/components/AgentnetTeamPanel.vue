@@ -33,6 +33,8 @@ const archived = computed(() => team.value?.state === "archived");
 const TABS = [{ id: "overview", label: "Overview" }, { id: "channel", label: "Channel" }, { id: "tasks", label: "Tasks" }] as const;
 type Tab = (typeof TABS)[number]["id"];
 const tab = ref<Tab>("overview"), slide = ref("fwd"), el = ref<HTMLElement | null>(null);
+/** The pane on screen: follows tab only when the new pane enters, so the old pane keeps its layout while it fades (out-in). */
+const paneShown = ref<Tab>("overview");
 const tabIdx = computed(() => TABS.findIndex((t) => t.id === tab.value));
 const setTab = (t: Tab) => { slide.value = TABS.findIndex((x) => x.id === t) > tabIdx.value ? "fwd" : "back"; tab.value = t; nextTick(() => { const b = el.value?.querySelector<HTMLElement>(".tp-bd"); if (b) b.scrollTop = t === "channel" ? b.scrollHeight : 0; }); };
 function tabKey(e: KeyboardEvent) {
@@ -83,7 +85,7 @@ defineExpose({ el });
 </script>
 
 <template>
-  <aside ref="el" :class="['tp', 'glass-strong', { sheet }]" :role="sheet ? 'dialog' : 'complementary'" :aria-modal="sheet || undefined" :aria-label="`${team?.name ?? id} team`" tabindex="-1" @keydown="trap">
+  <aside ref="el" :class="['tp', 'side-panel', 'glass-strong', { sheet }]" :role="sheet ? 'dialog' : 'complementary'" :aria-modal="sheet || undefined" :aria-label="`${team?.name ?? id} team`" tabindex="-1" @keydown="trap">
     <header class="tp-hd" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp">
       <span v-if="sheet" class="tp-grab" aria-hidden="true" />
       <div class="tp-t1">
@@ -99,9 +101,9 @@ defineExpose({ el });
       </div>
     </header>
 
-    <div :class="['tp-bd', { fill: tab === 'channel' }]">
+    <div :class="['tp-bd', { fill: paneShown === 'channel' }]">
       <p v-if="loaded && !team" class="tp-none">{{ err || "No such team." }}</p>
-      <Transition v-else :name="'tp-' + slide" mode="out-in">
+      <Transition v-else :name="'tp-' + slide" mode="out-in" @before-enter="paneShown = tab">
         <!-- Overview -->
         <div v-if="tab === 'overview'" key="overview" class="tp-pn" role="tabpanel">
           <div class="tp-hero">
@@ -200,9 +202,6 @@ defineExpose({ el });
 </template>
 
 <style scoped>
-.tp{position:absolute;top:0;right:0;bottom:0;z-index:20;width:min(400px,calc(100% - 24px));display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;
-  border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:-24px 0 60px -12px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);outline:none}
-.tp *{min-width:0}
 .tp-hd{flex:none;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:14px 16px 12px;border-bottom:1px solid var(--line)}
 .tp-t1{display:flex;align-items:center;gap:10px}
 .tp-nm{flex:0 1 auto;margin:0;text-transform:none;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:700 18px/1.2 var(--body);letter-spacing:-.01em}
@@ -297,7 +296,7 @@ defineExpose({ el });
 .tp-tab-fwd-enter-active,.tp-tab-fwd-leave-active,.tp-tab-back-enter-active,.tp-tab-back-leave-active{transition:opacity .16s var(--ease),transform .2s cubic-bezier(.2,.8,.2,1)}
 .tp-tab-fwd-enter-from,.tp-tab-back-leave-to{opacity:0;transform:translateX(10px)}
 .tp-tab-fwd-leave-to,.tp-tab-back-enter-from{opacity:0;transform:translateX(-10px)}
-.tp.sheet{position:fixed;top:auto;left:0;right:0;bottom:0;z-index:61;width:auto;height:min(82dvh,680px);border-radius:20px 20px 0 0;border-bottom:0;box-shadow:0 -20px 50px rgba(0,0,0,.5);padding-bottom:env(safe-area-inset-bottom);transition:transform .32s cubic-bezier(.2,.8,.2,1)}
+
 .sheet .tp-hd{padding-top:8px;touch-action:none;cursor:grab}
 .tp-grab{justify-self:center;width:40px;height:5px;border-radius:3px;background:color-mix(in srgb,var(--ink) 28%,transparent)}
 @media (prefers-reduced-motion:reduce){.tp-ind{transition:none}.tp-tab-fwd-enter-active,.tp-tab-fwd-leave-active,.tp-tab-back-enter-active,.tp-tab-back-leave-active{transition:opacity .16s}.tp-tab-fwd-enter-from,.tp-tab-back-leave-to,.tp-tab-fwd-leave-to,.tp-tab-back-enter-from{transform:none}.tp-hd .tp-dot.s-working,.tp-spin{animation:none}.tp.sheet{transition:none}}

@@ -8,9 +8,10 @@ import { computed, nextTick, ref, watch } from "vue";
 import Icon from "../ui/Icon.vue";
 import AgentnetChat from "./AgentnetChat.vue";
 import AgentnetJobs from "./AgentnetJobs.vue";
+import AgentnetControls from "./AgentnetControls.vue";
 import AgentnetUsage from "./AgentnetUsage.vue";
 import AgentnetScore from "./AgentnetScore.vue";
-import { net, hooks, humanDoing, windows, type AgentRow, type HookFire } from "../net";
+import { net, hooks, humanDoing, ctxView, windows, type AgentRow, type HookFire } from "../net";
 import { api } from "../ui/api";
 
 const props = defineProps<{ row: AgentRow | null; name: string; sheet: boolean }>();
@@ -38,7 +39,7 @@ const model = computed(() => r.value?.model?.replace(/^claude-/, "").replace(/-\
 const modelChip = computed(() => (model.value ? model.value + (r.value?.effort ? " · " + r.value.effort : "") : null));
 const stateText = computed(() => (r.value ? (r.value.life === "live" ? r.value.state : r.value.life) : ""));
 const stateFor = computed(() => (r.value ? since(r.value.life === "live" ? r.value.stateSince : r.value.lifeSince) : null));
-const ctx = computed(() => r.value?.context ?? null);
+const ctx = computed(() => ctxView(r.value));
 const ctxPct = computed(() => (ctx.value ? Math.min(100, Math.round(ctx.value.pct)) : 0));
 const RING = 2 * Math.PI * 15;
 const resets = computed(() => { const t = r.value?.weekly?.resetsAt ? Date.parse(r.value.weekly.resetsAt) : NaN; return Number.isFinite(t) ? dur(t - net.now) : null; });
@@ -48,6 +49,8 @@ const rep = computed(() => r.value?.reported ?? null);
 const fromReport = computed(() => !!rep.value?.doing && r.value?.doing === rep.value.doing);
 const repOld = computed(() => !!rep.value && net.now - rep.value.at > 180_000);
 const prog = computed(() => (typeof r.value?.progressPct === "number" ? r.value.progressPct : null));
+/** Every task done and nothing in progress: a full bar read as "still running", so it becomes a plain line. */
+const allDone = computed(() => tasks.value.length > 0 && tasks.value.every((t) => t.status === "done"));
 const curPct = computed(() => (rep.value?.progress != null && tasks.value.filter((t) => t.status === "in_progress").length === 1 ? Math.round(rep.value.progress) : null));
 const tasks = computed(() => r.value?.tasks ?? []);
 const done = computed(() => tasks.value.filter((t) => t.status === "done").length);
@@ -56,7 +59,7 @@ const tool = (t: { tool: string; target: string | null }) => humanDoing(t.tool +
 const idRows = computed(() => {
   const x = r.value; if (!x) return [];
   const rows: [string, string | null, string?][] = [
-    ["Reports to", x.boss], ["Model", x.model ? x.model + (x.effort ? " · " + x.effort : "") : null], ["Persona", x.soul ?? null],
+    ["Reports to", x.boss], ["Model", x.model ? x.model + (x.effort ? " · " + x.effort : "") : null], ["Persona", x.soul ?? null], ["Why these", x.audit ?? null],
     ["Project", x.project?.split("/").filter(Boolean).pop() ?? null, x.project ?? undefined], ["Up since", x.spawnedAt ? `${new Date(x.spawnedAt).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })} (${since(x.spawnedAt)})` : null],
     ["Session", x.session ? x.session.slice(0, 8) : null, x.session ?? undefined], ["PID", x.pid ? String(x.pid) : null],
   ];
@@ -78,6 +81,8 @@ const openId = ref(false), openHooks = ref(false);
 const TABS = [{ id: "overview", label: "Overview" }, { id: "chat", label: "Chat" }] as const;
 type Tab = (typeof TABS)[number]["id"];
 const tab = ref<Tab>("overview");
+/** The pane on screen. It follows tab only when the new pane enters, so the old pane keeps its own layout while it fades out (out-in). */
+const shown = ref<Tab>("overview");
 const tabIdx = computed(() => TABS.findIndex((t) => t.id === tab.value));
 const slide = ref("fwd");
 const setTab = (t: Tab) => { slide.value = TABS.findIndex((x) => x.id === t) > tabIdx.value ? "fwd" : "back"; tab.value = t; nextTick(() => { if (t === "overview" && el.value) { const b = el.value.querySelector<HTMLElement>(".bd"); if (b) b.scrollTop = 0; } }); };
@@ -86,7 +91,7 @@ function tabKey(e: KeyboardEvent) {
   e.preventDefault(); const n = TABS[(tabIdx.value + d + TABS.length) % TABS.length].id; setTab(n);
   nextTick(() => el.value?.querySelector<HTMLElement>(`[data-tab="${n}"]`)?.focus());
 }
-watch(() => props.name, () => { tab.value = "overview"; });
+watch(() => props.name, () => { tab.value = "overview"; shown.value = "overview"; });
 
 // ---- phone: drag the sheet down by its header to close it ----
 const el = ref<HTMLElement | null>(null);
@@ -111,7 +116,7 @@ defineExpose({ el });
 </script>
 
 <template>
-  <aside ref="el" :class="['ap', 'glass-strong', { sheet }]" :role="sheet ? 'dialog' : 'complementary'" :aria-modal="sheet || undefined" :aria-label="`${name} details`" tabindex="-1" @keydown="trap">
+  <aside ref="el" :class="['ap', 'side-panel', 'glass-strong', { sheet }]" :role="sheet ? 'dialog' : 'complementary'" :aria-modal="sheet || undefined" :aria-label="`${name} details`" tabindex="-1" @keydown="trap">
     <header class="hd" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp">
       <span v-if="sheet" class="grab" aria-hidden="true" />
       <div class="t1">
@@ -125,6 +130,7 @@ defineExpose({ el });
         <button type="button" class="btn sm ghost" :disabled="!windows.available || !!windows.busy || gone" @click="emit('open')"><Icon name="square-terminal" :size="15" /> Open window</button>
         <button type="button" class="btn sm ghost" :disabled="!windows.available || !!windows.busy" @click="emit('closeWin')"><Icon name="x" :size="15" /> Close window</button>
       </div>
+      <AgentnetControls v-if="r && !isRoot && !gone" mode="actions" :name="name" :can-act="r.life === 'live'" @closed="emit('close')" />
       <div class="tabs" role="tablist" aria-label="Agent sections" @keydown="tabKey">
         <i class="ind" aria-hidden="true" :style="{ transform: `translateX(${tabIdx * 100}%)`, width: `calc(100% / ${TABS.length})` }" />
         <button v-for="t in TABS" :key="t.id" type="button" role="tab" :id="`ap-tab-${t.id}`" :data-tab="t.id" :aria-selected="tab === t.id" :aria-controls="`ap-pn-${t.id}`" :tabindex="tab === t.id ? 0 : -1" :class="{ on: tab === t.id }" @click="setTab(t.id)">{{ t.label }}</button>
@@ -133,12 +139,13 @@ defineExpose({ el });
 
     <AgentnetJobs v-if="r" mode="jobs" :name="name" :tasks="tasks" />
 
-    <div :class="['bd', { fill: tab === 'chat' }]">
-     <Transition :name="'tab-' + slide" mode="out-in">
+    <div :class="['bd', { fill: shown === 'chat' }]">
+     <Transition :name="'tab-' + slide" mode="out-in" @before-enter="shown = tab">
       <AgentnetChat v-if="tab === 'chat'" id="ap-pn-chat" key="chat" role="tabpanel" aria-labelledby="ap-tab-chat" :name="name" :blocked="blocked" />
       <div v-else id="ap-pn-overview" key="overview" class="ap-pn" role="tabpanel" aria-labelledby="ap-tab-overview">
       <p v-if="!r" class="none">No live reading for {{ name }} yet.</p>
       <template v-else>
+        <AgentnetControls v-if="!isRoot && !gone" mode="schedules" :name="name" />
         <!-- key numbers, Vercel-style: one glance before any detail -->
         <div class="ap-hero">
           <div class="ap-tile">
@@ -176,11 +183,12 @@ defineExpose({ el });
           <p v-if="r.doing" :class="['doing', { dim: fromReport && repOld }]">{{ humanDoing(r.doing) }}<span v-if="fromReport" class="rage">reported {{ ago(rep!.at) }}</span></p>
           <p v-else-if="!rep?.blockedOn" class="none">Nothing running.</p>
           <p v-if="r.action" class="tool"><Icon name="loader" :size="14" class="ap-spin" /><span class="mono">{{ tool(r.action) }}</span></p>
-          <div v-if="prog != null" class="pb">
+          <p v-if="allDone" class="sm">All {{ tasks.length }} tasks done</p>
+          <div v-else-if="prog != null" class="pb">
             <div class="ap-bar" role="progressbar" :aria-label="`Tasks ${done} of ${tasks.length}`" :aria-valuenow="prog" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: prog + '%' }" /></div>
             <span class="ap-num">Tasks {{ done }}/{{ tasks.length }} · {{ prog }}%</span>
           </div>
-          <p v-if="prog != null && curPct != null" class="sm">current task ~{{ curPct }}%</p>
+          <p v-if="!allDone && prog != null && curPct != null" class="sm">current task ~{{ curPct }}%</p>
           <p v-else-if="prog == null" class="sm">No tasks yet</p>
           <dl class="ap-kv">
             <template v-if="r.turn"><dt>Turn</dt><dd>{{ since(r.turn.startedAt) }} · {{ r.turn.tools }} {{ r.turn.tools === 1 ? "tool" : "tools" }}<template v-if="r.turns"> · turn {{ r.turns }}</template></dd></template>
@@ -228,9 +236,6 @@ defineExpose({ el });
 
 <style scoped>
 /* Desktop: a sheet over the right edge of the map/cards area. The view decides where it sits; this file draws it. */
-.ap{position:absolute;top:0;right:0;bottom:0;z-index:20;width:min(400px,calc(100% - 24px));display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;
-  border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:-24px 0 60px -12px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);outline:none}
-.ap *{min-width:0}
 .hd{flex:none;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:14px 16px 12px;border-bottom:1px solid var(--line)}
 .t1{display:flex;align-items:center;gap:10px}
 .ap-nm{flex:0 1 auto;margin:0;text-transform:none;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:700 18px/1.2 var(--body);letter-spacing:-.01em}
@@ -302,7 +307,7 @@ defineExpose({ el });
 .fh[aria-expanded="true"] .cv-i{transform:rotate(180deg)}
 .fb{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease)}
 .fb.is-open{grid-template-rows:1fr;opacity:1}
-.fb > div{overflow:hidden;display:grid;gap:8px}
+.fb > div{overflow:hidden;display:grid;gap:8px;transition:padding .3s cubic-bezier(.2,.8,.2,1)}
 .fb.is-open > div{padding-bottom:6px}
 .hk{list-style:none;margin:0;padding:0;display:grid;gap:6px;font-size:12.5px}
 .hk li{display:flex;align-items:center;gap:8px}
@@ -327,8 +332,8 @@ defineExpose({ el });
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* Phone: bottom sheet (teleported to <body> by the view) */
-.ap.sheet{position:fixed;top:auto;left:0;right:0;bottom:0;z-index:61;width:auto;height:min(82dvh,680px);border-radius:20px 20px 0 0;border-bottom:0;box-shadow:0 -20px 50px rgba(0,0,0,.5);padding-bottom:env(safe-area-inset-bottom);transition:transform .32s cubic-bezier(.2,.8,.2,1)}
+
 .sheet .hd{padding-top:8px;touch-action:none;cursor:grab}
 .grab{justify-self:center;width:40px;height:5px;border-radius:3px;background:color-mix(in srgb,var(--ink) 28%,transparent)}
-@media (prefers-reduced-motion:reduce){.tabs .ind{transition:none}.tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s}.tab-fwd-enter-from,.tab-back-leave-to,.tab-fwd-leave-to,.tab-back-enter-from{transform:none}.ap-dot.s-working,.ap-spin{animation:none}.rf,.ap-bar i,.cv-i,.fb{transition:none}.ap.sheet{transition:none}}
+@media (prefers-reduced-motion:reduce){.tabs .ind{transition:none}.tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s}.tab-fwd-enter-from,.tab-back-leave-to,.tab-fwd-leave-to,.tab-back-enter-from{transform:none}.ap-dot.s-working,.ap-spin{animation:none}.rf,.ap-bar i,.cv-i,.fb,.fb > div{transition:none}.ap.sheet{transition:none}}
 </style>

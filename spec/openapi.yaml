@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: agentnet
-  version: 0.2.0
+  version: 0.3.0
   description: Local network for Claude Code agents. Auth per route group is in docs/api.md.
 paths:
   /v1/health:
@@ -205,6 +205,12 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/admin/plan-spawn:
+    post:
+      summary: admin plan spawn (no side effects; GET reads query params)
+      responses:
+        "200":
+          description: OK
   /v1/admin/despawn:
     post:
       summary: admin despawn
@@ -328,6 +334,54 @@ paths:
           type: string
     post:
       summary: panel agents {name} close
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/schedules:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel agents {name} schedules
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/stop:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel agents {name} stop
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/despawn:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel agents {name} despawn
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/run-schedule:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel agents {name} run-schedule
       responses:
         "200":
           description: OK
@@ -526,6 +580,31 @@ paths:
                 type: object
                 properties:
                   roles: {}
+        "403":
+          description: Forbidden (root only)
+  /v1/panel/compact:
+    get:
+      summary: panel auto-compact window setting (default and per-role overrides)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  default: {}
+                  roles: {}
+                  min: {}
+                  max: {}
+                  fallback: {}
+    put:
+      summary: panel save the auto-compact window (applies to new spawns only)
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad value
         "403":
           description: Forbidden (root only)
   /v1/panel/routing:

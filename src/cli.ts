@@ -14,6 +14,7 @@ const HELP = `agentnet: a local network for Claude Code agents
   spawn | join | pick-model | pick-soul | bg   run the matching script (see scripts/)
   council <project> <team> "<job>" "<name=angle,...>" "<roles>" [--go] [--ask T]   plan a council team (spawn it with --go)
   install-hooks [--write]   print the triage hook snippet for ~/.claude/settings.json; --write merges it (backup first)
+  plan-spawn --job TEXT [--project DIR] [--role R] ...   where a new agent would land (name, boss, team, model, soul); changes nothing
   despawn <name> [--reason R]
   status                    health and agent list of the running server
   doctor                    check bun, tmux, claude, python3, data folder, service
@@ -70,6 +71,20 @@ async function despawn(args: string[]): Promise<number> {
     console.log(await r.text());
     return r.ok ? 0 : 1;
   } catch (e) { console.error(`agentnet: despawn failed: ${(e as Error).message}`); return 1; }
+}
+
+async function planSpawn(args: string[]): Promise<number> {
+  const body: Record<string, unknown> = {};
+  for (let i = 0; i < args.length; i += 2) {
+    const k = args[i]?.replace(/^--/, ""), v = args[i + 1];
+    if (!k || v === undefined || !["job", "project", "role", "name", "boss", "team", "model", "effort", "soul", "scope", "novelty", "risk", "need", "ask"].includes(k)) { console.error("usage: agentnet plan-spawn --job TEXT [--project DIR] [--role R] [--name N] [--boss B] [--team ID] [--model M] [--effort E] [--soul S] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT]"); return 2; }
+    body[k] = ["scope", "novelty", "risk"].includes(k) ? Number(v) : k === "project" ? resolve(tilde(v)) : v;
+  }
+  try {
+    const r = await fetch(`${url()}/plan-spawn`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
+    console.log(JSON.stringify(await r.json(), null, 2));
+    return r.ok ? 0 : 1;
+  } catch (e) { console.error(`agentnet: plan-spawn failed: ${(e as Error).message}`); return 1; }
 }
 
 async function status(): Promise<number> {
@@ -249,6 +264,7 @@ async function main(): Promise<number> {
     case "bg": return runScript("bgjob.sh", rest);
     case "council": return runScript("council.sh", rest);
     case "install-hooks": return installHooks(rest);
+    case "plan-spawn": return planSpawn(rest);
     case "despawn": return despawn(rest);
     case "status": return status();
     case "doctor": return doctor();

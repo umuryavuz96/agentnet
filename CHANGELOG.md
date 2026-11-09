@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.3.0
+
+A redesigned web app, a smarter Agents map, and controls to run, stop and close agents from the panel.
+
+### New look for five pages
+
+- Usage, Scores, Trails, Hooks and Routing are now cards in one shared grid. Related numbers sit together.
+- Routing roles are one table. Hooks shows failing events first, in a stable order.
+- Agent and team panels share one side panel with the same header, spacing and close button.
+- One set of colours and spacing for light and dark.
+
+### Agents map
+
+- Teams show their members as a tree: the lead on top, a trunk line to each group, no stacked lines.
+- Cards wrap to new rows and glide to their new place when the layout changes.
+- Each card shows the agent's model and version (for example "sonnet 5.5") next to its context use.
+- A running task wins over tool chatter on the card line. Cards grow at once and shrink only after a calm moment.
+- Team headers show a stack of member icons, the team's purpose and what it is doing now.
+- Subagents, background shells and monitors appear as small rows under their agent. Rows still running after an hour are dimmed.
+- The map fills the window and fits to view on load.
+
+### Agent controls
+
+- The side panel lists an agent's schedules and monitors, with a Run now button.
+- Run now shows the job as running at once, refuses a second run, then reports the last result.
+- Stop interrupts the agent. Close ends it. Close asks first, in a red card that says what will happen.
+- Every stop, close and run now sends the boss a short notice and is logged.
+
+### Hierarchy rules
+
+- A member of an active team with a lead is reached through that lead. Teammates and the lead still talk freely.
+- When a lead is set, changed or removed, members get the right boss automatically.
+
+### Spawning
+
+- `spawn` now picks model, effort and persona itself when you leave them out. Your own values always win.
+- `spawn` also infers the role from the job text, picks the next free name, and joins the team for the same project.
+- A team created this way has no lead until you name one, and an explicit boss is kept.
+- `agentnet plan-spawn` (also an MCP tool and `/v1/admin/plan-spawn`) shows where a new agent would land and why. It changes nothing.
+- The auto-compact window is a setting in the panel. It applies to new spawns.
+- A spawn is refused in reserve mode.
+
+### Accessibility
+
+- Every fold, card and map row opens from its whole header and works with the keyboard.
+- Folds animate height and padding together. Controls state what they open.
+- Heading order and axe findings fixed across the new pages.
+
+### Access
+
+- New opt-in `AGENTNET_TRUST_PROXY=private`: a reverse proxy on the same machine can pass clients from your LAN or tailnet as local users. Off by default.
+
+### Fixes
+
+- Pages keep their old layout while they fade out, so nothing jumps on page change.
+- Hooks event cards open downwards only and never get wider.
+- The auto-compact window now survives spawn intact.
+- Map links in wrapped rows drop through the nearest clear gap.
+- A finished task list shows no progress bar, so an idle agent no longer looks busy.
+- The recent message strip shows the message itself on two lines, and the full text on tap.
+- Cron sources for the Schedules section are opt-in (`AGENTNET_JOBS_JSON`, `AGENTNET_ALL_CRON`). Admin notices name `AGENTNET_OWNER_NAME`, default "The owner".
+- The map snaps to its layout while you resize the window, so clusters never overlap.
+- Routing folds use the full card width. The Search snippet height animates.
+
 ## 0.2.0
 
 First public release. agentnet is a local network for Claude Code agents: names, a boss, task lists, messages and a live view.

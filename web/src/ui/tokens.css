@@ -56,3 +56,40 @@ button{font-family:inherit}
 @media(prefers-reduced-motion:reduce){.toast-enter-active,.toast-leave-active{transition:opacity .15s ease}.toast-enter-from,.toast-leave-to{transform:translateX(-50%)}}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:var(--track);border-radius:6px;border:2px solid var(--bg)}
+/* Bento grid: 1 col at 390, 6 at 768, 12 at 1280+. Tile sizes S 3x1, M 4x2, L 6x2, W 8x2, F 12x1 (BentoCard.vue). */
+.bento{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;grid-auto-rows:minmax(96px,auto);grid-auto-flow:dense;width:100%;max-width:1440px;margin:0 auto}
+.bc{display:flex;flex-direction:column;gap:10px;min-width:0;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:16px}
+:root[data-theme="light"] .bc{box-shadow:0 1px 0 var(--line)}
+.bc-h{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 10px;min-height:30px}
+.bc-h h2{margin:0;min-width:0;overflow-wrap:anywhere;color:var(--muted);font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.bc-c{display:flex;align-items:center;gap:8px;flex:none}
+.bc-b{flex:1;min-width:0;min-height:0}
+.bc-f{color:var(--muted);font-size:12px;line-height:1.4}
+.bc-hc{cursor:pointer;margin:-14px -14px 0;padding:14px 14px 0;border-radius:16px 16px 0 0;-webkit-tap-highlight-color:transparent}
+.bc-hc:hover h2{color:var(--ink)}
+/* value row: big number + unit + state word */
+.bv{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.bv b{font:700 44px/1 var(--display);letter-spacing:-.01em}
+.bv small{color:var(--muted);font:600 13px var(--body)}
+.bn{color:var(--muted);font-size:12.5px}
+@media(min-width:768px){
+  .bento{grid-template-columns:repeat(6,minmax(0,1fr))}
+  .bc-S{grid-column:span 3}
+  .bc-M,.bc-L,.bc-W,.bc-F,.bc-H{grid-column:span 6}
+  .bc-M,.bc-L,.bc-W{grid-row:span 2}
+  .bc-tall{grid-row:span 3}
+}
+@media(min-width:1280px){
+  .bento{grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
+  .bc{padding:16px}
+  .bc-hc{margin:-16px -16px 0;padding:16px 16px 0}
+  .bc-S{grid-column:span 3}.bc-M{grid-column:span 4}.bc-L{grid-column:span 6}.bc-W{grid-column:span 8}.bc-F{grid-column:span 12}.bc-H{grid-column:span 6}
+  .bc-F{grid-row:span 1}
+}
+@media(prefers-reduced-motion:no-preference){.bc{animation:bc-in .24s var(--ease) both}}
+@keyframes bc-in{from{opacity:0}to{opacity:1}}
+/* Two-column bento on phones: S tiles pair up, everything else spans both. */
+@media(max-width:767px){.bento-2{grid-template-columns:repeat(2,minmax(0,1fr))}.bento-2 > .bc:not(.bc-S){grid-column:span 2}.bento-2 .bv b{font-size:34px}}
+/* Content-height rows for card lists whose cards collapse (Hooks). */
+.bento-auto{grid-auto-rows:auto}
+.bc.bc-flat{grid-row:auto}

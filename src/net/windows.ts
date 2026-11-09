@@ -33,6 +33,8 @@ export const attachedSessions = (t: Tmux = realTmux): Set<string> => new Set(t.r
 export const detach = (s: string, t: Tmux = realTmux) => t.run(["detach-client", "-s", `=${s}`]).code === 0;
 /** When the session was created (tmux `session_created`), "" if there is none: tells two sessions of the same name apart. */
 export const createdOf = (s: string, t: Tmux = realTmux) => { const r = t.run(["display-message", "-p", "-t", `=${s}:`, "#{session_created}"]); return r.code === 0 ? r.out.trim() : ""; };
+/** Stop: one Escape to the agent's pane interrupts its current turn (a second would open Claude Code's rewind menu). */
+export const interrupt = (s: string, t: Tmux = realTmux) => t.run(["send-keys", "-t", `=${s}:`, "Escape"]).code === 0;
 export const killSession = (s: string, t: Tmux = realTmux) => t.run(["kill-session", "-t", `=${s}`]).code === 0;
 export const agentSessions = (t: Tmux = realTmux) => t.run(["list-sessions", "-F", "#{session_name}"]).out.split("\n").map((l) => l.trim()).filter(isAgentSession);
 

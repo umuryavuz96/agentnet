@@ -40,6 +40,27 @@ describe("reduce", () => {
   });
 });
 
+describe("bg rows", () => {
+  const base = () => st.reduce(null, { type: "AgentSpawned", ts: T0, data: { id: "a", name: "a" }, source: "spawn" })!;
+  const bg = (s: ReturnType<typeof base>, ts: number, d: Record<string, unknown>) => st.reduce(s, { type: "BgUpdated", ts, data: d, source: "hook" })!;
+  test("running -> done keeps startedAt, sets endedAt; a late running never revives", () => {
+    let s = bg(base(), T0 + 10, { id: "b1", kind: "shell", label: "sleep 60", state: "running" });
+    expect(s.bg).toEqual([{ id: "b1", kind: "shell", label: "sleep 60", state: "running", startedAt: T0 + 10, endedAt: null }]);
+    s = bg(s, T0 + 70, { id: "b1", kind: "shell", state: "done" });
+    expect(s.bg![0]).toMatchObject({ label: "sleep 60", state: "done", startedAt: T0 + 10, endedAt: T0 + 70 });
+    s = bg(s, T0 + 80, { id: "b1", kind: "shell", state: "running" });
+    expect(s.bg![0]!.state).toBe("done");
+  });
+  test("finished rows leave after 2 min; bad kind or state is ignored; capped", () => {
+    let s = bg(base(), T0, { id: "x", kind: "monitor", label: "m", state: "killed" });
+    s = bg(s, T0 + st.BG_KEEP_MS + 1, { id: "y", kind: "subagent", label: "s", state: "running" });
+    expect(s.bg!.map((b) => b.id)).toEqual(["y"]);
+    expect(bg(s, T0 + 1e6, { id: "z", kind: "nope", state: "running" }).bg).toEqual(s.bg);
+    for (let i = 0; i < 20; i++) s = bg(s, T0 + 1e6 + i, { id: "r" + i, kind: "shell", label: "l", state: "running" });
+    expect(s.bg!.length).toBe(st.BG_MAX);
+  });
+});
+
 describe("writer", () => {
   test("fold(all events) == agent_status, and duplicates are ignored", () => {
     spawn();

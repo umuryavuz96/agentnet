@@ -43,7 +43,9 @@ const WORKER_TOOLS: ToolSpec[] = [
 const ROOT_TOOLS: ToolSpec[] = [
   { name: "list_agents", description: "Root: every live agent with its status snapshot.", inputSchema: obj({ all: { type: "boolean", description: "include gone agents" } }) },
   { name: "get_status", description: "Root: one agent's status snapshot (and its last events).", inputSchema: obj({ agent: str("agent name"), events: int("how many recent events, default 0") }, ["agent"]) },
-  { name: "spawn", description: "Root: create a new agent record and token (spawn.sh launches it).", inputSchema: obj({ name: str("agent name, e.g. web-dev-1"), job: str("what it is for"), boss: str("its boss, default you"), model: str("model"), effort: str("effort"), soul: str("persona id"), project: str("project folder"), team: str("team id to join") }, ["name", "job"]) },
+  { name: "spawn", description: "Root: create a new agent record and token (spawn.sh launches it). Name, boss, team and compact window are placed too (see plan_spawn). Picks model, effort and persona when not given; the reply has the audit line. Refused in reserve mode.", inputSchema: obj({ name: str("agent name, e.g. web-dev-1; omit for the next free <role>-N"), role: str("role when the name is omitted"), job: str("what it is for"), boss: str("its boss; omit to place by project"), model: str("model alias; omit to have agentnet pick it"), effort: str("effort; omit to have agentnet pick it"), soul: str("persona id; omit to have agentnet pick it"), scope: int("1-5 files/systems touched, default 2"), novelty: int("1-3 new ground, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner's words (expectation keywords)"), project: str("project folder"), team: str("team id to join") }, ["name", "job"]) },
+  { name: "plan_spawn", description: "Root: where a new agent would land, with NO side effects: next free name, boss, team (joins the team on the same project, or proposes one), model, effort, soul, compact window, and one reason line per decision. spawn uses the same plan for every field you leave out.",
+    inputSchema: obj({ job: str("what it is for"), project: str("project folder"), role: str("role, else inferred from the job"), name: str("fixed name, else the next free <role>-N"), boss: str("explicit boss"), team: str("explicit team id"), model: str("explicit model"), effort: str("explicit effort"), soul: str("explicit persona id"), scope: int("1-5, default 2"), novelty: int("1-3, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner\'s words") }, ["job"]) },
   { name: "grade", description: "Root: grade a finished task of an agent (1-5) for its scorecard. rework = root had to ask for a fix on it; owner_rounds = how many back-and-forth rounds the owner needed on the job before it was right (0 = right first time).",
     inputSchema: obj({ agent: str("agent name"), task_id: int("the agent's task id"), grade: int("1-5"), note: str("short note; a 'rework:' prefix also marks rework"), rework: { type: "boolean", description: "a fix was requested on this task" }, owner_rounds: int("rounds the owner needed, 0 = right first time") }, ["agent", "task_id", "grade"]) },
   { name: "despawn", description: "Root: retire an agent (token revoked, session closed).", inputSchema: obj({ agent: str("agent name"), reason: str("why") }, ["agent"]) },
@@ -58,7 +60,7 @@ const ROUTES: Record<string, (a: Json) => { method: string; path: string; body?:
   set_status: (a) => ({ method: "POST", path: "/status", body: a }),
   list_agents: (a) => ({ method: "GET", path: `/agents${a.all ? "?all=1" : ""}` }), get_status: (a) => ({ method: "GET", path: `/agents/${encodeURIComponent(String(a.agent))}${a.events ? `?events=${Number(a.events)}` : ""}` }),
   grade: (a) => { const { agent, ...rest } = a; return { method: "POST", path: `/agents/${encodeURIComponent(String(agent))}/grade`, body: rest }; },
-  spawn: (a) => ({ method: "POST", path: "/spawn", body: a }), despawn: (a) => ({ method: "POST", path: "/despawn", body: a }),
+  spawn: (a) => ({ method: "POST", path: "/spawn", body: a }), plan_spawn: (a) => ({ method: "POST", path: "/plan-spawn", body: a }), despawn: (a) => ({ method: "POST", path: "/despawn", body: a }),
 };
 /** Secrets typed in a command must not reach the event log: blank values after token/key/secret/password/authorization words and long hex or base64 runs. */
 const redact = (v: string) => v.replace(/\b(authorization\s*[=:]\s*)(?:bearer\s+)?\S+/gi, "$1***").replace(/\b(bearer\s+)\S+/gi, "$1***").replace(/\b([\w-]*(?:token|api[-_]?key|secret|passw(?:or)?d)[\w-]*\s*[=:]\s*)\S+/gi, "$1***").replace(/\b[A-Za-z0-9+_-]{32,}={0,2}/g, "***");
@@ -72,6 +74,45 @@ async function api($: $, method: string, path: string, body?: Json) {
   const r = await $.http.fetch(S.base + path, { method, headers: { authorization: `Bearer ${S.token}`, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
   let json: Json | null = null; try { json = JSON.parse(r.text) as Json; } catch { /* no body */ }
   return { ok: r.ok, status: r.status, json };
+}
+/** Background work (subagents, background shells, monitors) goes to POST /bg: fire and forget, never awaited, silent when the service is down. */
+const BG = { seen: new Map<string, string>(), label: new Map<string, string>(), kind: new Map<string, string>(), polling: false, until: 0 };
+const AG_STATE: Record<string, string> = { pending: "running", running: "running", waiting: "running", idle: "running", completed: "done", failed: "failed", killed: "killed" };
+function bgSend($: $, items: Json[]) { if (S.token && items.length) void api($, "POST", "/bg", { items }).catch(() => {}); }
+function bgMark($: $, id: string, kind: string, state: string, label?: string) {
+  if (BG.seen.get(id) === state) return;
+  BG.seen.set(id, state); BG.kind.set(id, kind); if (label) BG.label.set(id, label);
+  bgSend($, [{ id, kind, state, label: label ?? BG.label.get(id) }]);
+  if (BG.seen.size > 200) for (const k of BG.seen.keys()) { BG.seen.delete(k); BG.label.delete(k); BG.kind.delete(k); if (BG.seen.size <= 100) break; }
+}
+const bgRunning = () => [...BG.seen.values()].some((v) => v === "running");
+/** Subagents: $.agent.list() is the one source for their state; polled every 3 s while any is running. */
+async function bgSyncAgents($: $) {
+  let list: { id: string; description: string; type: string; status: string }[] = [];
+  try { list = await $.agent.list(); } catch { /* not bound yet */ }
+  const here = new Set<string>();
+  for (const a of list) { const id = `sa:${a.id}`; here.add(id); bgMark($, id, "subagent", AG_STATE[a.status] ?? "running", (a.description || a.type || "subagent").replace(/\s+/g, " ").slice(0, 120)); }
+  for (const [id, v] of BG.seen) if (id.startsWith("sa:") && v === "running" && !here.has(id)) bgMark($, id, "subagent", "done"); // dropped from the list: it ended
+  if ((bgRunning() || Date.now() < BG.until) && S.alive) $.clock.after(3000, () => { void bgSyncAgents($); }); else BG.polling = false;
+}
+function bgPoll($: $) { if (BG.polling) return; BG.polling = true; void bgSyncAgents($); }
+/** tool.call after: Bash with run_in_background, Monitor, TaskStop, Agent. `r.result` is the tool's record. */
+function bgTool($: $, ev: Json, r: { result?: unknown; deny?: string; isError?: boolean }) {
+  if (r.deny !== undefined || r.isError === true) return;
+  const res = (r.result ?? {}) as Json, tool = String(ev.tool);
+  const label = (v: unknown) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+  if (tool === "Bash" && ev.run_in_background === true && typeof res.backgroundTaskId === "string") bgMark($, `bg:${res.backgroundTaskId}`, "shell", "running", label(ev.description || ev.command));
+  else if (tool === "Monitor" && typeof res.taskId === "string") {
+    bgMark($, `bg:${res.taskId}`, "monitor", "running", label(ev.description || ev.command));
+    const ms = Number(res.timeoutMs); if (!res.persistent && ms > 0) $.clock.after(ms + 1000, () => { if (BG.seen.get(`bg:${res.taskId}`) === "running") bgMark($, `bg:${res.taskId}`, "monitor", "done"); });
+  } else if (tool === "CronCreate" && typeof res.id === "string") {
+    bgSend($, [{ id: res.id, kind: "schedule", state: "active", cron: String(ev.cron ?? "").slice(0, 80), prompt: String(ev.prompt ?? "").replace(/\s+/g, " ").trim().slice(0, 200), recurring: res.recurring !== false && ev.recurring !== false }]);
+  } else if (tool === "CronDelete") {
+    const id = String(ev.id ?? ""); if (id) bgSend($, [{ id, kind: "schedule", state: "gone" }]);
+  } else if (tool === "TaskStop") {
+    const id = String(ev.task_id ?? ev.taskId ?? res.task_id ?? ""), k = [`bg:${id}`, `sa:${id}`].find((x) => BG.seen.has(x));
+    if (id && k) bgMark($, k, BG.kind.get(k) ?? "shell", "killed");
+  }
 }
 function post($: $, events: Json[]) { if (S.token) void api($, "POST", "/events", { events }).catch(() => {}); }
 /** The status line is drawn with a warning triangle whatever we write, so it exists only while something is wrong. */
@@ -159,13 +200,24 @@ export const register: Register = (on) => {
   on("tool.call", async ($, e, next) => {
     const ev = e as unknown as Json, id = String(ev.tool_use_id ?? ""), t = target(ev), t0 = Date.now();
     if (!ev.agentId) post($, [{ type: "ToolStarted", data: { tool: e.tool, target: t, tool_use_id: id } }]);
+    if (S.token && e.tool === "Agent") { BG.until = Date.now() + 15_000; bgPoll($); } // the subagent exists a moment after this call starts
     const r = await next(e);
-    if (ev.agentId) return r;
+    if (ev.agentId) { bgTool($, ev, r as { result?: unknown; deny?: string; isError?: boolean }); return r; }
     const ok = r.deny === undefined && r.isError !== true, out: Json[] = [{ type: "ToolFinished", data: { tool: e.tool, target: t, tool_use_id: id, ok, ms: Date.now() - t0 }, dedup: `post:${S.session}:${id}` }];
     if (ok && e.tool === "TaskCreate") out.push({ type: "TaskAdded", data: { text: String(ev.subject ?? ev.description ?? "task").slice(0, 200) }, dedup: `task:${S.session}:${id}` });
     if (ok && e.tool === "TaskUpdate" && (ev.status === "in_progress" || ev.status === "completed")) out.push({ type: ev.status === "completed" ? "TaskDone" : "TaskStarted", data: { id: Number(ev.taskId) }, dedup: `task:${S.session}:${id}` });
     post($, out);
+    bgTool($, ev, r as { result?: unknown; deny?: string; isError?: boolean });
     return r;
+  });
+  // A background shell or monitor ends with a task-notification row; its <task-id> and <status> close the bg row.
+  on("session.receive", async ($, e, next) => {
+    if (S.token && e.origin.kind === "task-notification") {
+      const id = /<task-id>\s*([^<\s]+)\s*<\/task-id>/.exec(e.text)?.[1], st = /<status>\s*([a-z_]+)\s*<\/status>/.exec(e.text)?.[1] ?? "completed";
+      const k = id ? [`bg:${id}`, `sa:${id}`].find((x) => BG.seen.has(x)) : undefined;
+      if (id && k) bgMark($, k, BG.kind.get(k) ?? "shell", st === "completed" ? "done" : st === "killed" || st === "stopped" ? "killed" : "failed");
+    }
+    return next(e);
   });
   on("session.measure", async ($, e, next) => {
     const out: Json[] = [];

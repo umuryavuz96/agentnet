@@ -239,3 +239,19 @@ describe("trail resolver: commit -> agent from the event log", () => {
     expect(r.commit(repo, at - 300_000, ["web/old.vue"])).toBe("web-dev-1"); // no Bash running then: the editor
   });
 });
+
+describe("POST /bg", () => {
+  test("agent posts its own rows; bad items are skipped; fold shows them", async () => {
+    await call("sre-1", "POST", "/hello", { session: "sid-s", pid: 2 });
+    const r = await j(await call("sre-1", "POST", "/bg", { items: [{ id: "t1", kind: "shell", label: "sleep 60", state: "running" }, { id: "t2", kind: "bogus", state: "running" }, { kind: "shell", state: "running" }] }));
+    expect(r.body.accepted).toBe(1);
+    const a = st.all().find((x) => x.name === "sre-1")!;
+    expect(a.bg).toMatchObject([{ id: "t1", kind: "shell", label: "sleep 60", state: "running" }]);
+    await call("sre-1", "POST", "/bg", { id: "t1", kind: "shell", state: "done" });
+    expect(st.all().find((x) => x.name === "sre-1")!.bg![0]!.state).toBe("done");
+  });
+  test("unknown token = 401; agentPath knows /bg", async () => {
+    expect((await call("nope", "POST", "/bg", { id: "x", kind: "shell", state: "running" })).status).toBe(401);
+    expect(rt.agentPath("/api/v1/agentnet/bg")).toBe(true);
+  });
+});

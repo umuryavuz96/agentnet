@@ -4,7 +4,7 @@
 // re-renders the bindings that changed.
 import { computed } from "vue";
 import Icon from "../ui/Icon.vue";
-import { windows, humanDoing, type AgentRow } from "../net";
+import { net, windows, humanDoing, ctxView, bgVisible, bgShown, type AgentRow } from "../net";
 
 const props = defineProps<{ row: AgentRow | null; name: string; selected?: boolean }>();
 const emit = defineEmits<{ select: []; open: []; close: [] }>();
@@ -22,7 +22,13 @@ const DOT_LABEL: Record<string, string> = { root: "root", starting: "starting", 
 const tasks = computed(() => props.row?.tasks ?? []);
 const done = computed(() => tasks.value.filter((t) => t.status === "done").length);
 const progress = computed(() => (typeof props.row?.progressPct === "number" ? props.row.progressPct : null)); // task-derived (server progressPct), never the self-reported %
-const ctx = computed(() => (props.row?.context ? Math.round(props.row.context.pct) : null));
+const ctxv = computed(() => ctxView(props.row));
+const ctx = computed(() => (ctxv.value ? Math.round(ctxv.value.pct) : null));
+const tok = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.round(n / 1e3) + "k");
+// Background work (subagents, shells, monitors) the agent started itself; finished rows leave after BG_KEEP_MS.
+const KIND: Record<string, string> = { subagent: "subagent", shell: "shell", monitor: "monitor" };
+const bg = computed(() => bgVisible(props.row?.bg, net.now || Date.now()));
+const dur = (b: { startedAt: number; endedAt: number | null; state: string }) => { const s = Math.max(0, Math.round(((b.state === "running" ? net.now || Date.now() : b.endedAt ?? Date.now()) - b.startedAt) / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s"; };
 const blocked = computed(() => props.row?.reported?.blockedOn ?? null);
 const doingText = computed(() => (blocked.value ? "Blocked: " + blocked.value : props.row ? (humanDoing(props.row.doing) ?? DOT_LABEL[dot.value]) : "Director of every agent"));
 const cost = computed(() => (props.row?.cost != null ? "$" + props.row.cost.toFixed(2) : null));
@@ -48,12 +54,16 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
 
     <p class="doing" :class="{ warn: blocked }" :title="doingText">{{ doingText }}</p>
 
+    <TransitionGroup v-if="bg.length" tag="ul" name="bgr" class="bgl" aria-label="Background work">
+      <li v-for="b in bg" :key="b.id" :class="['bgi', bgShown(b, net.now || Date.now())]" :title="`${KIND[b.kind]}: ${b.label} · ${b.state}`"><i class="bgd" /><span class="bgk">{{ KIND[b.kind] }}</span><span class="bgt">{{ b.label }}</span><span class="bgs">{{ bgShown(b, net.now || Date.now()) === "stale" ? "stale" : b.state === "running" ? dur(b) : b.state + " · " + dur(b) }}</span></li>
+    </TransitionGroup>
+
     <div v-if="row" class="meta">
       <div class="bar" :aria-label="progress == null ? 'no tasks' : progress + '% done'" role="progressbar" :aria-valuenow="progress ?? undefined" aria-valuemin="0" aria-valuemax="100">
         <i :style="{ transform: `scaleX(${(progress ?? 0) / 100})` }" />
       </div>
       <span class="n" title="tasks done / total">{{ done }}/{{ tasks.length }}</span>
-      <span class="n" title="context window used">{{ ctx == null ? "–" : ctx + "%" }} ctx</span>
+      <span class="n" :title="ctxv ? `${tok(ctxv.tokens)} of ${tok(ctxv.window)}${ctxv.compact ? ` (auto-compact window; model window ${tok(ctxv.model)})` : ''}` : 'context window used'">{{ ctx == null ? "–" : ctx + "%" }} ctx</span>
       <span v-if="cost" class="n" title="cost of this session">{{ cost }}</span>
       <span v-if="weekly !== null" class="n" title="share of the weekly limit">{{ weekly }}% wk</span>
     </div>
@@ -68,11 +78,23 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
 </template>
 
 <style scoped>
+.bgl{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:3px}
+.bgi{display:flex;align-items:center;gap:6px;font-size:11.5px;min-width:0;color:var(--muted,#8a8f98)}
+.bgd{width:7px;height:7px;border-radius:50%;flex:none;background:var(--off,#777)}
+.bgi.running .bgd{background:var(--on,#3c9);animation:bgp 1.6s ease-in-out infinite}
+.bgi.stale{opacity:.5} .bgi.done .bgd{background:var(--on,#3c9)} .bgi.failed .bgd{background:var(--bad,#e55)}
+.bgk{flex:none;text-transform:uppercase;font-size:10px;letter-spacing:.04em;opacity:.8}
+.bgt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bgs{flex:none;font-variant-numeric:tabular-nums}
+.bgr-enter-active,.bgr-leave-active{transition:opacity .35s,transform .35s}
+.bgr-enter-from,.bgr-leave-to{opacity:0;transform:translateY(-4px)}
+@keyframes bgp{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.bgi.running .bgd{animation:none}.bgr-enter-active,.bgr-leave-active{transition:none}}
 .anc{display:flex;flex-direction:column;gap:6px;min-width:0;height:100%;padding:14px 14px 12px;border:1px solid var(--line);border-radius:16px;background:var(--panel);cursor:pointer;
   transition:border-color .2s var(--ease),transform .2s var(--ease),background-color .2s var(--ease)}
 .anc:hover{border-color:color-mix(in srgb,var(--ink) 25%,var(--line))}
 .anc:focus-visible{outline:2px solid var(--on);outline-offset:2px}
-.anc.sel{border-color:var(--on);background:color-mix(in srgb,var(--on) 6%,var(--panel))}
+.anc.sel{border-color:#4c7dff;box-shadow:0 0 0 1px #4c7dff;background:color-mix(in srgb,#4c7dff 7%,var(--panel))}
 .anc.root{background:linear-gradient(180deg,color-mix(in srgb,var(--lock) 10%,var(--panel)),var(--panel))}
 .anc-h{display:flex;align-items:center;gap:8px;min-width:0}
 .nm{font:650 15px/1.2 var(--body);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

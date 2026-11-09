@@ -45,6 +45,15 @@ export function sameTeam(a: string, b: string): boolean {
   ensureSchema();
   return !!db().query("SELECT 1 FROM team_members x JOIN team_members y ON y.team_id = x.team_id JOIN teams t ON t.id = x.team_id WHERE x.agent = ? AND y.agent = ? AND t.state = 'active' LIMIT 1").get(a, b);
 }
+/** Teams where `agent` is a non-lead member of a team that has a lead: the lead is the only door into them for outsiders. */
+const gatedTeams = (agent: string) => teamsOf(agent).filter((t) => t.lead && t.lead !== agent);
+/** The lead of the active team `to` belongs to, when `to` is not that lead; else null. */
+export const leadGate = (to: string): string | null => gatedTeams(to)[0]?.lead ?? null;
+/** Does the lead gate let `from` reach `to`? Yes when `to` is gated by no team, or `from` sits in one of the teams that gate it. */
+export function gatePasses(from: string, to: string): boolean {
+  const g = gatedTeams(to);
+  return !g.length || g.some((t) => t.members.includes(from));
+}
 export const isMember = (id: string, agent: string) => !!db().query("SELECT 1 FROM team_members WHERE team_id = ? AND agent = ?").get(id, agent);
 
 // ---------- board ----------

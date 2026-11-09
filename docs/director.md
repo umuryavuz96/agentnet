@@ -18,7 +18,20 @@ cd ~/my-project && claude              # terminal 2: this session is the directo
 
 The root agent has the extra tools `spawn`, `despawn`, `list_agents`, `get_status` and `grade`. See the README for how a session becomes root.
 
+`spawn` routes by itself. Leave out `model`, `effort` or `soul` and the service picks them from `scope`, `novelty`, `risk` (defaults 2, 2, 1), `need` and `ask`. A value you pass always wins. The reply and the agent's card carry the audit line (`mode=… model=… effort=… score=… reason=…`). In reserve mode the spawn is refused.
+
 You can also reach the director from your phone. Claude Code's own channel plugins (for example Telegram) work in the same session. This is optional. agentnet does not need it.
+
+## Where a new agent lands
+
+`plan_spawn` (MCP, `agentnet plan-spawn`, `POST /v1/admin/plan-spawn`) tells you where a new agent would go. It changes nothing. `spawn` uses the same plan for every field you leave out, so `spawn` with only `job` and `project` gives the same result. Anything you pass yourself wins, and the reason line says "explicit".
+
+- **Name**: the next free `<role>-N`. The role is yours, or inferred from the job: whole words of the job are matched against each role's keyword list (for example `doc`: readme, docs, typo; `qa`: test, screenshot, verify). The role with the most matches wins, a tie goes to the earlier role in the list, no match gives `default_role`. The reason line names the matched words.
+- **Team and boss**: if an active team works on the same project, the agent joins it and its lead is the boss (no lead means root). Else if another live agent works on that project, a new team `<project>-dev` is created with both as members and that agent is the boss. Else no team and boss root.
+- **Model, effort, persona and compact window**: from the routing and the compact-window setting described above.
+- **Reasons**: one line per decision in the reply.
+
+The rules are in `$AGENTNET_HOME/config/placement.json`: `team_by_project` (default true), `naming` (default `{role}-{n}`), `default_role`, `team_suffix` (default `-dev`) and `role_keywords` (a role you list replaces its default words). No AI call is made.
 
 ## 2. Add the triage hook
 

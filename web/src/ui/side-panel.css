@@ -1,0 +1,6 @@
+/* One side panel shell for every panel the Agents page opens (agent, team): floats 12px inside the map frame; a bottom sheet on phones. */
+.side-panel{position:absolute;top:12px;right:12px;bottom:12px;z-index:20;width:min(400px,calc(100% - 24px));display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;
+  border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:-24px 0 60px -12px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);outline:none}
+.side-panel *{min-width:0}
+.side-panel.sheet{position:fixed;top:auto;left:0;right:0;bottom:0;z-index:61;width:auto;height:min(82dvh,680px);border-radius:20px 20px 0 0;border-bottom:0;box-shadow:0 -20px 50px rgba(0,0,0,.5);padding-bottom:env(safe-area-inset-bottom);transition:transform .32s cubic-bezier(.2,.8,.2,1)}
+@media (prefers-reduced-motion:reduce){.side-panel.sheet{transition:none}}

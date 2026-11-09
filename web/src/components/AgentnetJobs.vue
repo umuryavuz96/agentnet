@@ -167,11 +167,11 @@ h3 .num{letter-spacing:0;color:var(--ink);opacity:.8}
 .pbar .num{flex:none;font-size:12px;color:var(--muted)}
 .jb{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease)}
 .jb.is-open{grid-template-rows:1fr;opacity:1}
-.jb > div{overflow:hidden;display:grid;gap:8px}
+.jb > div{overflow:hidden;display:grid;gap:8px;transition:padding .3s cubic-bezier(.2,.8,.2,1)}
 .jb.is-open > div{padding-bottom:12px}
 .log{margin:0;padding:8px 10px;border-radius:10px;background:var(--track);font:11.5px/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow-y:auto}
 .spin{animation:ajspin 1.1s linear infinite}
 @keyframes ajspin{to{transform:rotate(360deg)}}
 @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--on) 55%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
-@media (prefers-reduced-motion:reduce){.spin,.jdot.running{animation:none}.cv,.jb,.jpb,.bar i{transition:none}}
+@media (prefers-reduced-motion:reduce){.spin,.jdot.running{animation:none}.cv,.jb,.jb > div,.jpb,.bar i{transition:none}}
 </style>

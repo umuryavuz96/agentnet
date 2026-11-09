@@ -5,7 +5,7 @@ An org chart for your Claude Code agents.
 
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-2fd38a)](LICENSE)
 [![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555)](#quick-start)
-<!-- TODO: version badge after the v0.2.0 tag exists -->
+<!-- TODO: version badge after the v0.3.0 tag exists -->
 
 [Website](https://umuryavuz96.github.io/agentnet/) · [Quick start](#quick-start) · [Security](#security-model) · [Credits](#credits)
 
@@ -56,8 +56,8 @@ Local only. No login. Refuses to listen on a public address.
 The parts:
 
 - **Service**: a small local server (Bun, Hono, SQLite) on `127.0.0.1:3096`.
-- **Web app**: agents list and map, chat, tasks, teams, background jobs, decision notes and search, scores, usage,
-  personas, model routing.
+- **Web app**: agents map (teams as trees) and cards, chat, tasks, teams, background jobs, decision notes and search,
+  scores, usage, hooks, personas, model routing. Stop, close or run a schedule from an agent's panel.
 - **Claude Code plugin**: gives each agent the `mcp__agentnet__*` tools: `send`, `inbox`, `report`, `task_add`,
   `task_start`, `task_done`, `team_send`, `team_tasks`, `trail_search`, `set_status`. The root agent also gets `spawn`,
   `despawn`, `list_agents`, `get_status` and `grade`.
@@ -70,6 +70,8 @@ personas that debate the job, plus one or two builders. It runs the team over ag
 despawns it.
 
 A hook triages each message and tells the director which way to go. Install it with `bin/agentnet install-hooks`.
+Every spawn picks its own model, effort and persona when you do not name them (`agentnet spawn --scope --novelty --risk --need --ask`,
+or the same fields on the MCP `spawn` tool). The agent's card shows why. In reserve mode the spawn is refused.
 Plan a team with `bin/agentnet council`. The full setup is in [docs/director.md](docs/director.md).
 
 ## How it works
@@ -110,6 +112,8 @@ agentnet has no login. It is safe because of where it listens.
 - It listens on `127.0.0.1`. Only programs on your machine can reach it.
 - You can opt in to one LAN or tailnet address (`AGENTNET_HOST`) to open the web app from your phone. Public addresses,
   `0.0.0.0` and `::` are refused.
+- Behind a reverse proxy on the same machine, set `AGENTNET_TRUST_PROXY=private` so LAN and tailnet clients can use the
+  panel's write controls. It is off by default.
 - There is no login, so never expose it to the internet: no port forwarding, no public tunnel or proxy.
 - Starting and stopping agents and changing settings work only from the machine itself or from the root agent.
 - Each agent's token says which agent is calling. It sits in a file only you can read (mode 0600). It is identity, not a

@@ -83,7 +83,30 @@ function dateAgo(d: string) {
 
 // ---- keyboard ----
 function move(d: number) { if (!rows.value.length) return; active.value = (active.value + d + rows.value.length) % rows.value.length; nextTick(() => document.getElementById("hit-" + active.value)?.scrollIntoView({ block: "nearest" })); }
-function toggle(i: number) { const h = rows.value[i]; if (h) { active.value = i; openId.value = openId.value === h.id ? null : h.id; } }
+/** Snippet height: closed = 3-line clamp, open = full text. line-clamp cannot animate, so measure both heights and animate max-height. */
+function snippet(i: number, open: boolean) {
+  const el = document.querySelector<HTMLElement>("#hit-" + i + " .sn");
+  if (!el) return;
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const clear = () => { el.style.transition = el.style.maxHeight = el.style.webkitLineClamp = ""; };
+  el.style.transition = "none"; el.style.maxHeight = "none";
+  el.style.webkitLineClamp = "3"; const clamped = el.offsetHeight;
+  el.style.webkitLineClamp = "unset"; const full = el.offsetHeight;
+  if (reduce || full <= clamped) { open ? (el.style.maxHeight = "none") : clear(); return; }
+  const [from, to] = open ? [clamped, full] : [full, clamped];
+  el.style.maxHeight = from + "px"; void el.offsetHeight;
+  el.style.transition = "max-height .3s cubic-bezier(.2, .8, .2, 1)"; el.style.maxHeight = to + "px";
+  const done = () => { el.removeEventListener("transitionend", done); open ? (el.style.transition = "", el.style.maxHeight = "none") : clear(); };
+  el.addEventListener("transitionend", done);
+}
+function toggle(i: number) {
+  const h = rows.value[i]; if (!h) return;
+  const prev = openId.value ? rows.value.findIndex((r) => r.id === openId.value) : -1;
+  const open = openId.value !== h.id;
+  if (prev >= 0 && prev !== i) snippet(prev, false);
+  snippet(i, open);
+  active.value = i; openId.value = open ? h.id : null;
+}
 function onKey(e: KeyboardEvent) {
   if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }

@@ -5,7 +5,7 @@ import { db } from "../core/db";
 import { problem, type Env } from "../core/http";
 import { audit } from "../core/logger";
 import { flush, ensureSchema } from "./store";
-import { ADMIN, BODY_MAX, body, bad, enqueueMessage, isRoot, kindOf, nameMap, resolveTo, subjectOf, type Ctx } from "./routes";
+import { ADMIN, BODY_MAX, body, bad, enqueueMessage, isRoot, kindOf, nameMap, releaseBoss, resolveTo, subjectOf, syncBosses, type Ctx } from "./routes";
 import { addMember, addTeamTask, archiveTeam, createTeam, getTeam, getTeamTask, isMember, listTeams, removeMember, setTeamTask, teamTasks, updateTeam, NAME_RE, type Team } from "./teams";
 
 type A = Parameters<typeof enqueueMessage>[0];
@@ -49,6 +49,7 @@ export function teamRoutes(r: Hono<Env>, actorOf: (c: Context) => A, base = "/te
     const b = await body(c);
     try {
       const t = createTeam({ name: String(b.name ?? ""), goal: typeof b.goal === "string" ? b.goal : undefined, lead: typeof b.lead === "string" && b.lead ? b.lead : undefined, project: typeof b.project === "string" ? b.project : undefined, members: names(b.members), id: typeof b.id === "string" && b.id ? b.id : undefined });
+      syncBosses(t.id);
       audit(`agent:${actorOf(c).name}`, "agentnet.team-create", t.id, "ok", c.get("trace")); return c.json(detail(t), 201);
     } catch (e) { return bad(c, (e as Error).message); }
   });
@@ -58,6 +59,7 @@ export function teamRoutes(r: Hono<Env>, actorOf: (c: Context) => A, base = "/te
     const b = await body(c);
     try {
       const t = updateTeam(c.req.param("id"), { name: typeof b.name === "string" ? b.name : undefined, goal: "goal" in b ? (typeof b.goal === "string" ? b.goal : null) : undefined, lead: "lead" in b ? (typeof b.lead === "string" && b.lead ? b.lead : null) : undefined, project: "project" in b ? (typeof b.project === "string" ? b.project : null) : undefined });
+      if (t && "lead" in b) syncBosses(t.id); // a new lead: its members report to it
       return t ? c.json(detail(t)) : problem(c, 404, "Not Found", "no such team");
     } catch (e) { return bad(c, (e as Error).message); }
   });
@@ -66,7 +68,8 @@ export function teamRoutes(r: Hono<Env>, actorOf: (c: Context) => A, base = "/te
     const no = guardRoot(c); if (no) return no;
     const id = c.req.param("id"), b = await body(c); if (!getTeam(id)) return problem(c, 404, "Not Found", "no such team");
     for (const m of names(b.add)) addMember(id, m);
-    for (const m of names(b.remove)) removeMember(id, m);
+    for (const m of names(b.remove)) { const before = getTeam(id)!; removeMember(id, m); releaseBoss(m, before); }
+    syncBosses(id); // joiners report to the lead
     return c.json(detail(getTeam(id)!));
   });
   r.post(`${base}/:id/messages`, async (c) => {

@@ -31,6 +31,8 @@ export function ensureSchema() {
   try { db().run("ALTER TABLE messages ADD COLUMN channel_id INTEGER"); } catch { /* fresh table or already added */ }
   try { db().run("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'info'"); } catch { /* fresh table has it */ }
   try { db().run("ALTER TABLE agents ADD COLUMN token_file TEXT"); } catch { /* fresh or already added */ }
+  try { db().run("ALTER TABLE agents ADD COLUMN compact_window INTEGER"); } catch { /* fresh or already added */ }
+  try { db().run("ALTER TABLE agents ADD COLUMN audit TEXT"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE agents ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent'"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE messages ADD COLUMN subject TEXT"); } catch { /* fresh table has it; the live table from 2026-11-07 did not */ }
 }
@@ -40,9 +42,18 @@ export type Life = "starting" | "live" | "stopping" | "gone" | "failed";
 export type Activity = "working" | "idle" | "waiting" | "blocked";
 export type Source = "spawn" | "mod" | "hook" | "mcp" | "service" | "reconcile";
 export interface Task { id: number; text: string; status: "pending" | "in_progress" | "done" }
+/** Background work an agent runs (in-process subagent, background shell, monitor), posted by the plugin hooks. */
+export type BgKind = "subagent" | "shell" | "monitor";
+export type BgState = "running" | "done" | "failed" | "killed";
+export interface BgRow { id: string; kind: BgKind; label: string; state: BgState; startedAt: number; endedAt: number | null }
+export const BG_KINDS: BgKind[] = ["subagent", "shell", "monitor"], BG_STATES: BgState[] = ["running", "done", "failed", "killed"];
+export const BG_KEEP_MS = 2 * 60_000, BG_MAX = 12;
+/** A cron job the agent made with CronCreate (session-only: it dies with the session and expires after 7 days). */
+export interface ScheduleRow { id: string; cron: string; prompt: string; recurring: boolean; createdAt: number }
+export const SCHEDULE_MAX = 20;
 /** The fold: what root and the page read. Every field has one owner (observed: hooks/connection; reported: the agent's tools). */
 export interface Snapshot {
-  id: string; name: string; gen: number; job: string | null; boss: string | null; model: string | null; effort: string | null; soul: string | null; project: string | null;
+  id: string; name: string; gen: number; job: string | null; boss: string | null; model: string | null; effort: string | null; soul: string | null; audit: string | null; compactWindow: number | null; project: string | null;
   spawnedAt: number; session: string | null; pid: number | null; version: string | null; connectedAt: number | null;
   life: Life; lifeSince: number; goneReason: string | null;
   state: Activity; stateSince: number;
@@ -51,6 +62,10 @@ export interface Snapshot {
   lastTool: { tool: string; target: string | null; ok: boolean; ms: number | null; at: number } | null;
   reported: { doing: string | null; progress: number | null; phase: string | null; blockedOn: string | null; at: number; turn: number; expired?: boolean; msgAt?: number } | null;
   tasks: Task[];
+  /** Background work under this agent; finished rows leave 2 min after they end. Absent on rows folded before this existed. */
+  bg?: BgRow[];
+  /** Session cron jobs (CronCreate), removed by CronDelete or when the agent goes. Absent on rows folded before this existed. */
+  schedules?: ScheduleRow[];
   context: { tokens: number; window: number; pct: number } | null; cost: number | null; weekly: { pct: number; resetsAt: string | null } | null;
   lastMsg: { id: number | null; dir: "in" | "out"; peer: string; kind: string; snippet: string; at: number } | null; lastReport: { to: string; at: number } | null;
   /** A Terminal window is attached to the agent's tmux session (M8); null until the sweep has looked. */
@@ -70,7 +85,7 @@ export function reduce(s: Snapshot | null, e: Event): Snapshot | null {
   const d = e.data, at = e.ts;
   if (!s) {
     if (e.type !== "AgentSpawned") return null;
-    return { id: String(d.id), name: String(d.name), gen: num(d.gen) ?? 1, job: str(d.job), boss: str(d.boss), model: str(d.model), effort: str(d.effort), soul: str(d.soul), project: str(d.project),
+    return { id: String(d.id), name: String(d.name), gen: num(d.gen) ?? 1, job: str(d.job), boss: str(d.boss), model: str(d.model), effort: str(d.effort), soul: str(d.soul), audit: str(d.audit), compactWindow: num(d.compactWindow), project: str(d.project),
       spawnedAt: at, session: null, pid: null, version: null, connectedAt: null, life: "starting", lifeSince: at, goneReason: null, state: "idle", stateSince: at,
       turn: null, turns: 0, action: null, lastTool: null, reported: null, tasks: [], context: null, cost: null, weekly: null, lastMsg: null, lastReport: null, window: null, lastEventAt: at, seq: 0, v: 0 };
   }
@@ -91,7 +106,7 @@ export function reduce(s: Snapshot | null, e: Event): Snapshot | null {
   switch (e.type) {
     case "AgentConnected": n.session = str(d.session) ?? n.session; n.pid = num(d.pid) ?? n.pid; n.version = str(d.version) ?? n.version; n.connectedAt = at; n.model = str(d.model) ?? n.model; life("live"); break;
     case "AgentStopping": life("stopping"); break;
-    case "AgentGone": life("gone"); n.goneReason = str(d.reason); n.turn = null; n.action = null; state("idle"); break;
+    case "AgentGone": n.bg = []; n.schedules = []; life("gone"); n.goneReason = str(d.reason); n.turn = null; n.action = null; state("idle"); break;
     case "AgentFailed": life("failed"); n.goneReason = str(d.reason) ?? "no hello"; break;
     case "TurnStarted": n.turn = { id: String(d.turn ?? at), startedAt: at, snippet: str(d.snippet), tools: 0 }; n.turns = s.turns + 1; state("working"); break;
     case "ToolStarted": n.action = { tool: String(d.tool), target: str(d.target), at }; if (n.turn) n.turn.tools++; if (!n.reported?.blockedOn) state("working"); break;
@@ -107,6 +122,26 @@ export function reduce(s: Snapshot | null, e: Event): Snapshot | null {
     case "ContextMeasured": n.context = { tokens: num(d.tokens) ?? 0, window: num(d.window) ?? 0, pct: num(d.pct) ?? 0 }; break;
     case "CostMeasured": n.cost = num(d.usd); break;
     case "RateWindow": n.weekly = { pct: num(d.pct) ?? 0, resetsAt: str(d.resetsAt) }; break;
+    case "BgUpdated": {
+      const id = str(d.id), kind = str(d.kind) as BgKind | null, state = str(d.state) as BgState | null;
+      if (!id || !kind || !BG_KINDS.includes(kind) || !state || !BG_STATES.includes(state)) break;
+      const prevRow = (n.bg ?? []).find((b) => b.id === id);
+      const row: BgRow = { id, kind, label: (str(d.label) ?? prevRow?.label ?? kind).slice(0, 120), state, startedAt: prevRow?.startedAt ?? num(d.startedAt) ?? at, endedAt: state === "running" ? null : prevRow?.endedAt ?? num(d.endedAt) ?? at };
+      if (prevRow && prevRow.state !== "running" && state === "running") break; // a late "running" never revives a finished row
+      const rest = (n.bg ?? []).filter((b) => b.id !== id && (b.state === "running" || at - (b.endedAt ?? at) < BG_KEEP_MS));
+      n.bg = [...rest, row].sort((a, b) => a.startedAt - b.startedAt).slice(-BG_MAX);
+      break;
+    }
+    case "ScheduleUpdated": {
+      const id = str(d.id); if (!id) break;
+      const rest = (n.schedules ?? []).filter((x) => x.id !== id);
+      if (d.state === "gone") { n.schedules = rest; break; }
+      const cron = str(d.cron); if (!cron) break;
+      const prev = (n.schedules ?? []).find((x) => x.id === id);
+      n.schedules = [...rest, { id: id.slice(0, 80), cron: cron.slice(0, 80), prompt: (str(d.prompt) ?? prev?.prompt ?? "").slice(0, 200), recurring: d.recurring !== false, createdAt: prev?.createdAt ?? at }].slice(-SCHEDULE_MAX);
+      break;
+    }
+    case "BossChanged": n.boss = str(d.boss); break;
     case "WindowChanged": n.window = { open: d.open === true }; break;
     case "ActivityReconciled": state((str(d.state) as Activity) ?? "idle"); if (n.state === "idle") { n.turn = null; n.action = null; } break;
     default: break;

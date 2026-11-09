@@ -14,7 +14,7 @@ describe("toLegacy", () => {
       const l = toLegacy(sample(p));
       expect(l, p).not.toBeNull();
       const bare = l!.replace(/^\/api\/v1/, "");
-      const panel = /^\/(agentnet\/(snapshot|stream|usage|scores|summary|windows\/close-all|agents\/[a-z0-9-]+\/(score|tasks|message|open|close))|agentnet-panel\/teams.*|trails\/(search|stats)|bgjobs(\/[A-Za-z0-9._-]+(\/file)?)?|arsenal(\/(agent|roles))?|agent-routing|agent-hooks(\/.*)?)$/.test(bare);
+      const panel = /^\/(agentnet\/(snapshot|stream|usage|scores|summary|windows\/close-all|agents\/[a-z0-9-]+\/(score|tasks|message|open|close|schedules|stop|despawn|run-schedule))|agentnet-panel\/teams.*|trails\/(search|stats)|bgjobs(\/[A-Za-z0-9._-]+(\/file)?)?|arsenal(\/(agent|roles))?|agent-routing|agent-compact|agent-hooks(\/.*)?)$/.test(bare);
       expect(agentPath(l!) || panel, `${p} -> ${l}`).toBe(true);
     }
   });
@@ -26,7 +26,7 @@ describe("toLegacy: phase 5b panel paths", () => {
   const cases: [string, string | null][] = [
     ["/v1/panel/summary", "/api/v1/agentnet/summary"], ["/v1/panel/bgjobs", "/api/v1/bgjobs"], ["/v1/panel/bgjobs/j-1.a", "/api/v1/bgjobs/j-1.a"],
     ["/v1/panel/bgjobs/j1/file", "/api/v1/bgjobs/j1/file"], ["/v1/panel/arsenal", "/api/v1/arsenal"], ["/v1/panel/arsenal/agent", "/api/v1/arsenal/agent"],
-    ["/v1/panel/arsenal/roles", "/api/v1/arsenal/roles"], ["/v1/panel/routing", "/api/v1/agent-routing"], ["/v1/panel/hooks", "/api/v1/agent-hooks"],
+    ["/v1/panel/arsenal/roles", "/api/v1/arsenal/roles"], ["/v1/panel/routing", "/api/v1/agent-routing"], ["/v1/panel/compact", "/api/v1/agent-compact"], ["/v1/panel/hooks", "/api/v1/agent-hooks"],
     ["/v1/panel/hooks/nodes", "/api/v1/agent-hooks/nodes"], ["/v1/panel/hooks/stream", "/api/v1/agent-hooks/stream"], ["/v1/panel/hooks/fires", "/api/v1/agent-hooks/fires"],
     ["/v1/panel/hooks/ab12cd/enabled", "/api/v1/agent-hooks/ab12cd/enabled"], ["/v1/panel/hooks/rollback", "/api/v1/agent-hooks/rollback"],
     ["/v1/panel/bgjobs/../x", null], ["/v1/panel/arsenal/other", null],

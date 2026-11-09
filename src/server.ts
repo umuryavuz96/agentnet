@@ -15,9 +15,11 @@ import { summaryRoute } from "./net/summary";
 import { bgjobRoutes } from "./net/bgjobs";
 import { arsenalRoutes } from "./net/arsenal";
 import { routingRoutes } from "./net/routing";
+import { compactRoutes } from "./net/compact";
 import { hooksRoutes } from "./net/hooks";
 import { webRoutes } from "./net/web";
 import { agentnetWindowRoutes, startSessionReaper } from "./net/windows";
+import { agentControlRoutes } from "./net/controls";
 
 export function buildApp(): Hono<Env> {
   const app = new Hono<Env>();
@@ -29,8 +31,8 @@ export function buildApp(): Hono<Env> {
   api.use("*", (c, next) => (isPanelWrite(c.req.method, c.req.path) ? rootOnly(c, next) : next())); // panel writes: loopback or the root token
   // Page routes before agentnetRoutes, as in the original server.
   agentnetStreamRoutes(api); agentnetUsageRoutes(api); agentnetPanelSendRoute(api); agentnetTeamPanelRoutes(api);
-  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api);
-  summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); routingRoutes(api); hooksRoutes(api);
+  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); agentControlRoutes(api);
+  summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api);
   agentnetRoutes(api);
   app.route("/api/v1", api);
   webRoutes(app);

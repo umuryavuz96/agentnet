@@ -21,6 +21,8 @@ const NAV: Record<Page, [string, IconName]> = {
   search: ["Search", "search"], hooks: ["Hooks", "webhook"], routing: ["Routing", "sliders"], personas: ["Personas", "sparkles"],
 };
 const page = computed(() => route.value.page);
+/** The page on screen. The shell layout follows it when the new page enters, so the old page keeps its layout while it fades out (out-in). */
+const shownPage = ref(page.value);
 const current = computed(() => COMPONENTS[page.value]);
 
 // Theme: the host's choice in embed mode, else the system setting.
@@ -54,7 +56,7 @@ watch(page, () => { menu.value = false; });
 </script>
 
 <template>
-  <div class="shell" :class="{ embed: em.embed, fixed: page === 'agents' }">
+  <div class="shell" :class="{ embed: em.embed, fixed: shownPage === 'agents' }">
     <header v-if="!em.embed" class="bar">
       <a class="brand" href="#/agents">agentnet</a>
       <nav class="links" aria-label="Pages">
@@ -69,7 +71,7 @@ watch(page, () => { menu.value = false; });
       </nav>
     </Transition>
     <div class="body">
-      <Transition name="pg" mode="out-in"><component :is="current" :key="page" /></Transition>
+      <Transition name="pg" mode="out-in" @before-enter="shownPage = page"><component :is="current" :key="page" /></Transition>
     </div>
     <Transition name="toast"><div v-if="toastMsg.text" class="toast" role="status">{{ toastMsg.text }}</div></Transition>
   </div>
@@ -91,7 +93,7 @@ watch(page, () => { menu.value = false; });
 .body{flex:1;min-height:0;display:flex;flex-direction:column;max-width:1280px;width:100%;margin:0 auto;padding:16px}
 .body > :deep(*){min-height:0}
 .embed .body{max-width:none;padding:12px}
-.fixed .body{overflow:hidden}
+.fixed .body{overflow:hidden;max-width:none}
 .fixed .body > :deep(.anv){flex:1}
 .overlay{position:fixed;inset:var(--bar-h) 0 0 0;z-index:49;background:var(--bg);display:flex;flex-direction:column;padding:12px 16px;gap:4px;overflow-y:auto}
 .overlay a{display:flex;align-items:center;gap:14px;min-height:56px;padding:0 12px;border-radius:12px;color:var(--ink);font:600 22px var(--body);text-decoration:none}

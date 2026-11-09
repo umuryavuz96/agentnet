@@ -26,8 +26,22 @@ export function isLoopbackAddr(a: string | null): boolean {
 /** A proxy in front (Caddy, tailscale serve) connects from 127.0.0.1 for every client. These headers mean the peer is not the real caller. */
 const PROXY_HEADERS = ["x-forwarded-for", "forwarded", "x-real-ip", "via"];
 export const hasProxyHeader = (c: Context) => PROXY_HEADERS.some((h) => c.req.header(h) !== undefined);
-/** Loopback peer and no proxy header. */
-export const isLoopback = (c: Context) => isLoopbackAddr(peerOf(c)) && !hasProxyHeader(c);
+/** Private LAN or tailnet address (10/8, 172.16/12, 192.168/16, 100.64/10, fd7a:115c:a1e0::/48), loopback excluded. */
+export function isPrivateAddr(a: string | null): boolean {
+  if (!a) return false;
+  const l = a.trim().toLowerCase().replace(/^::ffff:/, "");
+  return !isLoopbackAddr(l) && l !== "localhost" && bindOk(l);
+}
+/** Opt-in (AGENTNET_TRUST_PROXY=private): a local reverse proxy (peer on loopback) forwarding a client from the LAN or tailnet
+ *  counts as this machine. The proxy must set X-Forwarded-For itself (Caddy does and drops client-sent values by default). */
+const trustedProxyClient = (c: Context) => {
+  if (process.env.AGENTNET_TRUST_PROXY !== "private" || !isLoopbackAddr(peerOf(c))) return false;
+  const xff = c.req.header("x-forwarded-for"); if (!xff) return false;
+  const hops = xff.split(",").map((h) => h.trim()).filter(Boolean);
+  return hops.length > 0 && hops.every(isPrivateAddr);
+};
+/** Loopback peer and no proxy header, or a trusted proxy client (see above). */
+export const isLoopback = (c: Context) => (isLoopbackAddr(peerOf(c)) && !hasProxyHeader(c)) || trustedProxyClient(c);
 
 /** Allowed bind hosts: "localhost", "::1", 127/8, 10/8, 172.16/12, 192.168/16, 100.64/10, fd7a:115c:a1e0::/48. Everything else is false,
  *  including 0.0.0.0, ::, public addresses and hostnames other than localhost. */

@@ -18,12 +18,21 @@ export interface AgentRow {
   context: { tokens: number; window: number; pct: number } | null; cost: number | null;
   lastMsg: { dir: "in" | "out"; peer: string; kind: string; snippet: string; at: number } | null;
   doing: string | null; seq: number; progressPct?: number | null;
-  soul?: string | null; project?: string | null; spawnedAt?: number; session?: string | null; pid?: number | null; version?: string | null; goneReason?: string | null;
+  soul?: string | null; audit?: string | null; project?: string | null; spawnedAt?: number; session?: string | null; pid?: number | null; version?: string | null; goneReason?: string | null;
   turn?: { id: string; startedAt: number; snippet: string | null; tools: number } | null; turns?: number;
   lastTool?: { tool: string; target: string | null; ok: boolean; ms: number | null; at: number } | null;
   weekly?: { pct: number; resetsAt: string | null } | null;
+  /** The auto-compact window this agent was spawned with, in tokens; absent for root and older agents (they keep the model window). */
+  compactWindow?: number | null;
+  /** Background work under the agent (subagents, shells, monitors); finished rows leave 2 min after they end. */
+  bg?: BgRow[];
   [k: string]: unknown;
 }
+export type BgKind = "subagent" | "shell" | "monitor";
+export type BgState = "running" | "done" | "failed" | "killed";
+export interface BgRow { id: string; kind: BgKind; label: string; state: BgState; startedAt: number; endedAt: number | null }
+export { BG_KEEP_MS, bgVisible, bgShown } from "./bg";
+export { ctxView } from "./ctx";
 /** A message as the snapshot lists it; `subject` and `reply_to` arrive with M9 and are optional until then. */
 export interface Msg { id: number | null; from: string; to: string; kind: string; body: string; at: number; subject?: string | null; reply_to?: number | null }
 

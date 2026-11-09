@@ -16,6 +16,16 @@ The paths are listed in `spec/openapi.yaml`. The old `/api/v1/agentnet/*` paths 
 A token of a retired agent is always refused with 401 `agentnet: revoked agent token`. It never falls back to loopback root.
 A LAN or tailnet caller without a valid token gets 401 on agent and admin routes and 403 on panel writes.
 
+## Spawn routing (`POST /v1/admin/spawn`)
+
+Body: `name`, `job`, `boss`, `project`, `team`, and optional `model`, `effort`, `soul`, `scope` (1-5, default 2), `novelty` (1-3, default 2),
+`risk` (0-3, default 1), `need` (persona keywords) and `ask` (the owner's words, read for expectation keywords). When `model`, `effort` or `soul`
+is missing, the service picks it (the same rubric as `agentnet pick-model` and `pick-soul`); a value you give always wins. The 201 reply adds
+`model`, `effort`, `soul`, `audit` (`mode=… model=… effort=… score=… reason=…` and `soul=…` lines) and `warnings`. The audit line is kept on the
+agent record. In reserve mode (usage at 90% or more) the spawn is refused with 409 `Reserve mode`. Members (`kind: "member"`) are not routed.
+`name`, `boss`, `team` and `project` are placed the same way (see "Where a new agent lands" in docs/director.md); the reply adds `name`, `boss`, `team`, `compact_window` (tokens) and `reasons`.
+`POST` or `GET /v1/admin/plan-spawn` (`job` needed) returns `{plan}` with the same fields and no side effects.
+
 ## Accepted risk
 
 Any process of this user on this machine can act as root without a token. This is the same trust as before, where any such
