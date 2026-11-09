@@ -2,8 +2,9 @@
 @font-face{font-family:"Figtree";font-weight:300 900;font-display:swap;src:url(fonts/Figtree.woff2) format("woff2")}
 @font-face{font-family:"JetBrains Mono";font-weight:100 800;font-display:swap;src:url(fonts/JetBrainsMono.woff2) format("woff2")}
 :root{
-  --bg:#0d0d0f;--panel:#151517;--panel-2:#111113;--line:#26262a;--ink:#f2f2f3;--muted:#9a9aa1;
+  --bg:#060708;--panel:#0e0f11;--panel-2:#0a0b0c;--line:#1f2023;--ink:#f2f2f3;--muted:#9a9aa1;
   --on:#2fd38a;--on-ink:#06140d;--on-bg:rgba(47,211,138,.12);
+  --glass:rgba(24,26,29,.58);--glass-hi:rgba(255,255,255,.07);--glass-edge:rgba(255,255,255,.1);--rim:rgba(255,255,255,.2);--rim-low:rgba(255,255,255,.05);--glass-shadow:rgba(0,0,0,.45);--glow-a:rgba(47,211,138,.16);--glow-b:rgba(70,120,255,.08);--lg-blur:18px;
   --ease:cubic-bezier(.25,.1,.25,1);--spring:cubic-bezier(.2,.8,.2,1);
   --body:"Figtree",-apple-system,"Segoe UI",sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
   --max:1080px;
@@ -13,6 +14,7 @@
   :root{
     --bg:#f4f4f6;--panel:#ffffff;--panel-2:#eeeef1;--line:#d9d9de;--ink:#16161a;--muted:#5c5c65;
     --on:#0b6a46;--on-ink:#ffffff;--on-bg:rgba(11,106,70,.09);
+    --glass:rgba(255,255,255,.62);--glass-hi:rgba(255,255,255,.5);--glass-edge:rgba(0,0,0,.09);--rim:rgba(255,255,255,.9);--rim-low:rgba(255,255,255,.4);--glass-shadow:rgba(30,30,50,.14);--glow-a:rgba(11,106,70,.12);--glow-b:rgba(70,120,255,.08);
     color-scheme:light;
   }
 }
@@ -145,3 +147,33 @@ p{margin:0 0 12px}
 @media(max-width:599px){.shot-box{aspect-ratio:4/5}.shot.has-video .shot-box{aspect-ratio:16/10}}
 .shot figcaption{margin-top:10px;font-size:14px;color:var(--muted);text-align:center}
 .shot.has-video figcaption{display:none}
+
+/* ---- Dark glass (inspired by Glisse, https://github.com/0kzh/glisse, MIT; no code copied) ----
+   Everywhere: frosted blur + rim light. Chromium only: an SVG displacement lens on small controls (glass.js).
+   Safari and Firefox keep the plain frost. */
+body{background:var(--bg)}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:radial-gradient(60vmax 40vmax at 78% -8%,var(--glow-a),transparent 70%),radial-gradient(50vmax 40vmax at 8% 38%,var(--glow-b),transparent 70%),radial-gradient(45vmax 30vmax at 90% 92%,var(--glow-a),transparent 70%)}
+.nav,.btn:not(.primary),.vbtn,.copy,.card,.faq details,.code{
+  background:var(--glass);
+  -webkit-backdrop-filter:blur(var(--lg-blur)) saturate(1.6);backdrop-filter:blur(var(--lg-blur)) saturate(1.6);
+  border-color:var(--glass-edge);
+  box-shadow:inset 0 1px 0 var(--rim),inset 0 -1px 0 var(--rim-low),0 8px 24px -10px var(--glass-shadow)}
+.nav{border-bottom:0;box-shadow:inset 0 -1px 0 var(--glass-edge),inset 0 1px 0 var(--rim-low),0 10px 30px -14px var(--glass-shadow)}
+.nav nav a:hover{background:var(--glass-hi)}
+.btn.primary{background:linear-gradient(180deg,color-mix(in srgb,var(--on) 100%,#fff 14%),var(--on));box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 8px 26px -8px color-mix(in srgb,var(--on) 70%,transparent)}
+.btn:active,.vbtn:active,.copy:active{transform:scale(.97)}
+.vbtn{background:var(--glass);color:var(--ink);border:1px solid var(--glass-edge)}
+.vbtn:hover{background:var(--glass-hi)}
+.shot-box{box-shadow:0 30px 80px -30px var(--glass-shadow),0 0 0 1px var(--glass-edge)}
+.pains{background:transparent}
+@media (prefers-color-scheme:light){.vbtn{color:#16161a}}
+/* Chromium lens: the filter id is created in glass.js */
+.lg-refract .btn:not(.primary),.lg-refract .vbtn,.lg-refract .copy{
+  -webkit-backdrop-filter:blur(6px) url(#lg-lens) saturate(1.6);backdrop-filter:blur(6px) url(#lg-lens) saturate(1.6)}
+@media (prefers-reduced-transparency:reduce){
+  :root{--glass:var(--panel);--glass-hi:var(--panel-2)}
+  .nav,.btn,.vbtn,.copy,.card,.faq details,.code{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+  body::before{display:none}
+}
+@media (prefers-reduced-motion:reduce){.btn:active,.vbtn:active,.copy:active{transform:none}}

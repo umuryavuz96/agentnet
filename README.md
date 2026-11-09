@@ -144,3 +144,5 @@ The website uses [Figtree](https://github.com/erikdkennedy/figtree) and
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+The website glass look is inspired by [0kzh/glisse](https://github.com/0kzh/glisse) (MIT). No code was copied.
