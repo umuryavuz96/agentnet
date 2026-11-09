@@ -18,7 +18,8 @@ function unit(home: string, dir: string, port: number) {
   mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
   writeFileSync(join(home, ".config", "systemd", "user", `${SYSTEMD_UNIT}.service`), `[Service]\nWorkingDirectory=${dir}\nEnvironment="AGENTNET_PORT=${port}"\n`);
 }
-const loaded: Sh = (cmd) => (cmd[0] === "launchctl" ? { code: 0, out: "pid = 4242" } : cmd[0] === "systemctl" && cmd[2] === "is-active" ? { code: 0, out: "active" } : { code: 0, out: "4242" });
+const loaded: Sh = (cmd) => (cmd[0] === "launchctl" ? { code: 0, out: "pid = 4242" } : cmd[0] === "systemctl" && cmd[2] === "is-active" ? { code: 0, out: "active" }
+  : cmd.includes("FragmentPath") ? { code: 0, out: "" } : { code: 0, out: "4242" }); // empty FragmentPath: detectMode uses the default unit path
 
 describe("detectMode (C)", () => {
   mac("launchd when the unit is loaded, in this repo, on this port", async () => {
