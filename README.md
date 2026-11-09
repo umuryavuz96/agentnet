@@ -63,6 +63,15 @@ The parts:
   `despawn`, `list_agents`, `get_status` and `grade`.
 - **CLI**: `bin/agentnet` starts the server, spawns and despawns agents, checks your setup and installs the service.
 
+## The director flow
+
+You can talk to one agent, the director. It answers chat and small jobs itself. For feature work it forms a team of
+personas that debate the job, plus one or two builders. It runs the team over agentnet, grades the result and
+despawns it.
+
+A hook triages each message and tells the director which way to go. Install it with `bin/agentnet install-hooks`.
+Plan a team with `bin/agentnet council`. The full setup is in [docs/director.md](docs/director.md).
+
 ## How it works
 
 ```mermaid

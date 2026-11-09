@@ -10,5 +10,12 @@
     "match": "notify-done\\.py",
     "name": "Done notice",
     "about": "Sends a message when Claude finishes a turn."
+  },
+  {
+    "match": "triage\\.py",
+    "name": "Triage",
+    "about": "Classifies each prompt and tells the director agent whether to answer inline, delegate, or form a council team.",
+    "log": "triage.jsonl",
+    "script": "triage.py"
   }
 ]

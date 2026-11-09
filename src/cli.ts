@@ -1,5 +1,5 @@
 // agentnet CLI. No dependencies; arguments are parsed by hand. Run `agentnet help` for the commands.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -12,6 +12,8 @@ const HELP = `agentnet: a local network for Claude Code agents
   help | version | home | url | plugin-dir
   serve                     run the server in the foreground
   spawn | join | pick-model | pick-soul | bg   run the matching script (see scripts/)
+  council <project> <team> "<job>" "<name=angle,...>" "<roles>" [--go] [--ask T]   plan a council team (spawn it with --go)
+  install-hooks [--write]   print the triage hook snippet for ~/.claude/settings.json; --write merges it (backup first)
   despawn <name> [--reason R]
   status                    health and agent list of the running server
   doctor                    check bun, tmux, claude, python3, data folder, service
@@ -147,6 +149,40 @@ function installService(args: string[]): number {
   return 0;
 }
 
+/** The settings.json "hooks" entry that runs hooks/triage.py on every prompt. */
+export function triageSnippet(): { hooks: { UserPromptSubmit: { hooks: { type: string; command: string; timeout: number }[] }[] } } {
+  const command = `AGENTNET_BIN=${JSON.stringify(join(REPO, "bin", "agentnet"))} python3 ${JSON.stringify(join(REPO, "hooks", "triage.py"))}`;
+  return { hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command, timeout: 6 }] }] } };
+}
+
+/** Print the snippet; with --write, back up settings.json (CLAUDE_SETTINGS_FILE or ~/.claude/settings.json), then add the hook once. */
+function installHooks(args: string[]): number {
+  const snip = triageSnippet();
+  if (!args.includes("--write")) {
+    console.log(JSON.stringify(snip, null, 2));
+    console.error("add the hooks key to ~/.claude/settings.json, or run: agentnet install-hooks --write");
+    return 0;
+  }
+  const file = process.env.CLAUDE_SETTINGS_FILE ?? join(HOME, ".claude", "settings.json");
+  let cur: Record<string, any> = {};
+  if (existsSync(file)) {
+    try { cur = JSON.parse(readFileSync(file, "utf8")); } catch { console.error(`agentnet: ${file} is not valid JSON; not touched`); return 1; }
+    if (((cur.hooks ?? {}).UserPromptSubmit ?? []).some((g: any) => (g?.hooks ?? []).some((h: any) => String(h?.command ?? "").includes("triage.py")))) { console.log("triage hook already installed"); return 0; }
+    const bak = `${file}.bak-agentnet-${Date.now()}`;
+    copyFileSync(file, bak);
+    console.log(`backup ${bak}`);
+  }
+  const group = snip.hooks.UserPromptSubmit[0]!;
+  const list: any[] = ((cur.hooks ??= {}).UserPromptSubmit ??= []);
+  list.push(group);
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-agentnet`;
+  writeFileSync(tmp, JSON.stringify(cur, null, 2) + "\n");
+  renameSync(tmp, file);
+  console.log(`added the triage hook to ${file}`);
+  return 0;
+}
+
 const flag = (a: string[], n: string): string | undefined => { const i = a.indexOf(n); return i >= 0 ? a[i + 1] : undefined; };
 const tilde = (p: string) => (p.startsWith("~/") ? HOME + p.slice(1) : p);
 
@@ -211,6 +247,8 @@ async function main(): Promise<number> {
     case "pick-model": return runScript("pick-model.sh", rest);
     case "pick-soul": return runScript("pick-soul.sh", rest);
     case "bg": return runScript("bgjob.sh", rest);
+    case "council": return runScript("council.sh", rest);
+    case "install-hooks": return installHooks(rest);
     case "despawn": return despawn(rest);
     case "status": return status();
     case "doctor": return doctor();
