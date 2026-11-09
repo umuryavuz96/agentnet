@@ -1,5 +1,5 @@
-import { describe, expect, test, beforeAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,8 @@ beforeAll(() => {
   writeFileSync(join(ROOT, "config", "trails.json"), JSON.stringify({ repos: [] }));
   tr.useTrailDb(new Database(":memory:"));
 });
+// bun test shares one AGENTNET_HOME across files: do not leave a trails config behind for files that run later.
+afterAll(() => rmSync(join(ROOT, "config", "trails.json"), { force: true }));
 
 describe("trails", () => {
   test("terms drop stop words, numbers and short words", () => {

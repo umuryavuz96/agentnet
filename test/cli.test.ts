@@ -128,7 +128,8 @@ describe("install-service", () => {
     expect(existsSync(unit)).toBe(true);
     expect(a.out).toContain(mac ? "launchctl bootstrap" : "systemctl --user");
     expect((await cli(["install-service"], env)).out).toContain("exists, not overwritten");
-    expect(readdirSync(HOME).sort().every((n) => ["Library", ".config", "data"].includes(n))).toBe(true);
+    // .bun is the Bun runtime's own cache dir (created on Linux), not agentnet.
+    expect(readdirSync(HOME).sort().every((n) => ["Library", ".config", ".bun", "data"].includes(n))).toBe(true);
   });
 });
 

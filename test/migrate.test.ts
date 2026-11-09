@@ -14,10 +14,11 @@ const { exportLegacy } = await import("../src/migrate/exportLegacy");
 const { makeServerOsVar } = await import("./migrateFixture");
 
 const fresh = (p = "an-target-") => mkdtempSync(join(tmpdir(), p));
-const sha = (f: string) => (existsSync(f) ? createHash("sha256").update(readFileSync(f)).digest("hex") : "-");
+// A zero-byte file counts as absent: on Linux even a read-only SQLite open (the q() helper below) leaves empty -wal/-shm sidecars; they hold no data.
+const sha = (f: string) => (existsSync(f) && statSync(f).size > 0 ? createHash("sha256").update(readFileSync(f)).digest("hex") : "-");
 const tree = (d: string, base = d): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => {
   const p = join(d, e.name);
-  return e.isDirectory() ? tree(p, base) : [p.slice(base.length)];
+  return e.isDirectory() ? tree(p, base) : /-shm$/.test(e.name) || (/-wal$/.test(e.name) && statSync(p).size === 0) ? [] : [p.slice(base.length)];
 }).sort();
 const q = <T>(file: string, sql: string, ...a: (string | number)[]): T[] => {
   const d = new Database(file, { readonly: true });

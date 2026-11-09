@@ -79,6 +79,9 @@ export function migrate(o: MigrateOptions): MigrateReport {
   // 1
   for (const d of ["config", "data", "logs", join("run", "agentnet"), "trails"]) mkdirSync(join(to, d), { recursive: true });
   // 2, 3
+  // Opening a WAL database read-only can still create empty -wal/-shm sidecars (Linux does): remember which exist now and remove new ones at the end.
+  const sidecars = () => (existsSync(join(source, "data")) ? readdirSync(join(source, "data")).filter((n) => /-(wal|shm)$/.test(n)) : []);
+  const sidecarsBefore = new Set(sidecars());
   const src = new Database(srcDb, { readonly: true });
   const dst = new Database(dstDb, { create: true });
   useDatabase(dst); store._reset(); store.ensureSchema();
@@ -160,6 +163,8 @@ export function migrate(o: MigrateOptions): MigrateReport {
     writeFileSync(join(to, "data", "migrated-from.json"), JSON.stringify(marks, null, 2) + "\n", { mode: 0o644 });
     return { marks, counts, fold, copied, skipped, ok };
   } finally {
-    src.close(); // dst stays the active database (the CLI exits right after; tests reopen it)
+    src.close();
+    for (const n of sidecars()) if (!sidecarsBefore.has(n)) { try { unlinkSync(join(source, "data", n)); } catch { /* still in use: leave it */ } }
+    // dst stays the active database (the CLI exits right after; tests reopen it)
   }
 }
