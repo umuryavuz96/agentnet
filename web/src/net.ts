@@ -153,7 +153,7 @@ document.addEventListener("visibilitychange", onVisibility);
 
 /** Ref-counted: the first view to mount opens the stream, the last one to unmount closes it. */
 export function useAgentnet() {
-  if (users++ === 0) { if (!document.hidden) open(); tick = setInterval(() => (net.now = Date.now()), 5_000); }
+  if (users++ === 0) { if (!document.hidden) open(); tick = setInterval(() => (net.now = Date.now()), 2_000); }
   return () => { if (--users === 0) { close(); clearInterval(tick); } };
 }
 

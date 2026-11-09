@@ -7,6 +7,7 @@ import { computed, onMounted, onUnmounted, ref, shallowRef, watch, nextTick } fr
 import Icon from "../ui/Icon.vue";
 import { net, hooks, layoutKey, humanDoing, ctxView, bgVisible, bgShown, BG_KEEP_MS, jobFocus, checkUi, teams, teamsKey, placing, type AgentRow, type BgRow, type Check, type Msg } from "../net";
 import { api } from "../ui/api";
+import { cardLine } from "../cardline";
 
 const props = defineProps<{ selected: string | null; cover?: number }>();
 const emit = defineEmits<{ select: [id: string] }>();
@@ -417,9 +418,9 @@ const promptLine = (doing: string | null | undefined, task: string | undefined):
 const line2 = (id: string) => {
   const r = id === ROOT ? rootRow.value : row(id);
   if (!r) return id === ROOT ? "Tap to start" : "";
-  const task = r.tasks?.find((k) => k.status === "in_progress")?.text;
-  const t = r.reported?.blockedOn ? "Blocked: " + r.reported.blockedOn : task ?? promptLine(r.doing, task) ?? humanDoing(r.doing) ?? LABEL[dotOf(id)];
-  return id === ROOT && r.state === "idle" && !r.doing ? "Director · idle" : t;
+  const fresh = cardLine(r, net.now || Date.now(), Object.values(net.checks));
+  if (fresh) return fresh;
+  return id === ROOT && r.state === "idle" && !r.doing ? "Director · idle" : promptLine(r.doing, undefined) ?? humanDoing(r.doing) ?? LABEL[dotOf(id)];
 };
 /** Cut a string to roughly `px` pixels at `fs` px (no text measuring in SVG: ~0.56 em per character). */
 const fitText = (s: string, px: number, fs = 13) => { const n = Math.max(4, Math.floor(px / (fs * 0.56))); return s.length > n ? s.slice(0, n - 1) + "…" : s; };

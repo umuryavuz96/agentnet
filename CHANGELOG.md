@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Agent cards on the map show what the agent is doing now. The status line follows the newest signal (tool use in plain words, such as "Running tests" or "Editing App.vue"), and turns into "Idle · last: …" after a minute without activity. Before, a task title could stay on the card for several minutes while the agent was doing something else.
+- Blocked agents, open owner checks and agents waiting for a reply show that first.
+- The Linux test for the systemd update mode no longer fails in CI.
+
 ## 0.4.0
 
 Update from the web app, a guided first run, ready-made hooks, and checks that wait for you.

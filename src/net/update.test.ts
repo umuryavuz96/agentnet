@@ -3,6 +3,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
+import pkg from "../../package.json";
+const CUR = pkg.version; // current version comes from package.json, so a version bump does not break these tests
 
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-upd-home-"));
 const { autoGate, autoTick, spawnPlan, updateRoutes, updaterArgv } = await import("./update");
@@ -31,7 +33,7 @@ describe("status", () => {
   test("available update, nothing blocked", async () => {
     const s = setup();
     const j = await (await s.call("GET", "")).json() as any;
-    expect(j).toMatchObject({ current: "0.4.0", latest: "0.5.0", available: true, mode: "launchd", auto: { enabled: false, hour: 4 }, job: null });
+    expect(j).toMatchObject({ current: CUR, latest: "0.5.0", available: true, mode: "launchd", auto: { enabled: false, hour: 4 }, job: null });
     expect(j.web).toEqual({ enabled: true, blocked: null });
     expect(j.notes).toContain("## 0.5.0"); expect(j.releaseUrl).toStartWith("https://");
     expect(j.published).toBe(LATEST.publishedAt);
@@ -98,7 +100,7 @@ describe("POST run", () => {
     expect(s.spawned).toHaveLength(1);
     expect(s.spawned[0]!.argv).toEqual([process.execPath, join(s.f.work, "src", "cli.ts"), "update", "--yes", "--from-web", id, "--expect", "v0.5.0"]);
     expect(s.spawned[0]!.mode).toBe("launchd");
-    expect(JSON.parse(readFileSync(join(s.f.home, "run", "update-state.json"), "utf8"))).toMatchObject({ id, running: true, from: "v0.4.0", to: "v0.5.0" });
+    expect(JSON.parse(readFileSync(join(s.f.home, "run", "update-state.json"), "utf8"))).toMatchObject({ id, running: true, from: `v${CUR}`, to: "v0.5.0" });
   });
   test("blocked or locked: 409 and nothing spawns", async () => {
     const a = setup({ mode: "foreground" });
