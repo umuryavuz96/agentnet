@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://umuryavuz96.github.io/agentnet/sitemap.xml

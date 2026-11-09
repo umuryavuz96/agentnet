@@ -1,0 +1,23 @@
+# agentnet service, written by agentnet install-service. Your edits are kept: it never overwrites this file.
+# User unit: systemctl --user {status|restart} agentnet
+# To keep it running after logout: loginctl enable-linger $USER
+[Unit]
+Description=agentnet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{SourceDir}}
+ExecStart="{{Bun}}" run src/server.ts
+Environment="AGENTNET_HOME={{Home}}"
+Environment="AGENTNET_PORT={{Port}}"
+Environment="AGENTNET_HOST={{Host}}"
+Environment="PATH={{Path}}"
+Restart=always
+RestartSec=5
+StandardOutput=append:{{LogDir}}/service.out.log
+StandardError=append:{{LogDir}}/service.err.log
+
+[Install]
+WantedBy=default.target

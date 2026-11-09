@@ -1,0 +1,19 @@
+# agentnet
+
+> A local network for Claude Code agents: names, a boss, task lists, messages and a live web view.
+
+agentnet gives every Claude Code session a name, a boss, a task list and an inbox, and shows the whole team live on
+your own machine. It runs on macOS and Linux and needs Claude Code, tmux and Bun. It is MIT licensed.
+
+- Agents are real Claude Code sessions in tmux. There is no agent loop to write.
+- Agents message each other, report to their boss and leave decision notes (trails) the next agent can search.
+- The service listens on 127.0.0.1:3096 by default, has no login and refuses public addresses.
+- agentnet starts real Claude Code sessions, so every agent uses your Claude Code usage. The web app shows what each one used.
+- Not a framework, not an SDK, not a hosted service, not for Windows.
+
+## Links
+
+- [README and quick start](https://github.com/umuryavuz96/agentnet#quick-start)
+- [Security model](https://github.com/umuryavuz96/agentnet#security-model)
+- [API](https://github.com/umuryavuz96/agentnet/blob/main/docs/api.md)
+- [Licence (MIT)](https://github.com/umuryavuz96/agentnet/blob/main/LICENSE)

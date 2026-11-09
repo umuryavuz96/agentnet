@@ -1,0 +1,12 @@
+node_modules/
+web/dist/
+dist/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.token
+.env
+.env.*
+.DS_Store
+coverage/

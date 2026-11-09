@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "roles": {
+    "web-dev": {
+      "default": "awesome-claude-code-subagents/vue-expert",
+      "alternates": [
+        "agents/frontend-developer",
+        "awesome-claude-code-subagents/react-specialist",
+        "agents/typescript-pro"
+      ],
+      "categories": [
+        "frontend",
+        "design"
+      ]
+    },
+    "backend": {
+      "default": "awesome-claude-code-subagents/backend-developer",
+      "alternates": [
+        "agents/backend-architect",
+        "agents/python-pro",
+        "agents/typescript-pro"
+      ],
+      "categories": [
+        "backend"
+      ]
+    },
+    "mobile-dev": {
+      "default": "awesome-claude-code-subagents/mobile-app-developer",
+      "alternates": [
+        "agents/ios-developer",
+        "awesome-claude-code-subagents/swift-expert",
+        "agents/mobile-developer"
+      ],
+      "categories": [
+        "mobile"
+      ]
+    },
+    "qa": {
+      "default": "agent-skills/test-engineer",
+      "alternates": [
+        "ECC/e2e-runner",
+        "agents/test-automator",
+        "awesome-claude-code-subagents/ui-ux-tester"
+      ],
+      "categories": [
+        "qa"
+      ]
+    },
+    "designer": {
+      "default": "agents/ui-ux-designer",
+      "alternates": [
+        "agents/ui-designer",
+        "agents/design-system-architect",
+        "agents/accessibility-expert"
+      ],
+      "categories": [
+        "design"
+      ]
+    },
+    "researcher": {
+      "default": "awesome-claude-code-subagents/research-analyst",
+      "alternates": [
+        "awesome-claude-code-subagents/market-researcher",
+        "awesome-claude-code-subagents/competitive-analyst",
+        "agents/search-specialist"
+      ],
+      "categories": [
+        "research"
+      ]
+    },
+    "reviewer": {
+      "default": "ECC/code-reviewer",
+      "alternates": [
+        "ECC/typescript-reviewer",
+        "ECC/vue-reviewer",
+        "ECC/code-simplifier"
+      ],
+      "categories": [
+        "review"
+      ]
+    },
+    "devops": {
+      "default": "awesome-claude-code-subagents/devops-engineer",
+      "alternates": [
+        "agents/observability-engineer",
+        "ECC/homelab-architect",
+        "ECC/network-troubleshooter"
+      ],
+      "categories": [
+        "devops"
+      ]
+    },
+    "architect": {
+      "default": "ECC/architect",
+      "alternates": [
+        "ECC/planner",
+        "agents/backend-architect",
+        "ECC/code-architect"
+      ],
+      "categories": [
+        "architecture"
+      ]
+    },
+    "doc": {
+      "default": "agents/docs-architect",
+      "alternates": [
+        "ECC/doc-updater",
+        "agents/tutorial-engineer"
+      ],
+      "categories": [
+        "writing"
+      ]
+    },
+    "lookup": {
+      "default": "ECC/code-explorer",
+      "alternates": [
+        "ECC/docs-lookup",
+        "agents/search-specialist"
+      ],
+      "categories": [
+        "research",
+        "review"
+      ]
+    },
+    "game-designer": {
+      "default": "Game-Studios/game-designer",
+      "alternates": [
+        "Game-Studios/systems-designer",
+        "Game-Studios/economy-designer",
+        "Game-Studios/creative-director"
+      ],
+      "categories": [
+        "game"
+      ]
+    },
+    "narrative-designer": {
+      "default": "Game-Studios/narrative-director",
+      "alternates": [
+        "Game-Studios/creative-director",
+        "Game-Studios/level-designer"
+      ],
+      "categories": [
+        "game"
+      ]
+    },
+    "level-designer": {
+      "default": "Game-Studios/level-designer",
+      "alternates": [
+        "Game-Studios/game-designer",
+        "Game-Studios/systems-designer"
+      ],
+      "categories": [
+        "game"
+      ]
+    },
+    "economy-designer": {
+      "default": "Game-Studios/economy-designer",
+      "alternates": [
+        "Game-Studios/systems-designer",
+        "Game-Studios/game-designer"
+      ],
+      "categories": [
+        "game"
+      ]
+    },
+    "critic": {
+      "default": "in-house/critic-devils-advocate",
+      "alternates": [
+        "awesome-claude-code-subagents/chaos-engineer"
+      ],
+      "categories": [
+        "review"
+      ]
+    },
+    "player-advocate": {
+      "default": "in-house/player-advocate",
+      "alternates": [
+        "awesome-claude-code-subagents/ux-researcher",
+        "Game-Studios/game-designer"
+      ],
+      "categories": [
+        "design"
+      ]
+    },
+    "producer": {
+      "default": "Game-Studios/producer",
+      "alternates": [
+        "awesome-claude-code-subagents/product-manager",
+        "awesome-claude-code-subagents/project-manager"
+      ],
+      "categories": [
+        "product"
+      ]
+    },
+    "art-director": {
+      "default": "Game-Studios/art-director",
+      "alternates": [
+        "Game-Studios/creative-director",
+        "agents/ui-designer"
+      ],
+      "categories": [
+        "design"
+      ]
+    },
+    "sound-designer": {
+      "default": "Game-Studios/sound-designer",
+      "alternates": [
+        "buildwithclaude/audio-quality-controller"
+      ],
+      "categories": [
+        "game"
+      ]
+    }
+  }
+}

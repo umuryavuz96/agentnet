@@ -1,0 +1,644 @@
+openapi: 3.1.0
+info:
+  title: agentnet
+  version: 0.2.0
+  description: Local network for Claude Code agents. Auth per route group is in docs/api.md.
+paths:
+  /v1/health:
+    get:
+      summary: health
+      responses:
+        "200":
+          description: OK
+  /v1/agent/hello:
+    post:
+      summary: agent hello
+      responses:
+        "200":
+          description: OK
+  /v1/agent/bye:
+    post:
+      summary: agent bye
+      responses:
+        "200":
+          description: OK
+  /v1/agent/poll:
+    get:
+      summary: agent poll
+      responses:
+        "200":
+          description: OK
+  /v1/agent/ack:
+    post:
+      summary: agent ack
+      responses:
+        "200":
+          description: OK
+  /v1/agent/send:
+    post:
+      summary: agent send
+      responses:
+        "200":
+          description: OK
+  /v1/agent/inbox:
+    post:
+      summary: agent inbox
+      responses:
+        "200":
+          description: OK
+  /v1/agent/report:
+    post:
+      summary: agent report
+      responses:
+        "200":
+          description: OK
+  /v1/agent/status:
+    post:
+      summary: agent status
+      responses:
+        "200":
+          description: OK
+  /v1/agent/events:
+    post:
+      summary: agent events
+      responses:
+        "200":
+          description: OK
+  /v1/agent/trail/search:
+    post:
+      summary: agent trail search
+      responses:
+        "200":
+          description: OK
+  /v1/agent/tasks:
+    post:
+      summary: agent tasks
+      responses:
+        "200":
+          description: OK
+  /v1/agent/tasks/{id}/{op}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: op
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: agent tasks {id} {op}
+      responses:
+        "200":
+          description: OK
+  /v1/agent/agents:
+    get:
+      summary: agent agents
+      responses:
+        "200":
+          description: OK
+  /v1/agent/agents/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: agent agents {name}
+      responses:
+        "200":
+          description: OK
+  /v1/agent/teams:
+    get:
+      summary: agent teams
+      responses:
+        "200":
+          description: OK
+  /v1/agent/teams/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: agent teams {id}
+      responses:
+        "200":
+          description: OK
+  /v1/agent/teams/{id}/archive:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: agent teams {id} archive
+      responses:
+        "200":
+          description: OK
+  /v1/agent/teams/{id}/members:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: agent teams {id} members
+      responses:
+        "200":
+          description: OK
+  /v1/agent/teams/{id}/messages:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: agent teams {id} messages
+      responses:
+        "200":
+          description: OK
+  /v1/agent/teams/{id}/tasks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: agent teams {id} tasks
+      responses:
+        "200":
+          description: OK
+  /v1/agent/teams/{id}/tasks/{tid}/{op}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: tid
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: op
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: agent teams {id} tasks {tid} {op}
+      responses:
+        "200":
+          description: OK
+  /v1/admin/spawn:
+    post:
+      summary: admin spawn
+      responses:
+        "200":
+          description: OK
+  /v1/admin/despawn:
+    post:
+      summary: admin despawn
+      responses:
+        "200":
+          description: OK
+  /v1/admin/trail/inject:
+    post:
+      summary: admin trail inject
+      responses:
+        "200":
+          description: OK
+  /v1/admin/agents/{name}/placement:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: admin agents {name} placement
+      responses:
+        "200":
+          description: OK
+  /v1/admin/agents/{name}/grade:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: admin agents {name} grade
+      responses:
+        "200":
+          description: OK
+  /v1/panel/snapshot:
+    get:
+      summary: panel snapshot
+      responses:
+        "200":
+          description: OK
+  /v1/panel/stream:
+    get:
+      summary: panel stream
+      responses:
+        "200":
+          description: OK
+  /v1/panel/usage:
+    get:
+      summary: panel usage
+      responses:
+        "200":
+          description: OK
+  /v1/panel/scores:
+    get:
+      summary: panel scores
+      responses:
+        "200":
+          description: OK
+  /v1/panel/windows/close-all:
+    post:
+      summary: panel windows close-all
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/score:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel agents {name} score
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/tasks:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel agents {name} tasks
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/message:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel agents {name} message
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/open:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel agents {name} open
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/close:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel agents {name} close
+      responses:
+        "200":
+          description: OK
+  /v1/panel/teams:
+    get:
+      summary: panel teams
+      responses:
+        "200":
+          description: OK
+  /v1/panel/teams/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel teams {id}
+      responses:
+        "200":
+          description: OK
+  /v1/panel/teams/{id}/archive:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel teams {id} archive
+      responses:
+        "200":
+          description: OK
+  /v1/panel/teams/{id}/members:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel teams {id} members
+      responses:
+        "200":
+          description: OK
+  /v1/panel/teams/{id}/messages:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel teams {id} messages
+      responses:
+        "200":
+          description: OK
+  /v1/panel/teams/{id}/tasks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel teams {id} tasks
+      responses:
+        "200":
+          description: OK
+  /v1/panel/teams/{id}/tasks/{tid}/{op}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: tid
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: op
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel teams {id} tasks {tid} {op}
+      responses:
+        "200":
+          description: OK
+  /v1/panel/trails/search:
+    get:
+      summary: panel trails search
+      responses:
+        "200":
+          description: OK
+  /v1/panel/trails/stats:
+    get:
+      summary: panel trails stats
+      responses:
+        "200":
+          description: OK
+  /v1/panel/summary:
+    get:
+      summary: panel summary: counts for a host badge
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  live: {}
+                  working: {}
+                  blocked: {}
+  /v1/panel/bgjobs:
+    get:
+      summary: panel background job list
+      responses:
+        "200":
+          description: OK
+  /v1/panel/bgjobs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel background job detail
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {}
+                  status: {}
+                  progress: {}
+                  log: {}
+                  outputs: {}
+  /v1/panel/bgjobs/{id}/file:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel background job output file
+      responses:
+        "200":
+          description: OK
+  /v1/panel/arsenal:
+    get:
+      summary: panel persona catalog
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generated: {}
+                  agents: {}
+                  roles: {}
+                  decisions: {}
+                  sources: {}
+  /v1/panel/arsenal/agent:
+    get:
+      summary: panel persona text
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entry: {}
+                  body: {}
+  /v1/panel/arsenal/roles:
+    put:
+      summary: panel save role defaults
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles: {}
+        "403":
+          description: Forbidden (root only)
+  /v1/panel/routing:
+    get:
+      summary: panel model routing settings and mode
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fields: {}
+                  mode: {}
+                  decisions: {}
+                  backups: {}
+                  error: {}
+    put:
+      summary: panel save model routing settings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fields: {}
+                  mode: {}
+                  decisions: {}
+                  backups: {}
+                  error: {}
+        "403":
+          description: Forbidden (root only)
+  /v1/panel/hooks:
+    get:
+      summary: panel Claude Code hooks
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hooks: {}
+                  backups: {}
+  /v1/panel/hooks/nodes:
+    get:
+      summary: panel hook nodes
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes: {}
+  /v1/panel/hooks/stream:
+    get:
+      summary: panel hook fires (SSE)
+      responses:
+        "200":
+          description: OK
+  /v1/panel/hooks/fires:
+    get:
+      summary: panel past hook fires
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent: {}
+                  fires: {}
+  /v1/panel/hooks/{id}/enabled:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel switch a hook on or off
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hooks: {}
+                  backups: {}
+        "403":
+          description: Forbidden (root only)
+  /v1/panel/hooks/rollback:
+    post:
+      summary: panel restore the newest hooks backup
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  restored: {}
+                  hooks: {}
+                  backups: {}
+        "403":
+          description: Forbidden (root only)

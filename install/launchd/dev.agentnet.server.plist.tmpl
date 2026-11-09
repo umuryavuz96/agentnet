@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- agentnet service, written by agentnet install-service. Your edits are kept: it never overwrites this file. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{Label}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{Bun}}</string>
+    <string>run</string>
+    <string>src/server.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{{SourceDir}}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENTNET_HOME</key>
+    <string>{{Home}}</string>
+    <key>AGENTNET_PORT</key>
+    <string>{{Port}}</string>
+    <key>AGENTNET_HOST</key>
+    <string>{{Host}}</string>
+    <key>PATH</key>
+    <string>{{Path}}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>{{LogDir}}/service.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{LogDir}}/service.err.log</string>
+</dict>
+</plist>

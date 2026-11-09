@@ -1,0 +1,270 @@
+# Arsenal sources
+
+Vendored 2026-11-03 by researcher-1 (team arsenal). Only agent persona .md files, no scripts/hooks.
+
+| repo | commit | stars | licence | vendored | kept |
+|---|---|---|---|---|---|
+| affaan-m/ECC | `b38be6a7f635` | 295625 | MIT | 2026-11-03 | 71 |
+| addyosmani/agent-skills | `301b02b12bff` | 112821 | MIT | 2026-11-03 | 3 |
+| wshobson/agents | `7e2fb559cf4b` | 42115 | MIT | 2026-11-03 | 132 |
+| VoltAgent/awesome-claude-code-subagents | `ed74d115b7fb` | 26284 | MIT | 2026-11-03 | 122 |
+| davepoon/buildwithclaude | `50fc3a85f18b` | 3711 | MIT | 2026-11-03 | 72 |
+| rohitg00/awesome-claude-code-toolkit | `ebdf1d596d2c` | 2805 | Apache-2.0 | 2026-11-03 | 49 |
+| Donchitos/Claude-Code-Game-Studios | `05ad7c8a5b8a` | 36289 | MIT | 2026-11-07 | 9 |
+| in-house (ours) | n/a | n/a | ours | 2026-11-07 | 2 |
+
+## Excluded repos
+
+- (2026-11-07 council round) Searched for game/narrative/critic/art/sound/economy personas: VoltAgent, wshobson, davepoon, rohitg00, ECC have none (only game-developer, unity-developer, ux-researcher, product-manager). contains-studio/agents stays excluded (no licence). Donchitos/Claude-Code-Game-Studios (36k stars, MIT, pushed 2026-10-19) has 49 studio agents; vendored 9 of them. No popular source found for critic / devil's advocate or player advocate, written in-house (`in-house/agents/`).
+
+- anthropics/skills (186k stars): no repo-level licence, per-skill LICENSE.txt, several source-available; ships skills, not agent personas.
+- obra/superpowers: MIT but ships skills/hooks only, no agent persona files.
+- contains-studio/agents: no licence, last push 2025-07.
+- iannuttall/claude-agents: archived, last push 2025-07.
+- 0xfurai/claude-code-subagents: last push 2025-10 (not active in 2026).
+
+## Deduped (near-identical, lower-star copy not vendored)
+
+- addyosmani/agent-skills:agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- wshobson/agents:plugins/backend-api-security/agents/backend-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/backend-architect.md
+- wshobson/agents:plugins/backend-development/agents/backend-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/backend-architect.md
+- wshobson/agents:plugins/backend-development/agents/graphql-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/graphql-architect.md
+- wshobson/agents:plugins/backend-development/agents/performance-engineer.md ~ kept wshobson/agents:plugins/application-performance/agents/performance-engineer.md
+- wshobson/agents:plugins/backend-development/agents/security-auditor.md ~ kept addyosmani/agent-skills:agents/security-auditor.md
+- wshobson/agents:plugins/cloud-infrastructure/agents/cloud-architect.md ~ kept wshobson/agents:plugins/cicd-automation/agents/cloud-architect.md
+- wshobson/agents:plugins/cloud-infrastructure/agents/deployment-engineer.md ~ kept wshobson/agents:plugins/cicd-automation/agents/deployment-engineer.md
+- wshobson/agents:plugins/cloud-infrastructure/agents/kubernetes-architect.md ~ kept wshobson/agents:plugins/cicd-automation/agents/kubernetes-architect.md
+- wshobson/agents:plugins/cloud-infrastructure/agents/terraform-specialist.md ~ kept wshobson/agents:plugins/cicd-automation/agents/terraform-specialist.md
+- wshobson/agents:plugins/code-documentation/agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- wshobson/agents:plugins/code-refactoring/agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- wshobson/agents:plugins/codebase-cleanup/agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- wshobson/agents:plugins/codebase-cleanup/agents/test-automator.md ~ kept wshobson/agents:plugins/backend-development/agents/test-automator.md
+- wshobson/agents:plugins/comprehensive-review/agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- wshobson/agents:plugins/comprehensive-review/agents/security-auditor.md ~ kept addyosmani/agent-skills:agents/security-auditor.md
+- wshobson/agents:plugins/context-management/agents/context-manager.md ~ kept wshobson/agents:plugins/agent-orchestration/agents/context-manager.md
+- wshobson/agents:plugins/data-engineering/agents/backend-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/backend-architect.md
+- wshobson/agents:plugins/data-validation-suite/agents/backend-security-coder.md ~ kept wshobson/agents:plugins/backend-api-security/agents/backend-security-coder.md
+- wshobson/agents:plugins/database-cloud-optimization/agents/backend-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/backend-architect.md
+- wshobson/agents:plugins/database-cloud-optimization/agents/cloud-architect.md ~ kept wshobson/agents:plugins/cicd-automation/agents/cloud-architect.md
+- wshobson/agents:plugins/database-design/agents/database-architect.md ~ kept wshobson/agents:plugins/database-cloud-optimization/agents/database-architect.md
+- wshobson/agents:plugins/database-migrations/agents/database-optimizer.md ~ kept wshobson/agents:plugins/database-cloud-optimization/agents/database-optimizer.md
+- wshobson/agents:plugins/dependency-management/agents/legacy-modernizer.md ~ kept wshobson/agents:plugins/code-refactoring/agents/legacy-modernizer.md
+- wshobson/agents:plugins/deployment-strategies/agents/deployment-engineer.md ~ kept wshobson/agents:plugins/cicd-automation/agents/deployment-engineer.md
+- wshobson/agents:plugins/deployment-strategies/agents/terraform-specialist.md ~ kept wshobson/agents:plugins/cicd-automation/agents/terraform-specialist.md
+- wshobson/agents:plugins/deployment-validation/agents/cloud-architect.md ~ kept wshobson/agents:plugins/cicd-automation/agents/cloud-architect.md
+- wshobson/agents:plugins/distributed-debugging/agents/devops-troubleshooter.md ~ kept wshobson/agents:plugins/cicd-automation/agents/devops-troubleshooter.md
+- wshobson/agents:plugins/documentation-generation/agents/api-documenter.md ~ kept wshobson/agents:plugins/api-testing-observability/agents/api-documenter.md
+- wshobson/agents:plugins/documentation-generation/agents/docs-architect.md ~ kept wshobson/agents:plugins/code-documentation/agents/docs-architect.md
+- wshobson/agents:plugins/documentation-generation/agents/tutorial-engineer.md ~ kept wshobson/agents:plugins/code-documentation/agents/tutorial-engineer.md
+- wshobson/agents:plugins/error-debugging/agents/debugger.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/debugger.md
+- wshobson/agents:plugins/error-debugging/agents/error-detective.md ~ kept wshobson/agents:plugins/distributed-debugging/agents/error-detective.md
+- wshobson/agents:plugins/error-diagnostics/agents/debugger.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/debugger.md
+- wshobson/agents:plugins/error-diagnostics/agents/error-detective.md ~ kept wshobson/agents:plugins/distributed-debugging/agents/error-detective.md
+- wshobson/agents:plugins/framework-migration/agents/architect-review.md ~ kept wshobson/agents:plugins/comprehensive-review/agents/architect-review.md
+- wshobson/agents:plugins/framework-migration/agents/legacy-modernizer.md ~ kept wshobson/agents:plugins/code-refactoring/agents/legacy-modernizer.md
+- wshobson/agents:plugins/frontend-mobile-development/agents/frontend-developer.md ~ kept wshobson/agents:plugins/application-performance/agents/frontend-developer.md
+- wshobson/agents:plugins/frontend-mobile-security/agents/frontend-developer.md ~ kept wshobson/agents:plugins/application-performance/agents/frontend-developer.md
+- wshobson/agents:plugins/full-stack-orchestration/agents/deployment-engineer.md ~ kept wshobson/agents:plugins/cicd-automation/agents/deployment-engineer.md
+- wshobson/agents:plugins/full-stack-orchestration/agents/performance-engineer.md ~ kept wshobson/agents:plugins/application-performance/agents/performance-engineer.md
+- wshobson/agents:plugins/full-stack-orchestration/agents/security-auditor.md ~ kept addyosmani/agent-skills:agents/security-auditor.md
+- wshobson/agents:plugins/full-stack-orchestration/agents/test-automator.md ~ kept wshobson/agents:plugins/backend-development/agents/test-automator.md
+- wshobson/agents:plugins/git-pr-workflows/agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- wshobson/agents:plugins/incident-response/agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- wshobson/agents:plugins/incident-response/agents/debugger.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/debugger.md
+- wshobson/agents:plugins/incident-response/agents/devops-troubleshooter.md ~ kept wshobson/agents:plugins/cicd-automation/agents/devops-troubleshooter.md
+- wshobson/agents:plugins/incident-response/agents/error-detective.md ~ kept wshobson/agents:plugins/distributed-debugging/agents/error-detective.md
+- wshobson/agents:plugins/incident-response/agents/test-automator.md ~ kept wshobson/agents:plugins/backend-development/agents/test-automator.md
+- wshobson/agents:plugins/kubernetes-operations/agents/kubernetes-architect.md ~ kept wshobson/agents:plugins/cicd-automation/agents/kubernetes-architect.md
+- wshobson/agents:plugins/llm-finetuning/agents/llm-finetuning-architect.md ~ kept affaan-m/ECC:agents/architect.md
+- wshobson/agents:plugins/multi-platform-apps/agents/backend-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/backend-architect.md
+- wshobson/agents:plugins/multi-platform-apps/agents/frontend-developer.md ~ kept wshobson/agents:plugins/application-performance/agents/frontend-developer.md
+- wshobson/agents:plugins/multi-platform-apps/agents/mobile-developer.md ~ kept wshobson/agents:plugins/frontend-mobile-development/agents/mobile-developer.md
+- wshobson/agents:plugins/observability-monitoring/agents/database-optimizer.md ~ kept wshobson/agents:plugins/database-cloud-optimization/agents/database-optimizer.md
+- wshobson/agents:plugins/observability-monitoring/agents/network-engineer.md ~ kept wshobson/agents:plugins/cloud-infrastructure/agents/network-engineer.md
+- wshobson/agents:plugins/observability-monitoring/agents/observability-engineer.md ~ kept wshobson/agents:plugins/application-performance/agents/observability-engineer.md
+- wshobson/agents:plugins/observability-monitoring/agents/performance-engineer.md ~ kept wshobson/agents:plugins/application-performance/agents/performance-engineer.md
+- wshobson/agents:plugins/performance-testing-review/agents/performance-engineer.md ~ kept wshobson/agents:plugins/application-performance/agents/performance-engineer.md
+- wshobson/agents:plugins/performance-testing-review/agents/test-automator.md ~ kept wshobson/agents:plugins/backend-development/agents/test-automator.md
+- wshobson/agents:plugins/python-development/agents/django-pro.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/django-pro.md
+- wshobson/agents:plugins/python-development/agents/fastapi-pro.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/fastapi-pro.md
+- wshobson/agents:plugins/security-compliance/agents/security-auditor.md ~ kept addyosmani/agent-skills:agents/security-auditor.md
+- wshobson/agents:plugins/security-scanning/agents/security-auditor.md ~ kept addyosmani/agent-skills:agents/security-auditor.md
+- wshobson/agents:plugins/ship-mate/agents/architect.md ~ kept affaan-m/ECC:agents/architect.md
+- wshobson/agents:plugins/tdd-workflows/agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- wshobson/agents:plugins/tdd-workflows/agents/tdd-orchestrator.md ~ kept wshobson/agents:plugins/backend-development/agents/tdd-orchestrator.md
+- wshobson/agents:plugins/team-collaboration/agents/dx-optimizer.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/dx-optimizer.md
+- wshobson/agents:plugins/unit-testing/agents/debugger.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/debugger.md
+- wshobson/agents:plugins/unit-testing/agents/test-automator.md ~ kept wshobson/agents:plugins/backend-development/agents/test-automator.md
+- VoltAgent/awesome-claude-code-subagents:categories/01-core-development/frontend-developer.md ~ kept wshobson/agents:plugins/application-performance/agents/frontend-developer.md
+- VoltAgent/awesome-claude-code-subagents:categories/01-core-development/graphql-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/graphql-architect.md
+- VoltAgent/awesome-claude-code-subagents:categories/01-core-development/mobile-developer.md ~ kept wshobson/agents:plugins/frontend-mobile-development/agents/mobile-developer.md
+- VoltAgent/awesome-claude-code-subagents:categories/01-core-development/ui-designer.md ~ kept wshobson/agents:plugins/ui-design/agents/ui-designer.md
+- VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/cpp-pro.md ~ kept wshobson/agents:plugins/systems-programming/agents/cpp-pro.md
+- VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/flutter-expert.md ~ kept wshobson/agents:plugins/multi-platform-apps/agents/flutter-expert.md
+- VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/golang-pro.md ~ kept wshobson/agents:plugins/systems-programming/agents/golang-pro.md
+- VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/javascript-pro.md ~ kept wshobson/agents:plugins/javascript-typescript/agents/javascript-pro.md
+- VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/php-pro.md ~ kept wshobson/agents:plugins/web-scripting/agents/php-pro.md
+- VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/python-pro.md ~ kept wshobson/agents:plugins/python-development/agents/python-pro.md
+- VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/sql-pro.md ~ kept wshobson/agents:plugins/database-design/agents/sql-pro.md
+- VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/typescript-pro.md ~ kept wshobson/agents:plugins/javascript-typescript/agents/typescript-pro.md
+- VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/cloud-architect.md ~ kept wshobson/agents:plugins/cicd-automation/agents/cloud-architect.md
+- VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/deployment-engineer.md ~ kept wshobson/agents:plugins/cicd-automation/agents/deployment-engineer.md
+- VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/incident-responder.md ~ kept wshobson/agents:plugins/incident-response/agents/incident-responder.md
+- VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/network-engineer.md ~ kept wshobson/agents:plugins/cloud-infrastructure/agents/network-engineer.md
+- VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/debugger.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/debugger.md
+- VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/error-detective.md ~ kept wshobson/agents:plugins/distributed-debugging/agents/error-detective.md
+- VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/performance-engineer.md ~ kept wshobson/agents:plugins/application-performance/agents/performance-engineer.md
+- VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/security-auditor.md ~ kept addyosmani/agent-skills:agents/security-auditor.md
+- VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/test-automator.md ~ kept wshobson/agents:plugins/backend-development/agents/test-automator.md
+- VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/ai-engineer.md ~ kept wshobson/agents:plugins/llm-application-dev/agents/ai-engineer.md
+- VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/data-engineer.md ~ kept wshobson/agents:plugins/data-engineering/agents/data-engineer.md
+- VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/data-scientist.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/data-scientist.md
+- VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/database-optimizer.md ~ kept wshobson/agents:plugins/database-cloud-optimization/agents/database-optimizer.md
+- VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/ml-engineer.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/ml-engineer.md
+- VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/mlops-engineer.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/mlops-engineer.md
+- VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/prompt-engineer.md ~ kept wshobson/agents:plugins/llm-application-dev/agents/prompt-engineer.md
+- VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/dx-optimizer.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/dx-optimizer.md
+- VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/legacy-modernizer.md ~ kept wshobson/agents:plugins/code-refactoring/agents/legacy-modernizer.md
+- VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/api-documenter.md ~ kept wshobson/agents:plugins/api-testing-observability/agents/api-documenter.md
+- VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/blockchain-developer.md ~ kept wshobson/agents:plugins/blockchain-web3/agents/blockchain-developer.md
+- VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/payment-integration.md ~ kept wshobson/agents:plugins/payment-processing/agents/payment-integration.md
+- VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/quant-analyst.md ~ kept wshobson/agents:plugins/quantitative-trading/agents/quant-analyst.md
+- VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/risk-manager.md ~ kept wshobson/agents:plugins/quantitative-trading/agents/risk-manager.md
+- VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/seo-specialist.md ~ kept affaan-m/ECC:agents/seo-specialist.md
+- VoltAgent/awesome-claude-code-subagents:categories/08-business-product/business-analyst.md ~ kept wshobson/agents:plugins/business-analytics/agents/business-analyst.md
+- VoltAgent/awesome-claude-code-subagents:categories/08-business-product/content-marketer.md ~ kept wshobson/agents:plugins/content-marketing/agents/content-marketer.md
+- VoltAgent/awesome-claude-code-subagents:categories/08-business-product/legal-advisor.md ~ kept wshobson/agents:plugins/hr-legal-compliance/agents/legal-advisor.md
+- VoltAgent/awesome-claude-code-subagents:categories/09-meta-orchestration/context-manager.md ~ kept wshobson/agents:plugins/agent-orchestration/agents/context-manager.md
+- VoltAgent/awesome-claude-code-subagents:categories/10-research-analysis/search-specialist.md ~ kept wshobson/agents:plugins/content-marketing/agents/search-specialist.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/ai-engineer.md ~ kept wshobson/agents:plugins/llm-application-dev/agents/ai-engineer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/api-documenter.md ~ kept wshobson/agents:plugins/api-testing-observability/agents/api-documenter.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/architect-review.md ~ kept wshobson/agents:plugins/comprehensive-review/agents/architect-review.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/backend-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/backend-architect.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/blockchain-developer.md ~ kept wshobson/agents:plugins/blockchain-web3/agents/blockchain-developer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/business-analyst.md ~ kept wshobson/agents:plugins/business-analytics/agents/business-analyst.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/cloud-architect.md ~ kept wshobson/agents:plugins/cicd-automation/agents/cloud-architect.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/content-marketer.md ~ kept wshobson/agents:plugins/content-marketing/agents/content-marketer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/context-manager.md ~ kept wshobson/agents:plugins/agent-orchestration/agents/context-manager.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/cpp-engineer.md ~ kept wshobson/agents:plugins/systems-programming/agents/cpp-pro.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/customer-support.md ~ kept wshobson/agents:plugins/customer-sales-automation/agents/customer-support.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/data-analyst.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/data-analyst.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/data-engineer.md ~ kept wshobson/agents:plugins/data-engineering/agents/data-engineer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/data-scientist.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/data-scientist.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/database-admin.md ~ kept wshobson/agents:plugins/database-migrations/agents/database-admin.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/database-optimizer.md ~ kept wshobson/agents:plugins/database-cloud-optimization/agents/database-optimizer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/debugger.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/debugger.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/deployment-engineer.md ~ kept wshobson/agents:plugins/cicd-automation/agents/deployment-engineer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/devops-troubleshooter.md ~ kept wshobson/agents:plugins/cicd-automation/agents/devops-troubleshooter.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/dx-optimizer.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/dx-optimizer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/error-detective.md ~ kept wshobson/agents:plugins/distributed-debugging/agents/error-detective.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/frontend-developer.md ~ kept wshobson/agents:plugins/application-performance/agents/frontend-developer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/game-developer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/game-developer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/graphql-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/graphql-architect.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/incident-responder.md ~ kept wshobson/agents:plugins/incident-response/agents/incident-responder.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/ios-developer.md ~ kept wshobson/agents:plugins/multi-platform-apps/agents/ios-developer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/legacy-modernizer.md ~ kept wshobson/agents:plugins/code-refactoring/agents/legacy-modernizer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/legal-advisor.md ~ kept wshobson/agents:plugins/hr-legal-compliance/agents/legal-advisor.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/ml-engineer.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/ml-engineer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/mlops-engineer.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/mlops-engineer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/mobile-developer.md ~ kept wshobson/agents:plugins/frontend-mobile-development/agents/mobile-developer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/network-engineer.md ~ kept wshobson/agents:plugins/cloud-infrastructure/agents/network-engineer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/payment-integration.md ~ kept wshobson/agents:plugins/payment-processing/agents/payment-integration.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/performance-engineer.md ~ kept wshobson/agents:plugins/application-performance/agents/performance-engineer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/prompt-engineer.md ~ kept wshobson/agents:plugins/llm-application-dev/agents/prompt-engineer.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/quant-analyst.md ~ kept wshobson/agents:plugins/quantitative-trading/agents/quant-analyst.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/rails-expert.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/rails-expert.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/risk-manager.md ~ kept wshobson/agents:plugins/quantitative-trading/agents/risk-manager.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/sales-automator.md ~ kept wshobson/agents:plugins/customer-sales-automation/agents/sales-automator.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/search-specialist.md ~ kept wshobson/agents:plugins/content-marketing/agents/search-specialist.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/security-auditor.md ~ kept addyosmani/agent-skills:agents/security-auditor.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/terraform-specialist.md ~ kept wshobson/agents:plugins/cicd-automation/agents/terraform-specialist.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/test-automator.md ~ kept wshobson/agents:plugins/backend-development/agents/test-automator.md
+- davepoon/buildwithclaude:plugins/all-agents/agents/ui-ux-designer.md ~ kept wshobson/agents:plugins/multi-platform-apps/agents/ui-ux-designer.md
+- rohitg00/awesome-claude-code-toolkit:agents/business-product/business-analyst.md ~ kept wshobson/agents:plugins/business-analytics/agents/business-analyst.md
+- rohitg00/awesome-claude-code-toolkit:agents/business-product/legal-advisor.md ~ kept wshobson/agents:plugins/hr-legal-compliance/agents/legal-advisor.md
+- rohitg00/awesome-claude-code-toolkit:agents/business-product/product-manager.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/08-business-product/product-manager.md
+- rohitg00/awesome-claude-code-toolkit:agents/business-product/project-manager.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/08-business-product/project-manager.md
+- rohitg00/awesome-claude-code-toolkit:agents/business-product/sales-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/08-business-product/sales-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/business-product/scrum-master.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/08-business-product/scrum-master.md
+- rohitg00/awesome-claude-code-toolkit:agents/business-product/technical-writer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/08-business-product/technical-writer.md
+- rohitg00/awesome-claude-code-toolkit:agents/business-product/ux-researcher.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/08-business-product/ux-researcher.md
+- rohitg00/awesome-claude-code-toolkit:agents/core-development/api-designer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/01-core-development/api-designer.md
+- rohitg00/awesome-claude-code-toolkit:agents/core-development/backend-developer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/01-core-development/backend-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/core-development/graphql-architect.md ~ kept wshobson/agents:plugins/api-scaffolding/agents/graphql-architect.md
+- rohitg00/awesome-claude-code-toolkit:agents/core-development/microservices-architect.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/01-core-development/microservices-architect.md
+- rohitg00/awesome-claude-code-toolkit:agents/core-development/mobile-developer.md ~ kept wshobson/agents:plugins/frontend-mobile-development/agents/mobile-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/core-development/monorepo-architect.md ~ kept wshobson/agents:plugins/developer-essentials/agents/monorepo-architect.md
+- rohitg00/awesome-claude-code-toolkit:agents/core-development/ui-designer.md ~ kept wshobson/agents:plugins/ui-design/agents/ui-designer.md
+- rohitg00/awesome-claude-code-toolkit:agents/core-development/websocket-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/01-core-development/websocket-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/ai-engineer.md ~ kept wshobson/agents:plugins/llm-application-dev/agents/ai-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/data-engineer.md ~ kept wshobson/agents:plugins/data-engineering/agents/data-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/data-scientist.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/data-scientist.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/database-optimizer.md ~ kept wshobson/agents:plugins/database-cloud-optimization/agents/database-optimizer.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/llm-architect.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/llm-architect.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/ml-engineer.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/ml-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/mlops-engineer.md ~ kept wshobson/agents:plugins/machine-learning-ops/agents/mlops-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/nlp-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/05-data-ai/nlp-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/prompt-engineer.md ~ kept wshobson/agents:plugins/llm-application-dev/agents/prompt-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/data-ai/vector-database-engineer.md ~ kept wshobson/agents:plugins/llm-application-dev/agents/vector-database-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/build-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/build-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/cli-developer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/cli-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/dependency-manager.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/dependency-manager.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/documentation-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/documentation-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/dx-optimizer.md ~ kept wshobson/agents:plugins/debugging-toolkit/agents/dx-optimizer.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/git-workflow-manager.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/git-workflow-manager.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/legacy-modernizer.md ~ kept wshobson/agents:plugins/code-refactoring/agents/legacy-modernizer.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/mcp-developer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/mcp-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/refactoring-specialist.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/refactoring-specialist.md
+- rohitg00/awesome-claude-code-toolkit:agents/developer-experience/tooling-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/06-developer-experience/tooling-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/cloud-architect.md ~ kept wshobson/agents:plugins/cicd-automation/agents/cloud-architect.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/database-admin.md ~ kept wshobson/agents:plugins/database-migrations/agents/database-admin.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/deployment-engineer.md ~ kept wshobson/agents:plugins/cicd-automation/agents/deployment-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/devops-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/devops-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/incident-responder.md ~ kept wshobson/agents:plugins/incident-response/agents/incident-responder.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/kubernetes-specialist.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/kubernetes-specialist.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/network-engineer.md ~ kept wshobson/agents:plugins/cloud-infrastructure/agents/network-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/platform-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/platform-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/security-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/security-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/sre-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/sre-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/infrastructure/terraform-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/03-infrastructure/terraform-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/angular-architect.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/angular-architect.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/csharp-developer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/csharp-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/django-developer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/django-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/elixir-expert.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/elixir-expert.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/flutter-expert.md ~ kept wshobson/agents:plugins/multi-platform-apps/agents/flutter-expert.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/java-architect.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/java-architect.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/kotlin-specialist.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/kotlin-specialist.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/nextjs-developer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/nextjs-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/php-developer.md ~ kept davepoon/buildwithclaude:plugins/all-agents/agents/php-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/rails-expert.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/rails-expert.md
+- rohitg00/awesome-claude-code-toolkit:agents/language-experts/react-specialist.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/02-language-specialists/react-specialist.md
+- rohitg00/awesome-claude-code-toolkit:agents/orchestration/agent-installer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/09-meta-orchestration/agent-installer.md
+- rohitg00/awesome-claude-code-toolkit:agents/orchestration/context-manager.md ~ kept wshobson/agents:plugins/agent-orchestration/agents/context-manager.md
+- rohitg00/awesome-claude-code-toolkit:agents/orchestration/error-coordinator.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/09-meta-orchestration/error-coordinator.md
+- rohitg00/awesome-claude-code-toolkit:agents/orchestration/knowledge-synthesizer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/09-meta-orchestration/knowledge-synthesizer.md
+- rohitg00/awesome-claude-code-toolkit:agents/orchestration/multi-agent-coordinator.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/09-meta-orchestration/multi-agent-coordinator.md
+- rohitg00/awesome-claude-code-toolkit:agents/orchestration/performance-monitor.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/09-meta-orchestration/performance-monitor.md
+- rohitg00/awesome-claude-code-toolkit:agents/quality-assurance/accessibility-specialist.md ~ kept davepoon/buildwithclaude:plugins/all-agents/agents/accessibility-specialist.md
+- rohitg00/awesome-claude-code-toolkit:agents/quality-assurance/chaos-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/chaos-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/quality-assurance/code-reviewer.md ~ kept affaan-m/ECC:agents/code-reviewer.md
+- rohitg00/awesome-claude-code-toolkit:agents/quality-assurance/compliance-auditor.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/compliance-auditor.md
+- rohitg00/awesome-claude-code-toolkit:agents/quality-assurance/error-detective.md ~ kept wshobson/agents:plugins/distributed-debugging/agents/error-detective.md
+- rohitg00/awesome-claude-code-toolkit:agents/quality-assurance/penetration-tester.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/04-quality-security/penetration-tester.md
+- rohitg00/awesome-claude-code-toolkit:agents/quality-assurance/performance-engineer.md ~ kept wshobson/agents:plugins/application-performance/agents/performance-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/quality-assurance/security-auditor.md ~ kept addyosmani/agent-skills:agents/security-auditor.md
+- rohitg00/awesome-claude-code-toolkit:agents/research-analysis/academic-researcher.md ~ kept davepoon/buildwithclaude:plugins/all-agents/agents/academic-researcher.md
+- rohitg00/awesome-claude-code-toolkit:agents/research-analysis/competitive-analyst.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/10-research-analysis/competitive-analyst.md
+- rohitg00/awesome-claude-code-toolkit:agents/research-analysis/data-researcher.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/10-research-analysis/data-researcher.md
+- rohitg00/awesome-claude-code-toolkit:agents/research-analysis/market-researcher.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/10-research-analysis/market-researcher.md
+- rohitg00/awesome-claude-code-toolkit:agents/research-analysis/research-analyst.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/10-research-analysis/research-analyst.md
+- rohitg00/awesome-claude-code-toolkit:agents/research-analysis/search-specialist.md ~ kept wshobson/agents:plugins/content-marketing/agents/search-specialist.md
+- rohitg00/awesome-claude-code-toolkit:agents/research-analysis/trend-analyst.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/10-research-analysis/trend-analyst.md
+- rohitg00/awesome-claude-code-toolkit:agents/specialized-domains/blockchain-developer.md ~ kept wshobson/agents:plugins/blockchain-web3/agents/blockchain-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/specialized-domains/embedded-systems.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/embedded-systems.md
+- rohitg00/awesome-claude-code-toolkit:agents/specialized-domains/fintech-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/fintech-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/specialized-domains/game-developer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/game-developer.md
+- rohitg00/awesome-claude-code-toolkit:agents/specialized-domains/iot-engineer.md ~ kept VoltAgent/awesome-claude-code-subagents:categories/07-specialized-domains/iot-engineer.md
+- rohitg00/awesome-claude-code-toolkit:agents/specialized-domains/payment-integration.md ~ kept wshobson/agents:plugins/payment-processing/agents/payment-integration.md
+- rohitg00/awesome-claude-code-toolkit:agents/specialized-domains/seo-specialist.md ~ kept affaan-m/ECC:agents/seo-specialist.md

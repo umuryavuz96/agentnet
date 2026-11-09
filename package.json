@@ -1,0 +1,40 @@
+{
+  "name": "agentnet",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "A local network for Claude Code agents: names, a boss, task lists, messages and a live web view of who is doing what.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/umuryavuz96/agentnet.git"
+  },
+  "homepage": "https://github.com/umuryavuz96/agentnet",
+  "bugs": {
+    "url": "https://github.com/umuryavuz96/agentnet/issues"
+  },
+  "license": "MIT",
+  "bin": {
+    "agentnet": "bin/agentnet"
+  },
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "cli": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "web:dev": "vite --config web/vite.config.ts",
+    "web:build": "vite build --config web/vite.config.ts",
+    "web:check": "vue-tsc --noEmit -p web/tsconfig.json"
+  },
+  "dependencies": {
+    "hono": "4",
+    "vue": "3",
+    "lucide-vue-next": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "5",
+    "vite": "6",
+    "@vitejs/plugin-vue": "5",
+    "vue-tsc": "2"
+  }
+}

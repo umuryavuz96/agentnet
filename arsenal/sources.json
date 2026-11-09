@@ -1,0 +1,79 @@
+[
+  {
+    "repo": "affaan-m/ECC",
+    "dir": "affaan-m-ECC",
+    "sha": "b38be6a7f6350964d59328b52f0624e1d1d552d1",
+    "stars": 295625,
+    "licence": "MIT",
+    "date": "2026-11-03",
+    "url": "https://github.com/affaan-m/ECC",
+    "kept": 71,
+    "found": 71
+  },
+  {
+    "repo": "addyosmani/agent-skills",
+    "dir": "addyosmani-agent-skills",
+    "sha": "301b02b12bff98e4688e6984af6556802322bbde",
+    "stars": 112821,
+    "licence": "MIT",
+    "date": "2026-11-03",
+    "url": "https://github.com/addyosmani/agent-skills",
+    "kept": 3,
+    "found": 4
+  },
+  {
+    "repo": "wshobson/agents",
+    "dir": "wshobson-agents",
+    "sha": "7e2fb559cf4b824b27f1fec49fe88f7511066d26",
+    "stars": 42115,
+    "licence": "MIT",
+    "date": "2026-11-03",
+    "url": "https://github.com/wshobson/agents",
+    "kept": 132,
+    "found": 202
+  },
+  {
+    "repo": "VoltAgent/awesome-claude-code-subagents",
+    "dir": "VoltAgent-awesome-claude-code-subagents",
+    "sha": "ed74d115b7fb7026a22a4f816a8e3250f425e3b4",
+    "stars": 26284,
+    "licence": "MIT",
+    "date": "2026-11-03",
+    "url": "https://github.com/VoltAgent/awesome-claude-code-subagents",
+    "kept": 122,
+    "found": 166
+  },
+  {
+    "repo": "davepoon/buildwithclaude",
+    "dir": "davepoon-buildwithclaude",
+    "sha": "50fc3a85f18b6983ca1b22aeb2dbaaca653d215c",
+    "stars": 3711,
+    "licence": "MIT",
+    "date": "2026-11-03",
+    "url": "https://github.com/davepoon/buildwithclaude",
+    "kept": 72,
+    "found": 117
+  },
+  {
+    "repo": "rohitg00/awesome-claude-code-toolkit",
+    "dir": "rohitg00-awesome-claude-code-toolkit",
+    "sha": "ebdf1d596d2cde5c5cceb32177e8d1cf4829e7d9",
+    "stars": 2805,
+    "licence": "Apache-2.0",
+    "date": "2026-11-03",
+    "url": "https://github.com/rohitg00/awesome-claude-code-toolkit",
+    "kept": 49,
+    "found": 136
+  },
+  {
+    "repo": "Donchitos/Claude-Code-Game-Studios",
+    "dir": "Donchitos-Claude-Code-Game-Studios",
+    "sha": "05ad7c8a5b8aa2aa86bbd3439ae7cf7295cac418",
+    "stars": 36289,
+    "licence": "MIT",
+    "date": "2026-11-07",
+    "url": "https://github.com/Donchitos/Claude-Code-Game-Studios",
+    "kept": 9,
+    "found": 49
+  }
+]

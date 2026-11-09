@@ -1,0 +1,225 @@
+// agentnet CLI. No dependencies; arguments are parsed by hand. Run `agentnet help` for the commands.
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+
+const HOME = homedir();
+const ROOT = process.env.AGENTNET_HOME ?? join(HOME, ".local", "share", "agentnet");
+const PORT = Number(process.env.AGENTNET_PORT ?? 3096), HOST = process.env.AGENTNET_HOST ?? "127.0.0.1";
+const REPO = resolve(import.meta.dir, "..");
+
+const HELP = `agentnet: a local network for Claude Code agents
+  help | version | home | url | plugin-dir
+  serve                     run the server in the foreground
+  spawn | join | pick-model | pick-soul | bg   run the matching script (see scripts/)
+  despawn <name> [--reason R]
+  status                    health and agent list of the running server
+  doctor                    check bun, tmux, claude, python3, data folder, service
+  install-service [--dry-run]   write a launchd (macOS) or systemd user unit; never starts it
+  migrate-from-server-os --source <var> [--to <home>] [--dry-run] [--members a,b]   copy a Server OS var folder into an agentnet home
+  export-legacy --to <server-os var> [--from <home>] [--yes]   copy post-cutover data back (rollback); dry run without --yes
+  update   not built yet`;
+
+/** Read $ROOT/config/env (KEY=VALUE lines); a key already in the environment wins. */
+function loadEnvFile(): void {
+  const f = join(ROOT, "config", "env");
+  if (!existsSync(f)) return;
+  for (const raw of readFileSync(f, "utf8").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const i = line.indexOf("=");
+    if (i < 1) continue;
+    const k = line.slice(0, i).trim();
+    let v = line.slice(i + 1).trim();
+    if (v.startsWith("~/")) v = HOME + v.slice(1);
+    if (process.env[k] === undefined) process.env[k] = v;
+  }
+}
+
+const url = () => process.env.AGENTNET_URL ?? `http://127.0.0.1:${PORT}/api/v1/agentnet`;
+const pluginDir = () => join(REPO, "plugin");
+const version = (): string => JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
+
+async function runScript(script: string, args: string[]): Promise<never> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  const defaults = { AGENTNET_HOME: ROOT, AGENTNET_URL: url(), AGENTNET_MOD_DIR: pluginDir(), AGENTNET_BIN: join(REPO, "bin", "agentnet") };
+  for (const [k, v] of Object.entries(defaults)) if (env[k] === undefined) env[k] = v;
+  const proc = Bun.spawn([join(REPO, "scripts", script), ...args], { stdio: ["inherit", "inherit", "inherit"], env });
+  process.exit(await proc.exited);
+}
+
+async function getJson(u: string, ms: number): Promise<any | null> {
+  try {
+    const r = await fetch(u, { signal: AbortSignal.timeout(ms) });
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
+}
+
+async function despawn(args: string[]): Promise<number> {
+  const name = args[0];
+  if (!name) { console.error("usage: agentnet despawn <name> [--reason R]"); return 2; }
+  const ri = args.indexOf("--reason");
+  const reason = ri >= 0 ? args[ri + 1] : undefined;
+  try {
+    const r = await fetch(`${url()}/despawn`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: name, reason: reason ?? "cli" }), signal: AbortSignal.timeout(5000),
+    });
+    console.log(await r.text());
+    return r.ok ? 0 : 1;
+  } catch (e) { console.error(`agentnet: despawn failed: ${(e as Error).message}`); return 1; }
+}
+
+async function status(): Promise<number> {
+  const origin = new URL(url()).origin;
+  const h = await getJson(`${origin}/v1/health`, 3000);
+  if (!h) { console.log(`agentnet is not running at ${origin}`); return 1; }
+  console.log(`agentnet ${h.version} api ${h.api} at ${origin}`);
+  const a = await getJson(`${url()}/agents`, 3000);
+  for (const x of a?.agents ?? []) console.log(`${x.name}  ${x.life}  ${x.state}  ${x.doing ?? ""}`);
+  return 0;
+}
+
+async function doctor(): Promise<number> {
+  let fail = 0;
+  const out = (lvl: "ok" | "warn" | "FAIL", check: string, hint = "") => {
+    if (lvl === "FAIL") fail++;
+    console.log(lvl === "ok" ? `ok   ${check}${hint ? " " + hint : ""}` : `${lvl.padEnd(4)} ${check}: ${hint}`);
+  };
+  process.versions.bun ? out("ok", "bun", process.versions.bun) : out("FAIL", "bun", "run agentnet with bun");
+  for (const [bin, hint] of [["tmux", "install tmux"], ["claude", "install Claude Code"], ["python3", "the scripts need python3"]] as const)
+    Bun.which(bin) ? out("ok", bin) : out("FAIL", bin, hint);
+  try {
+    mkdirSync(ROOT, { recursive: true });
+    const t = join(ROOT, ".doctor"); writeFileSync(t, "x"); rmSync(t);
+    out("ok", "data folder", ROOT);
+  } catch (e) { out("FAIL", "data folder", `${ROOT} not writable (${(e as Error).message})`); }
+  const h = await getJson(`http://${HOST}:${PORT}/v1/health`, 2000);
+  if (h?.name === "agentnet") out("ok", "service", h.version);
+  else {
+    try {
+      const l = Bun.listen({ hostname: HOST, port: PORT, socket: { data() {} } });
+      l.stop(true);
+      out("warn", "service", "not running (agentnet serve, or agentnet install-service)");
+    } catch { out("FAIL", "service", `port ${PORT} in use by another program`); }
+  }
+  return fail ? 1 : 0;
+}
+
+const xmlEsc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+/** systemd: inside double quotes escape \\, " and %; elsewhere (path directives, no quoting) escape only %. */
+const sdQuoted = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
+const sdPlain = (s: string) => s.replace(/%/g, "%%");
+
+type Esc = (s: string, quoted: boolean) => string;
+function render(tmpl: string, vals: Record<string, string>, esc: Esc): string {
+  return tmpl.replace(/\{\{(\w+)\}\}/g, (_m, k: string, off: number) => {
+    if (!(k in vals)) throw new Error(`unknown placeholder {{${k}}}`);
+    const lineStart = tmpl.lastIndexOf("\n", off) + 1;
+    const quoted = (tmpl.slice(lineStart, off).match(/"/g) ?? []).length % 2 === 1;
+    return esc(vals[k]!, quoted);
+  });
+}
+
+function installService(args: string[]): number {
+  const dry = args.includes("--dry-run");
+  const logDir = join(ROOT, "logs");
+  const vals = { Label: "dev.agentnet.server", Bun: process.execPath, SourceDir: REPO, Home: ROOT, Port: String(PORT), Host: HOST, Path: process.env.PATH ?? "", LogDir: logDir };
+  let target: string, tmplPath: string, esc: Esc, next: string;
+  if (process.platform === "darwin") {
+    target = join(HOME, "Library", "LaunchAgents", "dev.agentnet.server.plist");
+    tmplPath = join(REPO, "install", "launchd", "dev.agentnet.server.plist.tmpl"); esc = (v) => xmlEsc(v);
+    next = `launchctl bootstrap gui/$(id -u) ${target}`;
+  } else if (process.platform === "linux") {
+    target = join(HOME, ".config", "systemd", "user", "agentnet.service");
+    tmplPath = join(REPO, "install", "systemd", "agentnet.service.tmpl"); esc = (v, q) => (q ? sdQuoted(v) : sdPlain(v));
+    next = "systemctl --user daemon-reload && systemctl --user enable --now agentnet";
+  } else { console.error("agentnet: install-service supports macOS and Linux"); return 1; }
+  let text: string;
+  try { text = render(readFileSync(tmplPath, "utf8"), vals, esc); }
+  catch (e) { console.error(`agentnet: install-service: ${(e as Error).message}`); return 1; }
+  if (dry) { process.stdout.write(text); console.error(`would write ${target}`); return 0; }
+  if (existsSync(target)) { console.log(`exists, not overwritten: ${target}`); return 0; }
+  mkdirSync(dirname(target), { recursive: true });
+  mkdirSync(logDir, { recursive: true });
+  writeFileSync(target, text);
+  console.log(`wrote ${target}\nnext: ${next}`);
+  return 0;
+}
+
+const flag = (a: string[], n: string): string | undefined => { const i = a.indexOf(n); return i >= 0 ? a[i + 1] : undefined; };
+const tilde = (p: string) => (p.startsWith("~/") ? HOME + p.slice(1) : p);
+
+/** True when an agentnet service answers on HOST:PORT (a real migration or rollback must not run under it). */
+async function serviceUp(): Promise<boolean> {
+  try { return (await fetch(`http://${HOST}:${PORT}/v1/health`, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; }
+}
+
+async function migrateCmd(args: string[]): Promise<number> {
+  const source = flag(args, "--source");
+  if (!source) { console.error("usage: agentnet migrate-from-server-os --source <var> [--to <home>] [--dry-run] [--members a,b,c]"); return 2; }
+  const dryRun = args.includes("--dry-run");
+  const members = (flag(args, "--members") ?? "root").split(",").map((s) => s.trim()).filter(Boolean);
+  if (!members.length || members.some((m) => !/^[a-z0-9-]+$/.test(m))) { console.error("agentnet: --members: names must match ^[a-z0-9-]+$"); return 2; }
+  const toArg = flag(args, "--to");
+  const to = toArg ? tilde(toArg) : dryRun ? mkdtempSync(join(tmpdir(), "an-rehearsal-")) : ROOT;
+  if (!dryRun && (await serviceUp())) { console.log(`agentnet is running on ${HOST}:${PORT}: stop it before a real migration`); return 1; }
+  try {
+    const { migrate } = await import("./migrate/fromServerOs");
+    const r = migrate({ source: resolve(tilde(source)), to: resolve(to), dryRun, members });
+    for (const [t, c] of Object.entries(r.counts)) console.log(`table ${t}  source ${c.source}  target ${c.target}  ${c.source === c.target ? "ok" : "DIFF"}`);
+    console.log(`fold ${r.fold.agents} agents, ${r.fold.differ.length} differ`);
+    for (const id of r.fold.differ) console.log(`  differ ${id}`);
+    console.log(`marks ${join(resolve(to), "data", "migrated-from.json")}`);
+    for (const s of r.skipped) console.log(`skip ${s}`);
+    if (dryRun && r.ok) console.log(`next: AGENTNET_HOME=${resolve(to)} AGENTNET_PORT=3196 AGENTNET_SWEEP=0 agentnet serve`);
+    console.log(r.ok ? (dryRun ? `migrate ok (dry run in ${resolve(to)})` : "migrate ok") : "migrate FAILED");
+    return r.ok ? 0 : 1;
+  } catch (e) { console.error((e as Error).message); return 1; }
+}
+
+async function exportCmd(args: string[]): Promise<number> {
+  const toArg = flag(args, "--to");
+  if (!toArg) { console.error("usage: agentnet export-legacy --to <server-os var> [--from <home>] [--yes]"); return 2; }
+  const yes = args.includes("--yes");
+  if (yes && (await serviceUp())) { console.log(`agentnet is running on ${HOST}:${PORT}: stop it before a rollback`); return 1; }
+  try {
+    const { exportLegacy } = await import("./migrate/exportLegacy");
+    const r = exportLegacy({ from: resolve(tilde(flag(args, "--from") ?? ROOT)), to: resolve(tilde(toArg)), yes });
+    for (const [t, n] of Object.entries(r.written)) console.log(`table ${t}  rows ${n}`);
+    for (const f of r.trails) console.log(`trail ${f}`);
+    if (r.dryRun) console.log("dry run: add --yes to write (stop Server OS and agentnet first)");
+    return 0;
+  } catch (e) { console.error((e as Error).message); return 1; }
+}
+
+async function main(): Promise<number> {
+  loadEnvFile();
+  const [cmd, ...rest] = process.argv.slice(2);
+  switch (cmd) {
+    case undefined: case "help": case "--help": case "-h": console.log(HELP); return 0;
+    case "version": console.log(version()); return 0;
+    case "home": console.log(ROOT); return 0;
+    case "url": console.log(url()); return 0;
+    case "plugin-dir": console.log(pluginDir()); return 0;
+    case "serve": {
+      const p = Bun.spawn([process.execPath, "run", join(REPO, "src/server.ts")], { stdio: ["inherit", "inherit", "inherit"] });
+      return await p.exited;
+    }
+    case "spawn": return runScript("spawn-agent.sh", rest);
+    case "join": return runScript("agentnet-join.sh", rest);
+    case "pick-model": return runScript("pick-model.sh", rest);
+    case "pick-soul": return runScript("pick-soul.sh", rest);
+    case "bg": return runScript("bgjob.sh", rest);
+    case "despawn": return despawn(rest);
+    case "status": return status();
+    case "doctor": return doctor();
+    case "install-service": return installService(rest);
+    case "migrate-from-server-os": return migrateCmd(rest);
+    case "export-legacy": return exportCmd(rest);
+    case "update": console.log("agentnet update: not built yet (phase 8)"); return 3;
+    default: console.error(`agentnet: unknown command '${cmd}'\n${HELP}`); return 2;
+  }
+}
+
+process.exit(await main());

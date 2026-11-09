@@ -1,0 +1,14 @@
+[
+  {
+    "match": "my-linter\\.sh",
+    "name": "Linter",
+    "about": "Runs the linter after every edit and tells Claude about the findings.",
+    "log": "my-linter.jsonl",
+    "script": "my-linter.sh"
+  },
+  {
+    "match": "notify-done\\.py",
+    "name": "Done notice",
+    "about": "Sends a message when Claude finishes a turn."
+  }
+]
