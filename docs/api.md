@@ -24,6 +24,11 @@ is missing, the service picks it (the same rubric as `agentnet pick-model` and `
 `model`, `effort`, `soul`, `audit` (`mode=… model=… effort=… score=… reason=…` and `soul=…` lines) and `warnings`. The audit line is kept on the
 agent record. In reserve mode (usage at 90% or more) the spawn is refused with 409 `Reserve mode`. Members (`kind: "member"`) are not routed.
 `name`, `boss`, `team` and `project` are placed the same way (see "Where a new agent lands" in docs/director.md); the reply adds `name`, `boss`, `team`, `compact_window` (tokens) and `reasons`.
+**Goal.** `goal` (8+ characters) is required for a new agent: the outcome that means it is done, not what it does (that is `job`). A missing or short goal
+is refused with 422 `goal is required: what does done look like?`. Exempt: root, channel bots joining as `kind: "member"` (`agentnet-join.sh`), and the auto team
+created by placement (it takes the spawning agent's goal). `AGENTNET_REQUIRE_GOAL=0` turns the rule off for old callers. The goal is stored on the agent
+(`goal` in the snapshot and `GET /v1/agent/agents`) and shown in the agent panel. `POST /v1/agent/teams` needs `goal` the same way. `plan-spawn` accepts `goal` and ignores it.
+`spawn-agent.sh --goal TEXT` and `council.sh --goal TEXT` pass it (council defaults to "Decision + integrated build for: <job>"); the MCP `spawn` tool lists `goal` as required.
 `POST` or `GET /v1/admin/plan-spawn` (`job` needed) returns `{plan}` with the same fields and no side effects.
 
 ## Accepted risk
@@ -33,7 +38,17 @@ process could read the admin key file. A LAN or tailnet caller never gets root w
 
 ## SSE frames (`/v1/panel/stream`)
 
-`hello`, `agent`, `gone`, `msg`, and `ping` every 15 s. The frame id is the event seq.
+`hello`, `agent`, `gone`, `msg`, `check`, and `ping` every 15 s. The frame id is the event seq.
+
+## Owner checks
+
+A check is a thing only the owner can verify in the real world. It outlives the agent that asked, so the agent can be closed while it waits.
+
+- `POST /v1/agent/checks {question, options?, detail?}`: an agent writes the question and 2-4 answer buttons `options: [{label, tone: good|bad|neutral}]` (label max about 5 words; none given = Works / Not yet). An agent asks for itself (MCP tool `ask_owner_check`); root may add `agent` (any name, also a despawned one). The same open question from the same agent returns the existing row.
+- `GET /v1/agent/checks?state=pending|answered`: root sees all, an agent its own (MCP tool `list_checks`, root).
+- `GET /v1/panel/checks?state=`: the list for the page.
+- `POST /v1/panel/checks/{id}/resolve {option, note?}` (the label or index of one of the check's options; note is optional on every answer): a panel write (root only). It sends root a `report` from `owner`, subject `Owner answered "<label>": <question>`, with the note. It never spawns or closes anything: root decides. 409 when already resolved.
+- The panel stream sends a `check` frame (whole row) on every create and resolve; the snapshot carries `checks` (pending plus those answered in the last 30 s).
 
 ## Errors
 
@@ -64,3 +79,15 @@ The Hooks page names and describes hooks from `$AGENTNET_HOME/config/hook-catalo
 It is a JSON array of `{ "match": "<regex source tested against the hook command>", "name", "about", "log"?, "script"? }`.
 `log` is a JSONL file in `AGENTNET_HOOK_LOGS` that the hook appends to, and `script` is the script name shown on its fires.
 Without the file every hook gets its script name and a line built from its event. See `docs/hook-catalog.example.json`.
+
+## Hook templates and install
+
+Templates ship in `config/hook-templates.json` (override: `AGENTNET_HOOK_TEMPLATES`). A broken file gives an empty gallery. Every route below is root only and writes through the same backup, validate and rollback path as the on/off switch.
+
+| Route | Does |
+|---|---|
+| `GET /v1/panel/hooks/templates` | Templates with `state` (`available`, `installed`, `switched-off`) and `missing` (requirements not found on this machine). |
+| `POST /v1/panel/hooks/install` | Body `{ "templateId" }` or `{ "custom": { event, matcher?, command, timeout? } }`, plus `dryRun: true` to return the settings fragment and write nothing. Returns `{ installed, backup, fragment, hooks, backups }`. 409 when the hook is already added (on or switched off), 400 with a plain message when validation fails, 404 for an unknown template. |
+| `DELETE /v1/panel/hooks/{id}` | Remove a hook for good, on or switched off. 404 when not found. |
+
+Risk is derived from the command: `network` (curl, wget, nc, ssh, http), else `writes` (redirect to a file outside /tmp, or an in-place formatter), else `blocks` (`exit 2`), else `read-only`. Custom hooks: event is one of the 10 Claude Code events; a matcher only on PreToolUse, PostToolUse and PermissionRequest and it must compile as a regex; timeout 1 to 600 s (default 10); command 1 to 4096 characters.

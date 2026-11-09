@@ -9,7 +9,7 @@ you -> director (root agent) -> [triage] line -> inline | background agent | cou
 
 ## 1. Start the director
 
-Start the server, then start a root agent in its own terminal.
+The quickest way is `bin/agentnet init` (add `--start` to run it in tmux), or the **Set up your director** card on the board. Both print or run the command below. By hand: start the server, then start a root agent in its own terminal.
 
 ```sh
 bin/agentnet serve                     # terminal 1
@@ -35,24 +35,23 @@ The rules are in `$AGENTNET_HOME/config/placement.json`: `team_by_project` (defa
 
 ## 2. Add the triage hook
 
-The hook runs before Claude sees each prompt. It asks a small model to classify the prompt and adds one `[triage]` line to the director's context.
+The hook runs before Claude sees each prompt. It asks a small model, through Claude Code, to classify the prompt and adds one `[triage]` line to the director's context.
 
 ```sh
 bin/agentnet install-hooks            # prints the settings.json snippet, writes nothing
 bin/agentnet install-hooks --write    # backs up settings.json, then adds the hook once
 ```
 
-The hook needs `python3` and `ANTHROPIC_API_KEY` in the environment of the Claude Code session. Without a key it does nothing and never blocks your prompt. It fails open after a 4 second budget.
+The hook needs `python3` and the `claude` command, logged in. It runs `claude -p` with no settings sources, so no hook (including itself) loads in the child call. Without a login it does nothing and never blocks your prompt. It fails open after a 7 second budget. Run `claude` once and log in if the Agents page says triage is skipping.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | none | Used for one small API call per prompt. Never printed or logged. |
-| `AGENTNET_TRIAGE_MODEL` | `claude-haiku-5-5` | Classifier model. |
-| `AGENTNET_TRIAGE_BUDGET` | `4` | Total seconds before it gives up. |
+| `AGENTNET_TRIAGE_MODEL` | `haiku` | Model passed to `claude -p --model`. |
+| `AGENTNET_TRIAGE_BUDGET` | `7` | Total seconds before it gives up. |
 | `AGENTNET_TRIAGE_LOG` | `$AGENTNET_HOME/logs/triage.jsonl` | Log of each decision. `off` disables it. The Hooks page reads it. |
-| `AGENTNET_TRIAGE_STUB` | none | A JSON object used instead of the API. For tests and dry runs. |
+| `AGENTNET_TRIAGE_STUB` | none | A JSON object used instead of calling claude. For tests and dry runs. |
 
-Try it without a key:
+Try it without calling claude:
 
 ```sh
 echo '{"prompt":"build a settings page"}' | AGENTNET_BIN=bin/agentnet python3 hooks/triage.py --self-test

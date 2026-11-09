@@ -41,18 +41,19 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
 </script>
 
 <template>
-  <article class="anc" :class="['s-' + dot, { sel: selected, root: !row || row.name === 'root' }]" role="button" tabindex="0" :aria-pressed="selected ? 'true' : 'false'"
+  <article class="anc" :class="['s-' + dot, { sel: selected, root: !row || row.name === 'root', setup: !row }]" role="button" tabindex="0" :aria-pressed="selected ? 'true' : 'false'"
     @click="emit('select')" @keydown.enter.prevent="emit('select')" @keydown.space.prevent="emit('select')">
     <header class="anc-h">
       <span class="dot" :title="DOT_LABEL[dot]" :aria-label="DOT_LABEL[dot]" role="img" />
-      <b class="nm" :title="name">{{ name }}</b>
+      <b class="nm" :title="name">{{ row ? name : "Set up your director" }}</b>
       <span v-if="winOpen" class="chip win" title="Its Terminal window is open on the server Mac"><Icon name="square-terminal" :size="12" /> open</span>
       <span v-if="row?.model" class="chip" :class="{ nm2: winOpen }" :title="row.model">{{ row.model.replace(/^claude-/, "").replace(/-\d+(-\d+)*$/, "") }}</span>
     </header>
-    <p class="job" :title="row?.job ?? undefined">{{ row ? (row.job ?? "no job") : "no director connected" }}</p>
+    <p class="job" :title="row?.job ?? undefined">{{ row ? (row.job ?? "no job") : "No director connected yet" }}</p>
+    <p v-if="!row" class="cta">Set up now <Icon name="arrow-up-right" :size="14" /></p>
     <p v-if="row" class="boss"><Icon name="users" :size="13" /> {{ row.boss ?? "no boss" }}</p>
 
-    <p class="doing" :class="{ warn: blocked }" :title="doingText">{{ doingText }}</p>
+    <p v-if="row" class="doing" :class="{ warn: blocked }" :title="doingText">{{ doingText }}</p>
 
     <TransitionGroup v-if="bg.length" tag="ul" name="bgr" class="bgl" aria-label="Background work">
       <li v-for="b in bg" :key="b.id" :class="['bgi', bgShown(b, net.now || Date.now())]" :title="`${KIND[b.kind]}: ${b.label} · ${b.state}`"><i class="bgd" /><span class="bgk">{{ KIND[b.kind] }}</span><span class="bgt">{{ b.label }}</span><span class="bgs">{{ bgShown(b, net.now || Date.now()) === "stale" ? "stale" : b.state === "running" ? dur(b) : b.state + " · " + dur(b) }}</span></li>
@@ -70,7 +71,7 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
     <p v-if="last" class="last" :title="`${last.dir === 'out' ? 'to' : 'from'} ${last.peer}: ${last.snippet}`"><Icon :name="last.dir === 'out' ? 'send' : 'message'" :size="13" /> <span>{{ last.dir === "out" ? "to" : "from" }} {{ last.peer }}: {{ last.snippet }}</span></p>
     <p v-else-if="row" class="last none">No messages yet</p>
 
-    <footer class="acts" @click.stop @keydown.stop>
+    <footer v-if="row" class="acts" @click.stop @keydown.stop>
       <button type="button" class="btn sm" :disabled="btnOff" :title="btnTip" :aria-label="`Open ${name} in Terminal`" @click="emit('open')"><Icon name="square-terminal" :size="15" /> Open</button>
       <button type="button" class="btn sm ghost" :disabled="btnOff" :title="gone ? 'Agent is gone' : 'Closes its Terminal window; the agent keeps running'" :aria-label="`Close ${name} window`" @click="emit('close')"><Icon name="x" :size="15" /> Close</button>
     </footer>
@@ -107,6 +108,9 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
 .s-blocked .dot{background:var(--bad)}
 .s-starting .dot{background:transparent;border:2px dashed var(--muted)}
 .s-starting{border-style:dashed}
+.anc.setup{border-style:dashed;border-color:color-mix(in srgb,var(--on) 55%,var(--line));background:color-mix(in srgb,var(--on) 6%,var(--panel))}
+.anc.setup .dot{background:transparent;border:2px dashed var(--on)}
+.cta{margin:auto 0 0;display:inline-flex;align-items:center;gap:6px;justify-self:start;align-self:flex-start;min-height:36px;padding:0 14px;border-radius:12px;background:var(--on);color:#06210f;font:600 13px/36px var(--body)}
 .s-stopping{opacity:.6}
 .s-root .dot{background:var(--lock)}
 @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--on) 55%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}

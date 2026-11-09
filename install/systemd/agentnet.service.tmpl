@@ -13,6 +13,7 @@ ExecStart="{{Bun}}" run src/server.ts
 Environment="AGENTNET_HOME={{Home}}"
 Environment="AGENTNET_PORT={{Port}}"
 Environment="AGENTNET_HOST={{Host}}"
+Environment="AGENTNET_SERVICE_UNIT={{Unit}}"
 Environment="PATH={{Path}}"
 Restart=always
 RestartSec=5

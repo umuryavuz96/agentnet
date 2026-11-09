@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { dir } from "../core/config";
 import { problem, type Env } from "../core/http";
 import { rootOnly } from "../core/access";
+import { HookInputError, templates, validateHook, type HookSpec, type HookTemplate } from "./hook-templates";
 
 export interface RawHook { type?: string; command?: string; timeout?: number; [k: string]: unknown }
 interface Group { matcher?: string; hooks: RawHook[]; [k: string]: unknown }
@@ -52,7 +53,7 @@ export function catalog(): CatalogEntry[] {
 }
 const EVENT_ABOUT: Record<string, string> = {
   SessionStart: "Runs when a session starts or resumes.", SessionEnd: "Runs when a session ends.", Stop: "Runs when Claude finishes a turn.",
-  StopFailure: "Runs when a turn ends in an error.", SubagentStop: "Runs when a sub-agent finishes.", UserPromptSubmit: "Runs on every prompt you send, before Claude sees it.",
+  StopFailure: "Runs when a turn ends in an error.", SubagentStop: "Runs when a sub-agent finishes.", PreCompact: "Runs before the context is compacted.", UserPromptSubmit: "Runs on every prompt you send, before Claude sees it.",
   PreToolUse: "Runs before a tool call and may block it.", PostToolUse: "Runs after a tool call.", Notification: "Runs when Claude raises a notification.", PermissionRequest: "Runs when Claude asks for permission.",
 };
 
@@ -60,6 +61,8 @@ export const hookId = (event: string, matcher: string | null, command: string) =
 const scriptOf = (cmd: string) => { const w = cmd.trim().split(/\s+/).filter((x) => !/^(node|python3?|bash|sh)$/.test(x) && !x.endsWith("/python") && !x.endsWith("/bin/python")); return w[w.length - 1] ?? cmd; };
 
 function readSettings(): { raw: string; json: Settings } {
+  // A fresh machine may have no ~/.claude/settings.json yet: start it as "{}" so the backup and install path work.
+  if (!existsSync(SETTINGS())) { mkdirSync(dirname(SETTINGS()), { recursive: true }); writeFileSync(SETTINGS(), "{}\n", { mode: 0o600 }); }
   const raw = readFileSync(SETTINGS(), "utf8");
   return { raw, json: JSON.parse(raw) as Settings };
 }
@@ -68,6 +71,7 @@ function writeParked(p: Parked[]) { mkdirSync(dirname(PARKED()), { recursive: tr
 
 // ---------- logs ----------
 interface LogLine { ts?: string; ms?: number; latency_ms?: number; err?: unknown; error?: unknown; dry?: boolean; test?: boolean; skip?: boolean; reason?: string; p?: string; ack?: string; route?: string; kind?: string; agent?: string }
+export { readLog as readHookLog };
 function readLog(file: string): LogLine[] {
   try { return readFileSync(join(LOGS(), file), "utf8").split("\n").filter(Boolean).slice(-400).map((l) => { try { return JSON.parse(l) as LogLine; } catch { return {}; } }); } catch { return []; }
 }
@@ -138,10 +142,13 @@ export function listHooks(): HookInfo[] {
   const out: HookInfo[] = [];
   const mk = (event: string, matcher: string | null, h: RawHook, enabled: boolean): HookInfo => {
     const command = String(h.command ?? ""), k = catalog().find((x) => x.match.test(command));
+    // an inline shell command (a template or a custom one) has no script file: name it from its template, else call it a custom hook
+    const tpl = k ? undefined : templates().find((t) => t.command === command), inline = /[;|&$<>(\n]/.test(command);
+    const script = tpl ? tpl.id : inline ? "custom-" + hookId(event, matcher, command) : basename(scriptOf(command));
     const st = k?.log ? logStats(k.log) : null;
     return {
-      id: hookId(event, matcher, command), event, matcher, command, script: basename(scriptOf(command)), timeout: typeof h.timeout === "number" ? h.timeout : null, enabled,
-      name: k?.name ?? basename(scriptOf(command)), about: k?.about ?? EVENT_ABOUT[event] ?? "A custom hook.", log: k?.log ?? null,
+      id: hookId(event, matcher, command), event, matcher, command, script, timeout: typeof h.timeout === "number" ? h.timeout : null, enabled,
+      name: k?.name ?? tpl?.name ?? (inline ? "Custom hook" : script), about: k?.about ?? tpl?.about ?? EVENT_ABOUT[event] ?? "A custom hook.", log: k?.log ?? null,
       runs: st?.runs ?? 0, failures: st?.failures ?? 0, avgMs: st?.avgMs ?? null, p95Ms: st?.p95Ms ?? null, lastAt: st?.lastAt ?? null, recent: st?.recent ?? [],
     };
   };
@@ -162,7 +169,7 @@ function backup(): string {
   return b;
 }
 /** Write `next` as the new settings, but only if it differs from `prev` in the "hooks" key alone. */
-function commit(prev: Settings, next: Settings): void {
+function commit(prev: Settings, next: Settings): string {
   const { hooks: _a, ...restPrev } = prev, { hooks: _b, ...restNext } = next;
   if (JSON.stringify(restPrev) !== JSON.stringify(restNext)) throw new Error("refusing to change anything but hooks");
   const text = JSON.stringify(next, null, 2), f = SETTINGS(), b = backup();
@@ -174,6 +181,7 @@ function commit(prev: Settings, next: Settings): void {
     renameSync(t, f);
     JSON.parse(readFileSync(f, "utf8"));
   } catch (e) { copyFileSync(b, f); throw e; }
+  return basename(b);
 }
 
 /** Switch one hook off (taken out of settings.json, parked) or on (put back where it was). Returns the new list. */
@@ -205,6 +213,91 @@ export function setHookEnabled(id: string, enabled: boolean): HookInfo[] {
   parked.splice(pi, 1);
   commit(prev, json); writeParked(parked);
   return listHooks();
+}
+
+// ---------- add and remove ----------
+export type TemplateState = "available" | "installed" | "switched-off";
+const stateOf = (id: string, live: Set<string>, parked: Set<string>): TemplateState => (live.has(id) ? "installed" : parked.has(id) ? "switched-off" : "available");
+function liveIds(json: Settings): Set<string> {
+  return new Set(Object.entries(json.hooks ?? {}).flatMap(([e, gs]) => gs.flatMap((g) => (g.hooks ?? []).map((h) => hookId(e, g.matcher ?? null, String(h.command ?? ""))))));
+}
+/** The gallery: every template with its state here and the requirements this machine lacks. */
+export function templateList(): (HookTemplate & { state: TemplateState; missing: string[] })[] {
+  let live = new Set<string>(); try { live = liveIds(readSettings().json); } catch { /* no settings yet */ }
+  const parked = new Set(readParked().map((p) => p.id));
+  return templates().map((t) => ({ ...t, state: stateOf(hookId(t.event, t.matcher, t.command), live, parked), missing: t.requirements.filter((r) => !Bun.which(r)) }));
+}
+/** Add one hook (a template id or a custom spec). dryRun returns the settings fragment and writes nothing. A hook that is already
+ *  there, on or switched off, is a 409: adding twice never makes a duplicate. */
+export function installHook(input: { templateId?: unknown; custom?: unknown; dryRun?: unknown }): { id: string; fragment: Settings; backup: string | null } {
+  let spec: HookSpec;
+  if (typeof input.templateId === "string") {
+    const t = templates().find((x) => x.id === input.templateId);
+    if (!t) throw new HookInputError("unknown template", 404);
+    spec = { event: t.event, matcher: t.matcher, command: t.command, timeout: t.timeout };
+  } else if (input.custom && typeof input.custom === "object") spec = validateHook(input.custom as Record<string, unknown>);
+  else throw new HookInputError("send templateId or custom");
+  const id = hookId(spec.event, spec.matcher, spec.command);
+  const hook: RawHook = { type: "command", command: spec.command, timeout: spec.timeout };
+  const fragment: Settings = { hooks: { [spec.event]: [{ ...(spec.matcher ? { matcher: spec.matcher } : {}), hooks: [hook] }] } };
+  const { json } = readSettings(), prev = structuredClone(json);
+  if (liveIds(json).has(id) || readParked().some((p) => p.id === id)) throw new HookInputError("this hook is already added", 409);
+  if (input.dryRun === true) return { id, fragment, backup: null };
+  json.hooks ??= {};
+  const groups = (json.hooks[spec.event] ??= []);
+  const near = groups.find((g) => (g.matcher ?? null) === spec.matcher);
+  if (near) (near.hooks ??= []).push(hook); else groups.push(fragment.hooks![spec.event][0]);
+  return { id, fragment, backup: commit(prev, json) };
+}
+/** Add several templates in one write and one backup (default: the Starter set). Idempotent: a template that is already
+ *  there (on or switched off) or whose requirements this machine lacks is skipped and listed with the reason. dryRun writes nothing. */
+export function installSet(input: { ids?: unknown; dryRun?: unknown }): { added: string[]; skipped: { id: string; reason: string }[]; fragment: Settings; backup: string | null } {
+  const all = templates();
+  let ids: string[];
+  if (input.ids === undefined) ids = all.filter((t) => t.starter).map((t) => t.id);
+  else if (Array.isArray(input.ids) && input.ids.every((x) => typeof x === "string")) ids = [...new Set(input.ids as string[])];
+  else throw new HookInputError("ids must be a list of template ids");
+  if (!ids.length) throw new HookInputError("no templates to add");
+  const { json } = readSettings(), prev = structuredClone(json), live = liveIds(json), parked = new Set(readParked().map((p) => p.id));
+  const added: string[] = [], skipped: { id: string; reason: string }[] = [], fragment: Settings = { hooks: {} };
+  json.hooks ??= {};
+  for (const id of ids) {
+    const t = all.find((x) => x.id === id);
+    if (!t) throw new HookInputError(`unknown template: ${id}`, 404);
+    const hid = hookId(t.event, t.matcher, t.command), missing = t.requirements.filter((r) => !Bun.which(r));
+    if (live.has(hid)) { skipped.push({ id, reason: "already installed" }); continue; }
+    if (parked.has(hid)) { skipped.push({ id, reason: "installed, switched off" }); continue; }
+    if (missing.length) { skipped.push({ id, reason: `needs ${missing.join(", ")}` }); continue; }
+    const hook: RawHook = { type: "command", command: t.command, timeout: t.timeout };
+    for (const target of [json.hooks, fragment.hooks!]) {
+      const groups = (target[t.event] ??= []), near = groups.find((g) => (g.matcher ?? null) === t.matcher);
+      if (near) (near.hooks ??= []).push({ ...hook }); else groups.push({ ...(t.matcher ? { matcher: t.matcher } : {}), hooks: [{ ...hook }] });
+    }
+    live.add(hid); added.push(id);
+  }
+  if (input.dryRun === true || !added.length) return { added, skipped, fragment, backup: null };
+  return { added, skipped, fragment, backup: commit(prev, json) };
+}
+/** Remove a hook for good, whether it is on or switched off. */
+export function uninstallHook(id: string): { backup: string | null } {
+  const { json } = readSettings(), prev = structuredClone(json), parked = readParked();
+  const pi = parked.findIndex((p) => p.id === id);
+  let backup: string | null = null;
+  for (const [event, groups] of Object.entries(json.hooks ?? {})) {
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi], hi = (g.hooks ?? []).findIndex((h) => hookId(event, g.matcher ?? null, String(h.command ?? "")) === id);
+      if (hi < 0) continue;
+      g.hooks.splice(hi, 1);
+      if (!g.hooks.length) groups.splice(gi, 1);
+      if (!groups.length) delete json.hooks![event];
+      backup = commit(prev, json);
+      if (pi >= 0) { parked.splice(pi, 1); writeParked(parked); }
+      return { backup };
+    }
+  }
+  if (pi < 0) throw new HookInputError("hook not found", 404);
+  parked.splice(pi, 1); writeParked(parked);
+  return { backup };
 }
 
 /** Put the newest backup back (and park nothing: the parked list is cleared because the backup is the truth). */
@@ -250,6 +343,17 @@ export function hooksRoutes(api: Hono<Env>) {
   }));
   // Past fires for the panel: GET /agent-hooks/fires?agent=backend-1&limit=50 -> { agent, fires: HookFire[] } (newest first).
   api.get("/agent-hooks/fires", rootOnly, (c) => c.json({ agent: c.req.query("agent") || null, fires: recentFires(c.req.query("agent") || undefined, Number(c.req.query("limit")) || 50) }));
+  api.get("/agent-hooks/templates", rootOnly, (c) => c.json({ templates: templateList() }));
+  const bad = (c: Parameters<typeof problem>[0], e: unknown) => e instanceof HookInputError ? problem(c, e.status, e.status === 409 ? "Conflict" : e.status === 404 ? "Not Found" : "Bad Request", e.message) : problem(c, 400, "Bad Request", String((e as Error).message));
+  api.post("/agent-hooks/install", rootOnly, async (c) => {
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    try { const r = installHook(body); return c.json({ installed: r.id, backup: r.backup, fragment: r.fragment, dryRun: body.dryRun === true, hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return bad(c, e); }
+  });
+  api.post("/agent-hooks/install-set", rootOnly, async (c) => {
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    try { const r = installSet(body); return c.json({ ...r, dryRun: body.dryRun === true, hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return bad(c, e); }
+  });
+  api.delete("/agent-hooks/:id", rootOnly, (c) => { try { const r = uninstallHook(c.req.param("id")); return c.json({ backup: r.backup, hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return bad(c, e); } });
   api.get("/agent-hooks", (c) => { try { return c.json({ hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return c.json({ hooks: [], backups: [], error: String((e as Error).message) }); } });
   api.post("/agent-hooks/:id/enabled", rootOnly, async (c) => {
     const body = await c.req.json().catch(() => ({})) as { enabled?: unknown };

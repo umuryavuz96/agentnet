@@ -20,6 +20,9 @@ import { hooksRoutes } from "./net/hooks";
 import { webRoutes } from "./net/web";
 import { agentnetWindowRoutes, startSessionReaper } from "./net/windows";
 import { agentControlRoutes } from "./net/controls";
+import { startUpdateTimers, updateRoutes } from "./net/update";
+import { checksPanelRoutes } from "./net/checksPanel";
+import { directorRoutes } from "./net/director";
 
 export function buildApp(): Hono<Env> {
   const app = new Hono<Env>();
@@ -31,8 +34,8 @@ export function buildApp(): Hono<Env> {
   api.use("*", (c, next) => (isPanelWrite(c.req.method, c.req.path) ? rootOnly(c, next) : next())); // panel writes: loopback or the root token
   // Page routes before agentnetRoutes, as in the original server.
   agentnetStreamRoutes(api); agentnetUsageRoutes(api); agentnetPanelSendRoute(api); agentnetTeamPanelRoutes(api);
-  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); agentControlRoutes(api);
-  summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api);
+  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); agentControlRoutes(api); checksPanelRoutes(api);
+  summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api); updateRoutes(api); directorRoutes(api);
   agentnetRoutes(api);
   app.route("/api/v1", api);
   webRoutes(app);
@@ -57,7 +60,7 @@ if (import.meta.main) {
   if (!bindOk(HOST)) { console.error(`agentnet: refusing to listen on ${HOST}. Use 127.0.0.1 or one LAN or tailnet address (AGENTNET_HOST).`); process.exit(2); }
   const app = buildApp();
   Bun.serve({ hostname: HOST, port: PORT, fetch: makeFetch(app), idleTimeout: 0 }); // idleTimeout 0: SSE and 25 s long-polls
-  startLiveness(); startSessionReaper();
+  startLiveness(); startSessionReaper(); startUpdateTimers();
   logEvent("info", "agentnet listening", { host: HOST, port: PORT, version: VERSION });
   console.log(`agentnet ${VERSION} on http://${HOST}:${PORT}`);
 }

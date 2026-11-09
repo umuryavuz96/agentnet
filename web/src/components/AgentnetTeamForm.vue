@@ -12,12 +12,12 @@ const el = ref<HTMLElement | null>(null);
 const agents = computed(() => Object.values(net.agents).filter((a) => a.name !== "root" && a.life !== "gone" && a.life !== "failed").map((a) => a.name).sort());
 const toggle = (n: string) => { const s = new Set(picked.value); s.has(n) ? s.delete(n) : s.add(n); picked.value = s; };
 const setLead = (n: string) => { lead.value = lead.value === n ? "" : n; if (lead.value) picked.value = new Set(picked.value).add(n); };
-const can = computed(() => name.value.trim().length > 1 && !busy.value);
+const can = computed(() => name.value.trim().length > 1 && goal.value.trim().length >= 8 && !busy.value);
 async function submit() {
   if (!can.value) return;
   busy.value = true; err.value = "";
   try {
-    const r = await api<{ team: { id: string } }>("v1/panel/teams", { method: "POST", body: { name: name.value.trim(), goal: goal.value.trim() || undefined, lead: lead.value || undefined, members: [...picked.value], project: project.value.trim() || undefined } });
+    const r = await api<{ team: { id: string } }>("v1/panel/teams", { method: "POST", body: { name: name.value.trim(), goal: goal.value.trim(), lead: lead.value || undefined, members: [...picked.value], project: project.value.trim() || undefined } });
     await loadTeams(); emit("created", r.team.id); emit("close");
   } catch (e) { err.value = (e as Error).message; } finally { busy.value = false; }
 }
@@ -37,7 +37,7 @@ function trap(e: KeyboardEvent) {
     <form ref="el" class="tf glass-strong" role="dialog" aria-modal="true" aria-label="New team" @submit.prevent="submit" @keydown="trap">
       <header class="tf-h"><h2>New team</h2><button type="button" class="tf-x" aria-label="Close" @click="emit('close')"><Icon name="x" :size="20" /></button></header>
       <label class="tf-f"><span>Name</span><input v-model="name" type="text" maxlength="60" placeholder="e.g. Turntable" autocomplete="off" /></label>
-      <label class="tf-f"><span>Goal</span><textarea v-model="goal" rows="2" maxlength="500" placeholder="One line the whole team can read" /></label>
+      <label class="tf-f"><span>Goal</span><textarea v-model="goal" rows="2" maxlength="500" required minlength="8" placeholder="What does done look like? One line the whole team can read" /></label>
       <div class="tf-f" role="group" aria-label="Lead"><span>Lead</span>
         <div class="tf-chips"><button v-for="n in agents" :key="n" type="button" :class="{ on: lead === n }" :aria-pressed="lead === n" @click="setLead(n)">{{ n }}</button><em v-if="!agents.length">No live agents</em></div>
       </div>

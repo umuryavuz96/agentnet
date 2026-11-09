@@ -1,5 +1,5 @@
 // agentnet page contract: GET /agentnet/snapshot {seq, agents, messages} and the SSE
-// /agentnet/stream: `hello` (full), `agent` (merge patch of one row), `gone` ({id, seq, prev, reason}), `msg`, `ping`.
+// /agentnet/stream: `hello` (full), `agent` (merge patch of one row), `gone` ({id, seq, prev, reason}), `msg`, `check` (an owner check created or resolved, whole row), `ping`.
 // Every frame carries `id: <seq>` and `data.prev` (EventSource drops unknown fields). Phase 1 floor: `hello` on every
 // reconnect, no ring buffer. Panel auth (requireAuth on the api app), not the agent token.
 import type { Hono } from "hono";
@@ -7,6 +7,7 @@ import { streamSSE } from "hono/streaming";
 import { db } from "../core/db";
 import type { Env } from "../core/http";
 import { doing, progressPct, ensureSchema, lastSeq, live, onPatch, type Patch, type Snapshot } from "./store";
+import { onCheck, visibleChecks, type Check } from "./checks";
 import { nameMap, onMessage, subjectOf } from "./routes";
 
 const RECENT = 200;
@@ -23,7 +24,7 @@ export function recentMessages(limit = RECENT): MsgRow[] {
 /** One message row by id (the `msg` frame carries the whole row, so the page threads it without waiting for a hello). */
 export function messageRow(id: number): MsgRow | null { const m = db().query(`SELECT ${COLS} FROM messages WHERE id = ?`).get(id) as Raw | null; return m ? toRow(m, names()) : null; }
 export const row = (s: Snapshot) => ({ ...s, doing: doing(s), progressPct: progressPct(s) });
-export const snapshot = () => ({ seq: lastSeq(), agents: Object.fromEntries(live().map((s) => [s.id, row(s)])), messages: recentMessages() });
+export const snapshot = () => ({ seq: lastSeq(), agents: Object.fromEntries(live().map((s) => [s.id, row(s)])), messages: recentMessages(), checks: visibleChecks() });
 
 /** RFC 7386 merge patch between two rows: changed keys only, `null` for a removed key, arrays and objects whole. */
 export function mergePatch(prev: Record<string, unknown> | null, next: Record<string, unknown>): Record<string, unknown> {
@@ -55,8 +56,9 @@ export function agentnetStreamRoutes(api: Hono<Env>) {
     };
     // every stored message is a frame, whoever sent it (loopback root has no agent row); the row rides whole
     const pushMsg = (id: number) => { const row = messageRow(id); if (row) { queue.push({ event: "msg", data: row as unknown as Record<string, unknown>, seq: lastSeq() }); wake?.(); } };
-    const off = onPatch(push), offMsg = onMessage(pushMsg);
-    stream.onAbort(() => { off(); offMsg(); wake?.(); });
+    const pushCheck = (k: Check) => { queue.push({ event: "check", data: k as unknown as Record<string, unknown>, seq: lastSeq() }); wake?.(); };
+    const off = onPatch(push), offMsg = onMessage(pushMsg), offCheck = onCheck(pushCheck);
+    stream.onAbort(() => { off(); offMsg(); offCheck(); wake?.(); });
     const hello = snapshot(); prev = hello.seq;
     for (const [id, s] of Object.entries(hello.agents)) last.set(id, s as unknown as Record<string, unknown>);
     await stream.writeSSE({ id: String(hello.seq), event: "hello", data: JSON.stringify({ ...hello, prev: 0 }) });
@@ -67,6 +69,6 @@ export function agentnetStreamRoutes(api: Hono<Env>) {
       while (queue.length) { const f = queue.shift()!; await stream.writeSSE({ id: String(f.seq), event: f.event, data: JSON.stringify({ ...f.data, seq: f.seq, prev }) }); prev = f.seq; }
       if (Date.now() - beat > 15_000) { await stream.writeSSE({ event: "ping", data: JSON.stringify({ at: Date.now(), prev }) }); beat = Date.now(); }
     }
-    off(); offMsg();
+    off(); offMsg(); offCheck();
   }));
 }

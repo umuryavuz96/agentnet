@@ -111,6 +111,18 @@ describe("install-service", () => {
     } else { expect(r.out).toContain("ExecStart="); expect(r.out).toContain('"AGENTNET_PORT=3096"'); }
     expect(r.err).toContain("would write");
   });
+  test("AGENTNET_SERVICE_LABEL / _UNIT name the unit; odd characters are refused", async () => {
+    const HOME = tmp("an-home-"), env = { HOME, AGENTNET_HOME: join(HOME, "data"), AGENTNET_SERVICE_LABEL: "dev.agentnet.updtest", AGENTNET_SERVICE_UNIT: "agentnet-updtest" };
+    const a = await cli(["install-service"], env);
+    expect(a.code).toBe(0);
+    const unit = mac ? join(HOME, "Library/LaunchAgents/dev.agentnet.updtest.plist") : join(HOME, ".config/systemd/user/agentnet-updtest.service");
+    expect(existsSync(unit)).toBe(true);
+    const text = readFileSync(unit, "utf8");
+    if (mac) { expect(text).toContain("<string>dev.agentnet.updtest</string>"); expect(text).toMatch(/AGENTNET_SERVICE_LABEL<\/key>\s*<string>dev\.agentnet\.updtest</); }
+    else { expect(text).toContain('"AGENTNET_SERVICE_UNIT=agentnet-updtest"'); expect(a.out).toContain("enable --now agentnet-updtest"); }
+    const bad = await cli(["install-service", "--dry-run"], { AGENTNET_SERVICE_LABEL: "a b" });
+    expect(bad.code).toBe(1); expect(bad.err).toContain("may only contain");
+  });
   test("ampersand in AGENTNET_HOME still lints", async () => {
     if (!mac) return;
     const home = join(tmp("an-"), "a&b");
@@ -149,6 +161,6 @@ describe("bg and misc", () => {
     const pd = (await cli(["plugin-dir"])).out.trim();
     expect(existsSync(join(pd, ".claude-plugin", "plugin.json"))).toBe(true);
     expect((await cli(["frobnicate"])).code).toBe(2);
-    expect((await cli(["update"])).code).toBe(3);
+    expect((await cli(["update", "--bogus"])).code).toBe(2); // bad option; update itself is tested in test/update.test.ts on a fixture repo
   });
 });

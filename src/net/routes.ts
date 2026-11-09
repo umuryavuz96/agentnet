@@ -8,15 +8,17 @@ import { ROOT } from "../core/config";
 import { isLoopback } from "../core/access";
 import { audit, logEvent } from "../core/logger";
 import { problem, type Env } from "../core/http";
+import { summarize as summarizeBg, enabled as bgSumEnabled } from "./bgsum";
 import { emit, flush, get, live, all, events, doing, progressPct, lastSeq, ensureSchema, goneKey, BG_KINDS, BG_STATES, type Snapshot, type Source } from "./store";
 import { pollOpened, pollClosed } from "./liveness";
 import { realTmux, createdOf, type Tmux } from "./windows";
-import { sameTeam, getTeam, addMember, createTeam, gatePasses, leadGate, teamsOf } from "./teams";
+import { sameTeam, getTeam, addMember, createTeam, gatePasses, leadGate, teamsOf, goalError } from "./teams";
 import { teamRoutes, sendTeam } from "./teamRoutes";
 import { trailSearch, trailInject, cassReady } from "./trailSearch";
 import { RouteBlocked } from "./autoroute";
 import { planSpawn, type PlanInput } from "./placement";
 import { gradeTask, recordDone } from "./scores";
+import { createCheck, listChecks } from "./checks";
 import { hasNoteFields, logTrail, trailConfig, writeNote, type NoteFields } from "./trails";
 
 const sha = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
@@ -40,11 +42,13 @@ export const deliveryText = (msgs: { id: number; from: string; kind: string; sub
   return msgs.length > 1 ? `agentnet: ${msgs.length} messages\n${lines.join("\n")}` : lines[0] ?? "";
 };
 
-export interface AgentRow { id: string; name: string; gen: number; job: string | null; boss: string | null; model: string | null; effort: string | null; soul: string | null; audit?: string | null; project: string | null; spawned_by: string | null; spawned_at: number; token_hash: string | null; archived_at: number | null; placement?: string | null; token_file: string | null; kind: "agent" | "member" }
+export interface AgentRow { id: string; name: string; gen: number; job: string | null; boss: string | null; model: string | null; effort: string | null; soul: string | null; goal?: string | null; audit?: string | null; project: string | null; spawned_by: string | null; spawned_at: number; token_hash: string | null; archived_at: number | null; placement?: string | null; token_file: string | null; kind: "agent" | "member" }
 /** A request from this machine acts as root (the ADMIN pseudo-row): spawn, despawn, placement, reads. */
 export const ADMIN: AgentRow = { id: "@admin", name: "root", gen: 0, job: null, boss: null, model: null, effort: null, soul: null, project: null, spawned_by: null, spawned_at: 0, token_hash: null, archived_at: null, token_file: null, kind: "agent" };
 /** The sender of panel admin actions (Stop, Close, Run now): shown as "admin", never a real agent, no token. */
 export const PANEL: AgentRow = { ...ADMIN, id: "@panel", name: "admin" };
+/** The sender of a resolved owner check: the person who tapped Works / Not yet. */
+export const OWNER: AgentRow = { ...ADMIN, id: "@owner", name: "owner" };
 /** True when this token belongs to the live root agent. */
 export const rootByToken = (t: string): boolean => byToken(t)?.name === "root";
 const byToken = (t: string) => (ensureSchema(), db().query("SELECT * FROM agents WHERE token_hash = ? AND archived_at IS NULL").get(sha(t)) as AgentRow | null);
@@ -54,13 +58,13 @@ export const byName = (n: string) => (ensureSchema(), db().query("SELECT * FROM 
 
 /** The agent endpoints, listed explicitly: the panel's requireAuth lets only these through to this module's own bearer
  *  check (unknown token = 401 here). snapshot and stream are not listed: they stay behind panel auth. */
-export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
+export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
 
 // ---------- the one hierarchy check: boss, own reports, teammates under the same boss; root outbound exempt ----------
 export const isRoot = (a: { name: string }) => a.name === "root";
-/** Why `from` may not reach `to`, or null. The lead gate comes first and binds root too: a team with a lead is reached through its lead. */
+/** Why `from` may not reach `to`, or null. The lead gate binds everyone except root: root (the director) may always send, and a team whose lead is gone is not gated. */
 export function gateDenied(from: { name: string }, to: { name: string }): string | null {
-  if (gatePasses(from.name, to.name)) return null;
+  if (isRoot(from) || gatePasses(from.name, to.name)) return null;
   const lead = leadGate(to.name), team = teamsOf(to.name).find((t) => t.lead === lead);
   return `${to.name} is in team ${team?.id ?? "?"}: send it to its lead ${lead}`;
 }
@@ -98,7 +102,7 @@ const inboxIds = (a: AgentRow) => (isRoot(a) ? [a.id, ADMIN.id] : [a.id]);
 const pending = (a: AgentRow): Msg[] => db().query(`SELECT * FROM messages WHERE to_agent IN (${inboxIds(a).map(() => "?").join(",")}) AND state = 'queued' ORDER BY id`).all(...inboxIds(a)) as Msg[];
 const pub = (m: Msg, names: Map<string, string>) => ({ id: m.id, from: names.get(m.from_agent) ?? m.from_agent, kind: kindOf(m.kind), subject: m.subject ?? subjectOf(undefined, m.body), body: m.body, reply_to: m.reply_to, at: m.created_at });
 /** agent id → name; the loopback root sends show as root. */
-export const nameMap = () => new Map([["@admin", "root"], ["@panel", "admin"], ...(db().query("SELECT id, name FROM agents").all() as { id: string; name: string }[]).map((r) => [r.id, r.name] as [string, string])]);
+export const nameMap = () => new Map([["@admin", "root"], ["@panel", "admin"], ["@owner", "owner"], ...(db().query("SELECT id, name FROM agents").all() as { id: string; name: string }[]).map((r) => [r.id, r.name] as [string, string])]);
 /** Re-boss a live agent: the row and the fold (the Cards page reads the fold). No-op when the boss is already that. */
 export function setBoss(name: string, boss: string | null, now = Date.now()): boolean {
   const a = byName(name); if (!a || a.boss === boss) return false;
@@ -129,7 +133,7 @@ export function releaseHeld(agent: string, now = Date.now()) {
 const revoke = (id: string, now: number) => db().run("INSERT OR IGNORE INTO revoked_tokens (hash, agent_id, at) SELECT token_hash, id, ? FROM agents WHERE id = ? AND token_hash IS NOT NULL", [now, id]);
 /** True when this token belonged to a retired agent. */
 export const isRevoked = (t: string): boolean => (ensureSchema(), !!db().query("SELECT 1 FROM revoked_tokens WHERE hash = ?").get(sha(t)));
-export interface SpawnInput { name: string; job?: string; boss?: string; model?: string; effort?: string; soul?: string; audit?: string; compactWindow?: number; project?: string; by: string; kind?: "agent" | "member" }
+export interface SpawnInput { name: string; job?: string; boss?: string; model?: string; effort?: string; soul?: string; goal?: string; audit?: string; compactWindow?: number; project?: string; by: string; kind?: "agent" | "member" }
 /** Create the spawn record and the 0600 token file. Returns the token file path (the token itself is never logged). */
 export function createAgent(i: SpawnInput, now = Date.now()): { id: string; tokenFile: string; token: string } {
   ensureSchema();
@@ -148,11 +152,11 @@ export function createAgent(i: SpawnInput, now = Date.now()): { id: string; toke
   if (!existsSync(TOKEN_DIR())) mkdirSync(TOKEN_DIR(), { recursive: true, mode: 0o700 });
   const tokenFile = join(TOKEN_DIR(), `${i.name}.token`);
   writeFileSync(tokenFile, t, { mode: 0o600 }); chmodSync(tokenFile, 0o600); // file first: a failed write leaves no row that holds the name without a token
-  try { db().run("INSERT INTO agents (id, name, gen, job, boss, model, effort, soul, audit, compact_window, project, spawned_by, spawned_at, token_hash, token_file, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [id, i.name, gen, i.job ?? null, i.boss ?? null, i.model ?? null, i.effort ?? null, i.soul ?? null, i.audit ?? null, i.compactWindow ?? null, i.project ?? null, i.by, now, sha(t), tokenFile, i.kind ?? "agent"]);
+  try { db().run("INSERT INTO agents (id, name, gen, job, boss, model, effort, soul, goal, audit, compact_window, project, spawned_by, spawned_at, token_hash, token_file, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [id, i.name, gen, i.job ?? null, i.boss ?? null, i.model ?? null, i.effort ?? null, i.soul ?? null, i.goal ?? null, i.audit ?? null, i.compactWindow ?? null, i.project ?? null, i.by, now, sha(t), tokenFile, i.kind ?? "agent"]);
   } catch (e) { try { unlinkSync(tokenFile); } catch { /* none */ } throw e; }
   if (old) db().run("UPDATE messages SET to_agent = ? WHERE to_agent = ? AND state = 'held'", [id, old.id]); // held for the gone one: the new one gets them on hello
-  emit({ agent: id, type: "AgentSpawned", data: { id, name: i.name, gen, job: i.job ?? null, boss: i.boss ?? null, model: i.model ?? null, effort: i.effort ?? null, soul: i.soul ?? null, audit: i.audit ?? null, compactWindow: i.compactWindow ?? null, project: i.project ?? null, by: i.by }, source: "spawn", ts: now });
+  emit({ agent: id, type: "AgentSpawned", data: { id, name: i.name, gen, job: i.job ?? null, boss: i.boss ?? null, model: i.model ?? null, effort: i.effort ?? null, soul: i.soul ?? null, goal: i.goal ?? null, audit: i.audit ?? null, compactWindow: i.compactWindow ?? null, project: i.project ?? null, by: i.by }, source: "spawn", ts: now });
   flush();
   return { id, tokenFile, token: t };
 }
@@ -376,6 +380,15 @@ export function agentnetRoutes(api: Hono<Env>) {
     for (const e of list as Record<string, unknown>[]) if (e.type === "TaskDone" && Number.isInteger(Number((e.data as Record<string, unknown> | undefined)?.id))) recordDone(a, Number((e.data as Record<string, unknown>).id), null); // tasks done through the mod's TaskUpdate
     return c.json({ accepted: n });
   });
+  /** A summary sentence for a background job that has no description, made once per job after its row exists. The row shows the raw command until it arrives. */
+  const asked = new Set<string>();
+  const describeBg = (agent: string, id: string, label: string, cmd: string) => {
+    void summarizeBg(cmd).then((sum) => {
+      const row = sum ? get(agent)?.bg?.find((b) => b.id === id) : undefined;
+      if (!sum || !row || row.cmd !== label.slice(0, 120)) return;
+      emit({ agent, type: "BgUpdated", data: { id, sum }, source: "hook" }); flush();
+    });
+  };
   // Background work rows from the plugin hooks: {items: [{id, kind, label?, state, startedAt?, endedAt?}]} (or one item). Fire and forget; loopback root with no row is dropped.
   r.post("/bg", async (c: Ctx) => {
     const a = c.get("agent"), b = await body(c), list = (Array.isArray(b.items) ? b.items : [b]).slice(0, 20);
@@ -388,10 +401,27 @@ export function agentnetRoutes(api: Hono<Env>) {
         continue;
       }
       if (typeof e.id !== "string" || !e.id || !BG_KINDS.includes(e.kind as never) || !BG_STATES.includes(e.state as never)) continue;
-      emit({ agent: target.id, type: "BgUpdated", data: { id: e.id.slice(0, 80), kind: e.kind, state: e.state, label: typeof e.label === "string" ? e.label.slice(0, 120) : undefined, startedAt: Number(e.startedAt) || undefined, endedAt: Number(e.endedAt) || undefined }, source: "hook" }); n++;
+      const raw = e.raw === true && typeof e.label === "string" && e.label !== "" && (e.kind === "shell" || e.kind === "monitor");
+      emit({ agent: target.id, type: "BgUpdated", data: { id: e.id.slice(0, 80), kind: e.kind, state: e.state, label: typeof e.label === "string" ? e.label.slice(0, 120) : undefined, raw: raw || undefined, startedAt: Number(e.startedAt) || undefined, endedAt: Number(e.endedAt) || undefined }, source: "hook" }); n++;
+      if (raw && bgSumEnabled() && !asked.has(`${target.id}:${e.id}`)) { asked.add(`${target.id}:${e.id}`); if (asked.size > 500) asked.delete(asked.values().next().value as string); describeBg(target.id, e.id.slice(0, 80), e.label as string, typeof e.cmd === "string" ? e.cmd : e.label as string); }
     }
     flush();
     return c.json({ accepted: n });
+  });
+  // Owner checks: an agent asks for itself, root for any agent (also a despawned one). GET: root sees all, an agent its own. Resolve is a panel write (checksPanel.ts).
+  r.post("/checks", async (c: Ctx) => {
+    const a = c.get("agent"), b = await body(c);
+    const who = isRoot(a) && typeof b.agent === "string" && b.agent ? b.agent : a.name;
+    if (!NAME.test(who)) return bad(c, "agent must match ^[a-z0-9][a-z0-9-]{1,39}$");
+    if (!isRoot(a) && who !== a.name) return problem(c, 403, "Forbidden", "an agent may only ask for itself");
+    const out = createCheck({ agent: who, question: b.question, detail: b.detail, options: b.options, by: a.name, project: (byName(who) ?? a).project });
+    if ("error" in out) return bad(c, out.error);
+    audit(`agent:${a.name}`, "agentnet.check-ask", who, "ok", c.get("trace"), { check: out.check.id });
+    return c.json({ check: out.check, created: out.created }, out.created ? 201 : 200);
+  });
+  r.get("/checks", (c: Ctx) => {
+    const a = c.get("agent"), st = c.req.query("state"), state = st === "pending" || st === "answered" ? st : undefined;
+    return c.json({ checks: listChecks(state).filter((k) => isRoot(a) || k.agent === a.name) });
   });
   // Reads: any agent sees itself; root sees everyone.
   r.get("/agents", (c: Ctx) => { const a = c.get("agent"); return c.json({ seq: lastSeq(), agents: (isRoot(a) ? (c.req.query("all") ? all() : live()) : [get(a.id)!].filter(Boolean)).map(viewOf) }); });
@@ -415,15 +445,16 @@ export function agentnetRoutes(api: Hono<Env>) {
     const b = await body(c);
     try {
       const kind = b.kind === "member" ? "member" : "agent";
+      if (kind === "agent") { const ge = goalError(b.goal); if (ge) return bad(c, ge); } // members (channel bots via agentnet-join) are exempt
       // Agents (not members): name, boss, team, model, effort, persona and compact window come from the one placement plan for every field the caller left out.
       const plan = kind === "agent" ? await planSpawn(planInput(b), { log: true }) : null;
       const name = plan?.name ?? String(b.name ?? "");
-      const made = createAgent({ name, job: str(b.job), boss: plan?.boss ?? str(b.boss) ?? a.name, model: plan?.model ?? str(b.model), effort: plan?.effort ?? str(b.effort), soul: plan?.soul ?? str(b.soul), audit: plan?.audit ?? undefined, compactWindow: plan?.compactWindow, project: str(b.project), by: a.name, kind });
+      const made = createAgent({ name, job: str(b.job), goal: str(b.goal)?.trim().slice(0, 500), boss: plan?.boss ?? str(b.boss) ?? a.name, model: plan?.model ?? str(b.model), effort: plan?.effort ?? str(b.effort), soul: plan?.soul ?? str(b.soul), audit: plan?.audit ?? undefined, compactWindow: plan?.compactWindow, project: str(b.project), by: a.name, kind });
       const tm = plan?.team;
-      if (tm?.action === "create") createTeam({ id: tm.id, name: tm.id, goal: str(b.job), lead: tm.lead ?? undefined, project: plan!.project ?? undefined, members: tm.members });
+      if (tm?.action === "create") createTeam({ id: tm.id, name: tm.id, goal: str(b.goal)?.trim().slice(0, 500) ?? str(b.job), lead: tm.lead ?? undefined, project: plan!.project ?? undefined, members: tm.members });
       else if (tm && getTeam(tm.id)) addMember(tm.id, name); // an unknown team id is ignored: old callers pass agmsg team names
       audit(`agent:${a.name}`, "agentnet.spawn", made.id, "ok", c.get("trace"));
-      return c.json({ agent: made.id, token_file: made.tokenFile, state: "starting", name, boss: plan?.boss ?? null, team: tm?.id ?? null, model: plan?.model ?? null, effort: plan?.effort ?? null, soul: plan?.soul ?? null, audit: plan?.audit ?? null, compact_window: plan?.compactWindow ?? null, reasons: plan?.reasons ?? [], warnings: plan?.warnings ?? [] }, 201); // M6: spawn.sh launches it with this file
+      return c.json({ agent: made.id, token_file: made.tokenFile, state: "starting", name, boss: plan?.boss ?? null, team: tm?.id ?? null, model: plan?.model ?? null, effort: plan?.effort ?? null, soul: plan?.soul ?? null, goal: str(b.goal) ?? null, audit: plan?.audit ?? null, compact_window: plan?.compactWindow ?? null, reasons: plan?.reasons ?? [], warnings: plan?.warnings ?? [] }, 201); // M6: spawn.sh launches it with this file
     } catch (e) { return e instanceof RouteBlocked ? problem(c, 409, "Reserve mode", e.message) : bad(c, (e as Error).message); }
   });
   r.post("/agents/:name/placement", async (c: Ctx) => { // spawn.sh after launch: where the pane is ("session:@win.%pane")

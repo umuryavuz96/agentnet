@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const REPO = resolve(import.meta.dir, "..");
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
@@ -70,21 +70,20 @@ describe("triage hook (stub mode)", () => {
     const r = await triage("build a settings page", {}, ["--self-test"]);
     expect(ctx(r.stdout)).toContain("reason: self-test stub");
   });
-  test("fails open: no key, bad stub, skipped prompts, bad stdin all print nothing and exit 0", async () => {
+  test("fails open: no claude, bad stub, skipped prompts, bad stdin all print nothing and exit 0", async () => {
     for (const [p, env] of [["build a settings page", {}], ["build a settings page", { AGENTNET_TRIAGE_STUB: "{not json" }], ["/help me", { AGENTNET_TRIAGE_STUB: stub }], ["ok", { AGENTNET_TRIAGE_STUB: stub }]] as const) {
-      const r = await triage(p, { ANTHROPIC_API_KEY: "", ...env });
+      const r = await triage(p, { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, ...env }); // no claude on PATH
       expect(r.code).toBe(0);
       expect(r.stdout).toBe("");
     }
     const bad = await run(["python3", "hooks/triage.py"], { stdin: "not json" });
     expect([bad.code, bad.stdout]).toEqual([0, ""]);
   });
-  test("writes a log line that never holds the key", async () => {
+  test("writes a log line for the decision", async () => {
     const log = join(tmp("an-log-"), "triage.jsonl");
-    await triage("build a settings page", { AGENTNET_TRIAGE_STUB: stub, AGENTNET_TRIAGE_LOG: log, ANTHROPIC_API_KEY: "sk-test-secret" });
+    await triage("build a settings page", { AGENTNET_TRIAGE_STUB: stub, AGENTNET_TRIAGE_LOG: log });
     const text = readFileSync(log, "utf8");
     expect(JSON.parse(text.trim()).route).toBe("team");
-    expect(text).not.toContain("sk-test-secret");
   });
 });
 

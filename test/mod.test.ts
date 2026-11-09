@@ -61,3 +61,21 @@ describe("M5: session lifecycle", () => {
     expect(h.count("/poll")).toBe(1);
   });
 });
+
+describe("owner check tools", () => {
+  const tools = async (root: boolean) => {
+    const h = await host((p) => p === "/hello" ? ok({ root }) : ok({ messages: [] }));
+    await h.fire("session.start"); await settle();
+    return h.tools;
+  };
+  test("ask_owner_check for every agent, list_checks for root only", async () => {
+    const w = await tools(false), r = await tools(true);
+    expect(w).toContain("ask_owner_check"); expect(w).not.toContain("list_checks");
+    expect(r).toContain("ask_owner_check"); expect(r).toContain("list_checks");
+  });
+  test("the tool description tells agents to write a plain question and short answer buttons", async () => {
+    const src = await Bun.file(join(import.meta.dir, "../plugin/hooks/register.ts")).text();
+    const d = src.slice(src.indexOf('name: "ask_owner_check"'), src.indexOf('name: "set_status"'));
+    expect(d).toContain("plain question to the owner"); expect(d).toContain("Do you see a Voice button"); expect(d).toContain("2-4 short answer buttons"); expect(d).toContain("tone");
+  });
+});

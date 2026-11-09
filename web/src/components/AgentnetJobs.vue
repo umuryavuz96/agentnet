@@ -5,7 +5,7 @@
 // until the user toggles it, it is open while a job runs and folded otherwise.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Icon from "../ui/Icon.vue";
-import { net, jobFocus, type Task } from "../net";
+import { net, jobFocus, bgVisible, bgShown, type Task } from "../net";
 import { api } from "../ui/api";
 
 interface Prog { done: number; total: number | null; label: string | null }
@@ -18,7 +18,13 @@ const known = (o: string | null) => !!o && Object.values(net.agents).some((a) =>
 const mine = computed(() => jobs.value.filter((j) => j.owner === props.name || (props.name === "root" && !known(j.owner))).sort((a, b) => b.started - a.started));
 const runningJobs = computed(() => mine.value.filter((j) => j.status === "running"));
 const finishedJobs = computed(() => mine.value.filter((j) => j.status !== "running"));
-const running = computed(() => runningJobs.value.length);
+// The agent's own background work (shells, subagents, monitors started in its session), posted by the plugin hooks. The map
+// draws these as pills under the card; list them here too, or the panel says "no background jobs" while the map shows one.
+const BGK: Record<string, string> = { subagent: "Subagent", shell: "Shell", monitor: "Monitor" };
+const own = computed(() => { const a = Object.values(net.agents).find((x) => x.name === props.name); return bgVisible(a?.bg, net.now || Date.now()).slice().reverse(); });
+const bgRun = (b: { startedAt: number; endedAt: number | null }) => dur((b.endedAt ?? net.now) - b.startedAt);
+const total = computed(() => mine.value.length + own.value.length);
+const running = computed(() => runningJobs.value.length + own.value.filter((b) => b.state === "running").length);
 const showFin = ref(false);
 type Row = Job | { id: "__sep" };
 const ordered = computed<Row[]>(() => [...runningJobs.value, ...(finishedJobs.value.length ? [{ id: "__sep" as const }] : []), ...(showFin.value ? finishedJobs.value : [])]);
@@ -73,7 +79,7 @@ watch(() => jobFocus.n, applyFocus); watch(loaded, applyFocus);
   <section v-else class="jp" aria-label="Background jobs">
     <button type="button" class="jph" :aria-expanded="panelOpen" aria-controls="ap-jobs" @click="togglePanel">
       <span class="jt">Background jobs</span>
-      <span v-if="mine.length" class="num cnt">{{ mine.length }}</span>
+      <span v-if="total" class="num cnt">{{ total }}</span>
       <span v-if="running" class="rn">· <i class="jdot running" aria-hidden="true" />{{ running }} running</span>
       <Icon name="chevron-down" :size="16" class="cv" />
     </button>
@@ -81,7 +87,12 @@ watch(() => jobFocus.n, applyFocus); watch(loaded, applyFocus);
       <div>
         <div class="jpi">
       <p v-if="err" class="none bad">{{ err }}</p>
-      <p v-else-if="loaded && !mine.length" class="none">No background jobs from {{ name }}.</p>
+      <ul v-if="own.length" class="jobs" aria-label="Session background work">
+        <li v-for="b in own" :key="b.id" :class="['job', bgShown(b, net.now || Date.now()) === 'stale' ? 'stopped' : b.state === 'killed' ? 'stopped' : b.state]">
+          <div class="jh sess"><i :class="['jdot', b.state === 'killed' ? 'stopped' : b.state]" :aria-label="b.state" role="img" /><span class="jd" :title="b.cmd && b.cmd !== b.label ? `${b.label}\n${b.cmd}` : b.label">{{ BGK[b.kind] ?? b.kind }} · {{ b.label }}</span><time class="num">{{ bgRun(b) }}</time></div>
+        </li>
+      </ul>
+      <p v-else-if="loaded && !total" class="none">No background jobs from {{ name }}.</p>
       <p v-else-if="loaded && !running && finishedJobs.length && !showFin" class="none">No running jobs.</p>
       <ul v-if="ordered.length" class="jobs">
         <template v-for="j in ordered" :key="j.id">
@@ -152,6 +163,7 @@ h3 .num{letter-spacing:0;color:var(--ink);opacity:.8}
 .jobs{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .job{border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--ink) 3%,transparent);padding:0 12px}
 .jh{display:flex;align-items:center;gap:9px;width:100%;min-height:44px;padding:0;border:0;background:transparent;color:var(--ink);cursor:pointer;text-align:left;font:600 13.5px/1.3 var(--body)}
+.jh.sess{cursor:default}
 .job.focus{border-color:color-mix(in srgb,var(--on) 55%,var(--line));background:color-mix(in srgb,var(--on) 8%,transparent)}
 .jh:focus-visible{outline:2px solid var(--on);outline-offset:2px;border-radius:8px}
 .jdot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--off)}
@@ -159,6 +171,8 @@ h3 .num{letter-spacing:0;color:var(--ink);opacity:.8}
 .jdot.done{background:var(--on)}
 .jdot.failed{background:var(--bad)}
 .jd{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.jh.sess{padding:6px 0}
+.jh.sess .jd{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}
 .jh time{flex:none;color:var(--muted);font:500 11.5px/1 var(--mono)}
 .cv{flex:none;color:var(--muted);transition:transform .28s cubic-bezier(.2,.8,.2,1)}
 .jh[aria-expanded="true"] .cv{transform:rotate(180deg)}

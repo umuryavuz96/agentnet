@@ -2,7 +2,7 @@
 // whole map (first frame and every reconnect), `agent` is an RFC 7386 merge patch of one row, `gone` drops the row at
 // once, `msg` appends to the thread list, `ping` keeps the "stale" badge away. A real gap (data.prev is not the seq of
 // the last frame applied) closes and reopens the stream, which answers with a fresh `hello`. No polling anywhere.
-import { reactive, computed } from "vue";
+import { reactive, computed, watch } from "vue";
 import { api, url } from "./ui/api";
 
 export type Life = "starting" | "live" | "stopping" | "gone" | "failed";
@@ -18,6 +18,8 @@ export interface AgentRow {
   context: { tokens: number; window: number; pct: number } | null; cost: number | null;
   lastMsg: { dir: "in" | "out"; peer: string; kind: string; snippet: string; at: number } | null;
   doing: string | null; seq: number; progressPct?: number | null;
+  /** What "done" looks like for this agent (the outcome, not the job); absent on agents spawned before the rule. */
+  goal?: string | null;
   soul?: string | null; audit?: string | null; project?: string | null; spawnedAt?: number; session?: string | null; pid?: number | null; version?: string | null; goneReason?: string | null;
   turn?: { id: string; startedAt: number; snippet: string | null; tools: number } | null; turns?: number;
   lastTool?: { tool: string; target: string | null; ok: boolean; ms: number | null; at: number } | null;
@@ -30,11 +32,40 @@ export interface AgentRow {
 }
 export type BgKind = "subagent" | "shell" | "monitor";
 export type BgState = "running" | "done" | "failed" | "killed";
-export interface BgRow { id: string; kind: BgKind; label: string; state: BgState; startedAt: number; endedAt: number | null }
+export interface BgRow { id: string; kind: BgKind; label: string; /** the raw command, when `label` is a summary sentence made from it */ cmd?: string; state: BgState; startedAt: number; endedAt: number | null }
 export { BG_KEEP_MS, bgVisible, bgShown } from "./bg";
 export { ctxView } from "./ctx";
 /** A message as the snapshot lists it; `subject` and `reply_to` arrive with M9 and are optional until then. */
 export interface Msg { id: number | null; from: string; to: string; kind: string; body: string; at: number; subject?: string | null; reply_to?: number | null }
+
+// ---------- owner checks: a real-world question the asker wrote, with the answer buttons it chose. Pending ones stay until the owner taps; an answered one stays 10 s, coloured by the tone of the answer. ----------
+export type Tone = "good" | "bad" | "neutral";
+export interface CheckOption { label: string; tone: Tone }
+export interface Check { id: number; agent: string; team: string | null; project: string | null; question: string; detail: string | null; createdBy: string; createdAt: number; state: "pending" | "answered"; options: CheckOption[]; answer: string | null; answerTone: Tone | null; note: string | null; resolvedAt: number | null }
+export const ANSWER_SHOW_MS = 10_000;
+/** The sheet: `list` shows every waiting check, `id` one check (0 = none). */
+export const checkUi = reactive({ id: 0, list: false });
+const leave = new Map<number, ReturnType<typeof setTimeout>>();
+function putCheck(k: Check) {
+  net.checks[k.id] = k;
+  clearTimeout(leave.get(k.id)); leave.delete(k.id);
+  if (k.state === "answered") {
+    const left = Math.max(0, Math.min(ANSWER_SHOW_MS, ANSWER_SHOW_MS - (Date.now() - (k.resolvedAt ?? Date.now()))));
+    leave.set(k.id, setTimeout(() => { delete net.checks[k.id]; leave.delete(k.id); }, left));
+  }
+}
+/** Pending checks, oldest first. */
+export const pendingChecks = computed(() => Object.values(net.checks).filter((c) => c.state === "pending").sort((a, b) => a.id - b.id));
+/** The owner taps one of the buttons the asker wrote. The note is optional. Returns an error text, or "" on success. */
+export async function answerCheck(id: number, option: string, note: string): Promise<string> {
+  try {
+    const r = await fetch(url(`v1/panel/checks/${id}/resolve`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ option, ...(note.trim() ? { note: note.trim() } : {}) }) });
+    const j = await r.json().catch(() => null) as { check?: Check; detail?: string } | null;
+    if (!r.ok) return j?.detail ?? `HTTP ${r.status}`;
+    if (j?.check) putCheck(j.check);
+    return "";
+  } catch (e) { return (e as Error).message; }
+}
 
 const STALE_MS = 2 * 15_000 + 2_000; // two missed pings (ping every 15 s) plus a little slack
 const MAX_MSGS = 300;
@@ -42,6 +73,7 @@ const MAX_MSGS = 300;
 export const net = reactive({
   agents: {} as Record<string, AgentRow>,
   messages: [] as Msg[],
+  checks: {} as Record<number, Check>,
   seq: 0,
   connected: false,
   lastFrameAt: 0,
@@ -67,6 +99,7 @@ function apply(f: Frame) {
     net.agents = (d.agents ?? {}) as Record<string, AgentRow>;
     net.messages = ((d.messages ?? []) as Msg[]).slice(-MAX_MSGS);
     net.seq = Number(d.seq) || 0;
+    net.checks = {}; for (const k of (d.checks ?? []) as Check[]) putCheck(k);
     return;
   }
   if (f.event === "ping") return;
@@ -78,6 +111,8 @@ function apply(f: Frame) {
     if (row) merge(row, patch); else net.agents[id] = patch as AgentRow;
   } else if (f.event === "gone") {
     delete net.agents[String(d.id)];
+  } else if (f.event === "check") {
+    putCheck(d as unknown as Check);
   } else if (f.event === "msg") {
     net.messages.push({ id: typeof d.id === "number" ? d.id : null, from: String(d.from), to: String(d.to), kind: String(d.kind ?? "info"), body: String(d.body ?? d.snippet ?? ""), at: Number(d.at) || Date.now(),
       subject: (d.subject as string | undefined) ?? null, reply_to: (d.reply_to as number | undefined) ?? null });
@@ -96,7 +131,7 @@ function enqueue(f: Frame) {
 
 function open() {
   es = new EventSource(url("v1/panel/stream"));
-  for (const ev of ["hello", "agent", "gone", "msg", "ping"]) {
+  for (const ev of ["hello", "agent", "gone", "msg", "check", "ping"]) {
     es.addEventListener(ev, (e) => { try { enqueue({ event: ev, data: JSON.parse((e as MessageEvent).data) }); } catch { /* malformed frame: ignored */ } });
   }
   es.addEventListener("open", () => { net.connected = true; });
@@ -141,9 +176,26 @@ export interface TeamMsg { id: number; from: string; kind: string; subject: stri
 export const teams = reactive({ list: [] as Team[] });
 export async function loadTeams() { try { const r = await api<{ teams: Team[] }>("v1/panel/teams"); teams.list = r.teams; } catch { /* keeps the last list; the route is absent on an older server */ } }
 /** Poll while the Agents page is open; returns the stop function. */
-export function useTeams() { void loadTeams(); const t = setInterval(() => { if (!document.hidden) void loadTeams(); }, 5000); return () => clearInterval(t); }
+/** New agents wait here until the team list has been re-read (at most ~1 s). Teams are polled every 5 s, so without this a
+ *  freshly spawned team member was drawn under its boss first and jumped into its team a few seconds later (user report 2026-11-09). */
+export const placing = reactive(new Set<string>());
+export function useTeams() {
+  void loadTeams();
+  const t = setInterval(() => { if (!document.hidden) void loadTeams(); }, 5000);
+  let seen: Set<string> | null = null;
+  const stopW = watch(() => Object.values(net.agents).map((a) => a.name), (names) => {
+    if (!seen) { seen = new Set(names); return; } // first snapshot: the initial loadTeams covers it
+    const fresh = names.filter((n) => !seen!.has(n)); for (const n of names) seen.add(n);
+    if (!fresh.length) return;
+    for (const n of fresh) placing.add(n);
+    const done = () => { for (const n of fresh) placing.delete(n); };
+    const cap = setTimeout(done, 1500); // never hide an agent for long, even if the teams call hangs
+    void loadTeams().finally(() => { clearTimeout(cap); done(); });
+  }, { immediate: true });
+  return () => { clearInterval(t); stopW(); };
+}
 /** Changes only when a team's identity, lead or member set changes (the map relayouts on it). */
-export const teamsKey = computed(() => teams.list.filter((t) => t.state === "active").map((t) => `${t.id}:${t.name}:${t.lead ?? ""}:${[...t.members].sort().join(",")}`).join("|"));
+export const teamsKey = computed(() => teams.list.filter((t) => t.state === "active").map((t) => `${t.id}:${t.name}:${t.lead ?? ""}:${[...t.members].sort().join(",")}`).join("|") + `|p:${[...placing].join(",")}`);
 /** A job tapped on the map: the owner's panel opens its Jobs fold on it (AgentnetJobs reads this; stale after 5 s). */
 export const jobFocus = reactive({ id: "", n: 0, at: 0 });
 export const windows = reactive({ available: true as boolean, busy: "" as string });

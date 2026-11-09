@@ -2,6 +2,7 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { serviceLabel, serviceUnit } from "./update/service";
 
 const HOME = homedir();
 const ROOT = process.env.AGENTNET_HOME ?? join(HOME, ".local", "share", "agentnet");
@@ -17,11 +18,12 @@ const HELP = `agentnet: a local network for Claude Code agents
   plan-spawn --job TEXT [--project DIR] [--role R] ...   where a new agent would land (name, boss, team, model, soul); changes nothing
   despawn <name> [--reason R]
   status                    health and agent list of the running server
+  init [dir] [--start]      first run: check the setup, print the command that starts the director; --start runs it in tmux
   doctor                    check bun, tmux, claude, python3, data folder, service
   install-service [--dry-run]   write a launchd (macOS) or systemd user unit; never starts it
   migrate-from-server-os --source <var> [--to <home>] [--dry-run] [--members a,b]   copy a Server OS var folder into an agentnet home
   export-legacy --to <server-os var> [--from <home>] [--yes]   copy post-cutover data back (rollback); dry run without --yes
-  update   not built yet`;
+  update [--check] [--yes]  move to the newest release tag (install, build, restart, doctor; rolls back on failure)`;
 
 /** Read $ROOT/config/env (KEY=VALUE lines); a key already in the environment wins. */
 function loadEnvFile(): void {
@@ -77,7 +79,7 @@ async function planSpawn(args: string[]): Promise<number> {
   const body: Record<string, unknown> = {};
   for (let i = 0; i < args.length; i += 2) {
     const k = args[i]?.replace(/^--/, ""), v = args[i + 1];
-    if (!k || v === undefined || !["job", "project", "role", "name", "boss", "team", "model", "effort", "soul", "scope", "novelty", "risk", "need", "ask"].includes(k)) { console.error("usage: agentnet plan-spawn --job TEXT [--project DIR] [--role R] [--name N] [--boss B] [--team ID] [--model M] [--effort E] [--soul S] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT]"); return 2; }
+    if (!k || v === undefined || !["job", "project", "role", "name", "boss", "team", "model", "effort", "soul", "scope", "novelty", "risk", "need", "ask", "goal"].includes(k)) { console.error("usage: agentnet plan-spawn --job TEXT [--project DIR] [--role R] [--name N] [--boss B] [--team ID] [--model M] [--effort E] [--soul S] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT]"); return 2; }
     body[k] = ["scope", "novelty", "risk"].includes(k) ? Number(v) : k === "project" ? resolve(tilde(v)) : v;
   }
   try {
@@ -98,29 +100,40 @@ async function status(): Promise<number> {
 }
 
 async function doctor(): Promise<number> {
-  let fail = 0;
-  const out = (lvl: "ok" | "warn" | "FAIL", check: string, hint = "") => {
-    if (lvl === "FAIL") fail++;
-    console.log(lvl === "ok" ? `ok   ${check}${hint ? " " + hint : ""}` : `${lvl.padEnd(4)} ${check}: ${hint}`);
-  };
-  process.versions.bun ? out("ok", "bun", process.versions.bun) : out("FAIL", "bun", "run agentnet with bun");
-  for (const [bin, hint] of [["tmux", "install tmux"], ["claude", "install Claude Code"], ["python3", "the scripts need python3"]] as const)
-    Bun.which(bin) ? out("ok", bin) : out("FAIL", bin, hint);
-  try {
-    mkdirSync(ROOT, { recursive: true });
-    const t = join(ROOT, ".doctor"); writeFileSync(t, "x"); rmSync(t);
-    out("ok", "data folder", ROOT);
-  } catch (e) { out("FAIL", "data folder", `${ROOT} not writable (${(e as Error).message})`); }
-  const h = await getJson(`http://${HOST}:${PORT}/v1/health`, 2000);
-  if (h?.name === "agentnet") out("ok", "service", h.version);
-  else {
-    try {
-      const l = Bun.listen({ hostname: HOST, port: PORT, socket: { data() {} } });
-      l.stop(true);
-      out("warn", "service", "not running (agentnet serve, or agentnet install-service)");
-    } catch { out("FAIL", "service", `port ${PORT} in use by another program`); }
-  }
-  return fail ? 1 : 0;
+  const { doctorLines, formatDoctorLine } = await import("./update/doctor");
+  const lines = await doctorLines({ root: ROOT, host: HOST, port: PORT });
+  for (const l of lines) console.log(formatDoctorLine(l));
+  return lines.some((l) => l.level === "FAIL") ? 1 : 0;
+}
+
+/** First run in one command: checks, then the command that starts Claude Code as the director (or starts it with --start). */
+async function init(args: string[]): Promise<number> {
+  const start = args.includes("--start");
+  const { doctorLines, formatDoctorLine } = await import("./update/doctor");
+  const { checkDir, directorCommand, startDirector } = await import("./net/director");
+  const lines = await doctorLines({ root: ROOT, host: HOST, port: PORT });
+  console.log("1. Check your setup");
+  for (const l of lines) console.log("   " + formatDoctorLine(l));
+  const svc = lines.find((l) => l.check === "service");
+  const fails = lines.filter((l) => l.level === "FAIL");
+  if (fails.length) { console.log(`\nFix ${fails.map((l) => l.check).join(", ")} first, then run agentnet init again.`); return 1; }
+  const d = checkDir(args.find((a) => !a.startsWith("-")) ?? process.cwd());
+  if ("error" in d) { console.error("agentnet: " + d.error); return 2; }
+  const origin = new URL(url()).origin;
+  console.log("\n2. Start the server");
+  if (svc?.level !== "ok") { console.log(`   Not running. In another terminal run: ${join(REPO, "bin", "agentnet")} serve   (or install-service to keep it on)`); }
+  else console.log(`   Running at ${origin}`);
+  const agents = svc?.level === "ok" ? await getJson(`${url()}/agents`, 3000) : null;
+  const hasRoot = (agents?.agents ?? []).some((x: { name: string; life?: string }) => x.name === "root" && x.life !== "gone");
+  console.log("\n3. Start the director in " + d.dir);
+  if (hasRoot) { console.log(`   A director is already connected. Open ${origin}`); return 0; }
+  if (start) {
+    const r = startDirector(d.dir);
+    if (!r.ok) { console.log(`   ${r.detail}\n   Or run it yourself:\n   ${directorCommand(d.dir)}`); return 1; }
+    console.log(`   Started in tmux session ${r.session}. The first time Claude Code asks to trust the folder: ${r.attach}, answer Yes, then Ctrl-b d.`);
+  } else console.log(`   Run this in a terminal (or add --start to run it in tmux):\n\n   ${directorCommand(d.dir)}\n`);
+  console.log(`\n4. Open the board: ${origin}   (the setup card turns green when the director says hello)`);
+  return 0;
 }
 
 const xmlEsc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
@@ -141,16 +154,18 @@ function render(tmpl: string, vals: Record<string, string>, esc: Esc): string {
 function installService(args: string[]): number {
   const dry = args.includes("--dry-run");
   const logDir = join(ROOT, "logs");
-  const vals = { Label: "dev.agentnet.server", Bun: process.execPath, SourceDir: REPO, Home: ROOT, Port: String(PORT), Host: HOST, Path: process.env.PATH ?? "", LogDir: logDir };
+  let label: string, unitName: string;
+  try { label = serviceLabel(); unitName = serviceUnit(); } catch (e) { console.error(`agentnet: install-service: ${(e as Error).message}`); return 1; }
+  const vals = { Label: label, Unit: unitName, Bun: process.execPath, SourceDir: REPO, Home: ROOT, Port: String(PORT), Host: HOST, Path: process.env.PATH ?? "", LogDir: logDir };
   let target: string, tmplPath: string, esc: Esc, next: string;
   if (process.platform === "darwin") {
-    target = join(HOME, "Library", "LaunchAgents", "dev.agentnet.server.plist");
+    target = join(HOME, "Library", "LaunchAgents", `${label}.plist`);
     tmplPath = join(REPO, "install", "launchd", "dev.agentnet.server.plist.tmpl"); esc = (v) => xmlEsc(v);
     next = `launchctl bootstrap gui/$(id -u) ${target}`;
   } else if (process.platform === "linux") {
-    target = join(HOME, ".config", "systemd", "user", "agentnet.service");
+    target = join(HOME, ".config", "systemd", "user", `${unitName}.service`);
     tmplPath = join(REPO, "install", "systemd", "agentnet.service.tmpl"); esc = (v, q) => (q ? sdQuoted(v) : sdPlain(v));
-    next = "systemctl --user daemon-reload && systemctl --user enable --now agentnet";
+    next = `systemctl --user daemon-reload && systemctl --user enable --now ${unitName}`;
   } else { console.error("agentnet: install-service supports macOS and Linux"); return 1; }
   let text: string;
   try { text = render(readFileSync(tmplPath, "utf8"), vals, esc); }
@@ -267,11 +282,12 @@ async function main(): Promise<number> {
     case "plan-spawn": return planSpawn(rest);
     case "despawn": return despawn(rest);
     case "status": return status();
+    case "init": return init(rest);
     case "doctor": return doctor();
     case "install-service": return installService(rest);
     case "migrate-from-server-os": return migrateCmd(rest);
     case "export-legacy": return exportCmd(rest);
-    case "update": console.log("agentnet update: not built yet (phase 8)"); return 3;
+    case "update": return (await import("./update/cli")).runUpdateCli(rest, { repo: REPO, home: ROOT });
     default: console.error(`agentnet: unknown command '${cmd}'\n${HELP}`); return 2;
   }
 }

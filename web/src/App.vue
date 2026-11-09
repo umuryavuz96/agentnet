@@ -13,6 +13,8 @@ import Search from "./pages/Search.vue";
 import Hooks from "./pages/Hooks.vue";
 import Routing from "./pages/Routing.vue";
 import Personas from "./pages/Personas.vue";
+import BrandLockup from "./brand/BrandLockup.vue";
+import UpdatePill from "./components/UpdatePill.vue";
 
 const em = readEmbed(location.search);
 const COMPONENTS: Record<Page, Component> = { agents: Agents, usage: Usage, scores: Scores, trails: Trails, search: Search, hooks: Hooks, routing: Routing, personas: Personas };
@@ -58,10 +60,11 @@ watch(page, () => { menu.value = false; });
 <template>
   <div class="shell" :class="{ embed: em.embed, fixed: shownPage === 'agents' }">
     <header v-if="!em.embed" class="bar">
-      <a class="brand" href="#/agents">agentnet</a>
+      <a class="brand" href="#/agents" aria-label="agentnet home"><BrandLockup :height="26" /></a>
       <nav class="links" aria-label="Pages">
         <a v-for="p in PAGES" :key="p" :href="'#/' + p" :class="{ on: page === p }" :aria-current="page === p ? 'page' : undefined"><Icon :name="NAV[p][1]" :size="16" /> {{ NAV[p][0] }}</a>
       </nav>
+      <UpdatePill />
       <span class="dot" :class="health.ok ? 'ok' : 'bad'" :title="health.title" role="status" :aria-label="health.ok ? 'agentnet is up' : 'agentnet is not answering'" />
       <button type="button" class="burger" :aria-expanded="menu" aria-label="Menu" @click="menu = !menu"><Icon :name="menu ? 'x' : 'menu'" :size="20" /></button>
     </header>
@@ -81,7 +84,7 @@ watch(page, () => { menu.value = false; });
 .shell{min-height:100dvh;display:flex;flex-direction:column}
 .shell.fixed{height:100dvh;overflow:hidden}
 .bar{flex:none;height:var(--bar-h);display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel-2);position:sticky;top:0;z-index:50}
-.brand{font:700 18px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;color:var(--ink);text-decoration:none}
+.brand{display:inline-flex;align-items:center;color:var(--ink);text-decoration:none;border-radius:6px}
 .links{display:flex;gap:2px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none}
 .links a{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 12px;border-radius:9px;color:var(--muted);font:600 13.5px var(--body);text-decoration:none;white-space:nowrap;transition:background-color .15s var(--ease),color .15s var(--ease)}
 .links a:hover{color:var(--ink)}

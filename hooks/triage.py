@@ -5,25 +5,26 @@ Reads the hook JSON on stdin, asks a small model to classify the prompt, and pri
 hookSpecificOutput JSON whose additionalContext is a single `[triage]` line. The director agent
 reads that line and decides: do it inline, hand it to a background agent, or form a council team.
 
-Fail-open: any problem (no key, timeout, bad JSON, API error) prints nothing and exits 0.
-Needs only python3. No packages.
+Fail-open: any problem (no claude, not logged in, timeout, bad JSON) prints nothing and exits 0.
+Needs python3 and the `claude` CLI (Claude Code) logged in. No packages, no API key.
+It runs `claude -p` with no settings sources, so no user hook loads and triage cannot trigger itself;
+AGENTNET_TRIAGE_CHILD=1 is set for the child and makes this hook skip, as a second guard.
 
 Env:
-  ANTHROPIC_API_KEY        required for real classification (never printed or logged)
-  AGENTNET_TRIAGE_MODEL    model id, default claude-haiku-5-5
-  AGENTNET_TRIAGE_BUDGET   total seconds, default 4
-  AGENTNET_TRIAGE_STUB     JSON object: use it instead of the API (tests, dry runs, no key)
+  AGENTNET_TRIAGE_MODEL    model alias or id passed to `claude -p --model`, default haiku
+  AGENTNET_TRIAGE_BUDGET   total seconds, default 7
+  AGENTNET_TRIAGE_STUB     JSON object: use it instead of calling claude (tests, dry runs)
   AGENTNET_TRIAGE_LOG      JSONL log path, default $AGENTNET_HOME/logs/triage.jsonl; "off" disables
   AGENTNET_BIN             agentnet executable for pick-model / pick-soul, default `agentnet`
   AGENTNET_RULES_HINT      path named in the RULE text, default docs/rules/council-teams.md
 
-Self-test (no key, no network): echo '{"prompt":"build a settings page"}' | triage.py --self-test
+Self-test (no claude call): echo '{"prompt":"build a settings page"}' | triage.py --self-test
 """
-import json, os, re, subprocess, sys, threading, time, urllib.request
+import json, os, re, shutil, subprocess, sys, time
 
 T0 = time.time()
-BUDGET = float(os.environ.get("AGENTNET_TRIAGE_BUDGET", "4"))
-MODEL = os.environ.get("AGENTNET_TRIAGE_MODEL", "claude-haiku-5-5")
+BUDGET = float(os.environ.get("AGENTNET_TRIAGE_BUDGET", "7"))
+MODEL = os.environ.get("AGENTNET_TRIAGE_MODEL", "haiku")
 BIN = os.environ.get("AGENTNET_BIN", "agentnet")
 HOME = os.path.expanduser(os.environ.get("AGENTNET_HOME") or "~/.local/share/agentnet")
 RULES = os.environ.get("AGENTNET_RULES_HINT", "docs/rules/council-teams.md")
@@ -82,22 +83,31 @@ def skip(p):
     return len(p.split()) < 3 and re.fullmatch(ack, p, re.I) is not None
 
 
+class Skip(Exception):
+    """Triage cannot run; .reason goes to the log as {skip: true, reason}."""
+    def __init__(self, reason):
+        self.reason = reason
+
+
 def classify(p, deadline):
-    """Return the classifier JSON or None. Stub env wins; else one Messages API call."""
+    """Return the classifier JSON or None. Stub env wins; else one `claude -p` call (prompt on stdin)."""
     stub = os.environ.get("AGENTNET_TRIAGE_STUB")
     if stub:
         return json.loads(stub)
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        return None
-    body = json.dumps({"model": MODEL, "max_tokens": 360, "temperature": 0, "system": SYSTEM,
-                       "messages": [{"role": "user", "content": p[:2000]}]}).encode()
-    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST",
-                                 headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                                          "content-type": "application/json"})
-    with urllib.request.urlopen(req, timeout=deadline) as r:
-        text = json.load(r)["content"][0]["text"]
-    m = re.search(r"\{.*\}", text, re.S)
+    exe = shutil.which("claude")
+    if not exe:
+        raise Skip("no_claude")
+    cmd = [exe, "-p", "--model", MODEL, "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands",
+           "--output-format", "text", "--system-prompt", SYSTEM]
+    try:
+        r = subprocess.run(cmd, input=p[:2000], capture_output=True, text=True, timeout=deadline,
+                           env={**os.environ, "AGENTNET_TRIAGE_CHILD": "1"})
+    except subprocess.TimeoutExpired:
+        raise Skip("timeout")
+    text = (r.stdout or "") + (r.stderr or "")
+    if "Not logged in" in text:
+        raise Skip("not_logged_in")
+    m = re.search(r"\{.*\}", r.stdout or "", re.S)
     return json.loads(m.group(0)) if m else None
 
 
@@ -156,6 +166,8 @@ def build_context(p, j):
 
 def main():
     self_test = "--self-test" in sys.argv
+    if os.environ.get("AGENTNET_TRIAGE_CHILD"):
+        return  # we are inside our own claude -p call: never recurse
     try:
         d = json.load(sys.stdin)
     except Exception:
@@ -163,17 +175,13 @@ def main():
     p = re.sub(r"</?channel[^>]*>", "", (d.get("prompt") or "")).strip()
     if skip(p):
         return
-    out = {}
-
-    def work():
-        try:
-            out["j"] = SELF_TEST_STUB if self_test else classify(p, left(BUDGET - 0.4))
-        except Exception:
-            pass
-    th = threading.Thread(target=work, daemon=True)
-    th.start()
-    th.join(max(0.1, BUDGET - 0.4 - (time.time() - T0)))
-    j = out.get("j")
+    try:
+        j = SELF_TEST_STUB if self_test else classify(p, left(BUDGET - 0.4))
+    except Skip as e:
+        log({"skip": True, "reason": e.reason})  # nothing to classify with: no error line; the log record lets the Agents page say why
+        return
+    except Exception:
+        j = None
     if not isinstance(j, dict) or "kind" not in j or "route" not in j:
         log({"p": p[:60], "err": "no-result"})
         return

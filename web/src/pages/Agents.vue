@@ -9,11 +9,15 @@ import AgentnetMap from "../components/AgentnetMap.vue";
 import AgentnetPanel from "../components/AgentnetPanel.vue";
 import AgentnetTeamPanel from "../components/AgentnetTeamPanel.vue";
 import AgentnetTeamForm from "../components/AgentnetTeamForm.vue";
-import { net, useAgentnet, useAgentHooks, useTeams, staleSince, layoutKey, windows, windowCall } from "../net";
+import AgentnetDirectorSetup from "../components/AgentnetDirectorSetup.vue";
+import CheckSheet from "../components/CheckSheet.vue";
+import TriageTip from "../components/TriageTip.vue";
+import HookAddSheet from "./HookAddSheet.vue";
+import { net, placing, useAgentnet, useAgentHooks, useTeams, staleSince, layoutKey, pendingChecks, checkUi, windows, windowCall } from "../net";
 import { toast } from "../ui/api";
 import { route } from "../router";
 
-const SPAWN_CMD = 'bin/agentnet spawn hello-1 --job "say hello" --boot-prompt "Add one task, mark it done, report to your boss."';
+const SPAWN_CMD = 'bin/agentnet spawn hello-1 --job "say hello" --goal "hello task done and reported" --boot-prompt "Add one task, mark it done, report to your boss."';
 const copied = ref(false);
 async function copyCmd() { try { await navigator.clipboard.writeText(SPAWN_CMD); copied.value = true; setTimeout(() => (copied.value = false), 1500); } catch { toast("Copy failed"); } }
 
@@ -27,7 +31,7 @@ const ROOT = "root";
 const groups = shallowRef<{ boss: string; ids: string[] }[]>([]);
 watch(layoutKey, () => {
   const by = new Map<string, string[]>();
-  for (const a of Object.values(net.agents)) { if (a.name === ROOT) continue; /* root has its own Director card */ const b = a.boss ?? ROOT; (by.get(b) ?? by.set(b, []).get(b)!).push(a.id); }
+  for (const a of Object.values(net.agents)) { if (a.name === ROOT || placing.has(a.name)) continue; /* root has its own Director card; a new agent waits for its team (net.ts placing) */ const b = a.boss ?? ROOT; (by.get(b) ?? by.set(b, []).get(b)!).push(a.id); }
   const name = (id: string) => net.agents[id]?.name ?? id;
   groups.value = [...by.entries()].map(([boss, ids]) => ({ boss, ids: ids.sort((x, y) => name(x).localeCompare(name(y))) }))
     .sort((x, y) => (x.boss === ROOT ? -1 : y.boss === ROOT ? 1 : x.boss.localeCompare(y.boss)));
@@ -53,7 +57,9 @@ function deepLink() {
 deepLink();
 watch(count, deepLink);
 watch(() => route.value, () => { applied = ""; deepLink(); });
-const pick = (id: string) => { sel.value = sel.value === id ? null : id; };
+const setup = ref(false), triageSheet = ref(false), tipN = ref(0);
+const triageAdded = (_r: unknown, name: string) => { toast(`${name} added`); tipN.value++; };
+const pick = (id: string) => { if (id === ROOT && !rootRow.value) { setup.value = true; return; } sel.value = sel.value === id ? null : id; };
 // Hook stream only while something draws hooks (the map lane, or the open panel's Hooks section): Chrome allows
 // 6 HTTP/1.1 connections per host, and this page already holds the main SSE plus the shared agentnet stream.
 let stopHooks: (() => void) | null = null;
@@ -114,6 +120,7 @@ const TIP = "Terminal windows on the server Mac";
       <span class="pill anv-pill" :class="net.connected && !staleSince ? 'ok' : 'warn'" role="status">
         {{ !net.connected ? "Reconnecting…" : staleSince ? `Stale since ${time(staleSince)}` : `${count} live` }}
       </span>
+      <button v-if="pendingChecks.length" type="button" class="pill anv-wait" aria-haspopup="dialog" @click="checkUi.id = 0; checkUi.list = true">{{ pendingChecks.length }} waiting for you</button>
       <div class="seg" role="tablist" aria-label="View">
         <button type="button" role="tab" :aria-selected="mode === 'map'" :class="{ on: mode === 'map' }" @click="mode = 'map'"><Icon name="network" :size="14" /> Map</button>
         <button type="button" role="tab" :aria-selected="mode === 'cards'" :class="{ on: mode === 'cards' }" @click="mode = 'cards'"><Icon name="layout-grid" :size="14" /> Cards</button>
@@ -123,6 +130,10 @@ const TIP = "Terminal windows on the server Mac";
         <Icon name="x" :size="15" /> Close all windows
       </button>
     </header>
+
+    <CheckSheet />
+    <TriageTip :director="!!rootRow" :refresh="tipN" @add="triageSheet = true" />
+    <HookAddSheet :open="triageSheet" template="agentnet-triage" @close="triageSheet = false" @added="triageAdded" />
 
     <div class="anv-b">
       <Transition name="mode" mode="out-in">
@@ -152,6 +163,7 @@ const TIP = "Terminal windows on the server Mac";
       </section>
       </Transition>
 
+      <Teleport to="body"><AgentnetDirectorSetup v-if="setup" @close="setup = false" /></Teleport>
       <Teleport to="body"><AgentnetTeamForm v-if="newTeam" @close="newTeam = false" @created="(id) => (sel = 'team:' + id)" /></Teleport>
       <Teleport to="body" :disabled="!phone">
       <Transition name="scrim"><div v-if="sel && phone" class="anv-scrim" aria-hidden="true" @click="sel = null" /></Transition>
@@ -170,6 +182,11 @@ const TIP = "Terminal windows on the server Mac";
 .anv-h{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .anv-pill{padding:4px 10px;background:var(--on-bg);color:var(--on);font:600 12px/1.2 var(--body)}
 .anv-pill.warn{background:var(--warn-bg);color:var(--warn)}
+.anv-wait{border:1px solid color-mix(in srgb,var(--pend) 60%,transparent);background:var(--pend-bg);color:var(--pend-ink);font:700 13px var(--body);min-height:36px;padding:0 14px;cursor:pointer;animation:wpop .4s var(--spring)}
+.anv-wait:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+@keyframes wpop{from{transform:scale(.85);opacity:0}}
+@media (max-width:760px){.anv-wait{min-height:44px}}
+@media (prefers-reduced-motion:reduce){.anv-wait{animation:none}}
 .cl{display:inline-flex;align-items:center;gap:5px;margin-left:auto}
 .nt{display:inline-flex;align-items:center;gap:5px;margin-left:auto}
 .nt + .cl{margin-left:0}

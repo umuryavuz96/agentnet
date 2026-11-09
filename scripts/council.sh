@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# council.sh <project> <team> "<job>" "<name=angle,name=angle,...>" "<integrator roles>" [--go] [--ask "<words>"]
+# council.sh <project> <team> "<job>" "<name=angle,name=angle,...>" "<integrator roles>" [--go] [--ask "<words>"] [--goal "<done looks like>"]
 # Plans (default) or spawns (--go) a council team: architect-1 moderator, 3-5 persona angles, 1-2 integrators.
 # Rules: $AGENTNET_RULES_DIR (default docs/rules in this repo): council-teams.md, model-routing.md.
 # Routing: pick-model.sh + pick-soul.sh per member. Spawn: spawn-agent.sh. Boss of the moderator: $AGENTNET_ROOT_NAME (default root).
 set -euo pipefail
 [ $# -ge 5 ] || { sed -n '2,3p' "$0"; exit 2; }
 PROJ=$1 TEAM=$2 JOB=$3 ANGLES=$4 INTEG=$5; shift 5
-GO=0 ASK=$JOB
-while [ $# -gt 0 ]; do case $1 in --go) GO=1;; --ask) ASK=${2:?--ask needs a text}; shift;; *) echo "error: unknown option $1" >&2; exit 2;; esac; shift; done
+GO=0 ASK=$JOB GOAL=""
+while [ $# -gt 0 ]; do case $1 in --go) GO=1;; --ask) ASK=${2:?--ask needs a text}; shift;; --goal) GOAL=${2:?--goal needs a text}; shift;; *) echo "error: unknown option $1" >&2; exit 2;; esac; shift; done
 L="$(cd "$(dirname "$0")" && pwd)"; SP="$L/spawn-agent.sh"
 RULES="${AGENTNET_RULES_DIR:-$(cd "$L/.." && pwd)/docs/rules}"
 ROOTNAME="${AGENTNET_ROOT_NAME:-root}"
@@ -52,6 +52,6 @@ for p in "${PLAN[@]}"; do
     council) T="You are a COUNCIL member, angle: $nd. Write your position in the topic file, then reply to the others (agree/disagree/improve). Never write product code, never build. Report to architect-1 (mcp__agentnet__send).";;
     *) T="You are an INTEGRATOR. Build only what the moderator's Decision says; one build at a time. Post before/after in the topic file. Report to architect-1 (mcp__agentnet__send).";;
   esac
-  "$SP" "$nm" --project "$PROJ" --boss "$boss" --job "$JOB ($k)" ${md:+--model "$md"} ${so:+--soul "$so"} \
+  "$SP" "$nm" --project "$PROJ" --boss "$boss" --job "$JOB ($k)" --goal "${GOAL:-Decision + integrated build for: $JOB}" ${md:+--model "$md"} ${so:+--soul "$so"} \
     --boot-prompt "Council team $TEAM. Job: $JOB. Read $RULES/council-teams.md and $PROJ/docs/TEAM-$DATE.md first. Effort: ${ef:-medium}. $T Rules: task list first (mcp__agentnet__task_add), local commits only, NEVER push, no posts/messages/emails/purchases, never print secrets."
 done

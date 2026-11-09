@@ -5,7 +5,7 @@
 // rows, so a status patch re-renders text only; the layout is recomputed on a boss/job change or a resize.
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch, nextTick } from "vue";
 import Icon from "../ui/Icon.vue";
-import { net, hooks, layoutKey, humanDoing, ctxView, bgVisible, bgShown, BG_KEEP_MS, jobFocus, teams, teamsKey, type AgentRow, type BgRow, type Msg } from "../net";
+import { net, hooks, layoutKey, humanDoing, ctxView, bgVisible, bgShown, BG_KEEP_MS, jobFocus, checkUi, teams, teamsKey, placing, type AgentRow, type BgRow, type Check, type Msg } from "../net";
 import { api } from "../ui/api";
 
 const props = defineProps<{ selected: string | null; cover?: number }>();
@@ -60,12 +60,12 @@ const lineCount = (id: string, w: number) => {
 /** A card without a progress bar (no tasks, or all done) is 14 px shorter: no empty strip where the bar was. */
 const noBar = (id: string) => (prog(id) === null ? 14 : 0);
 const extraH = (id: string, w: number) => { const l = lineCount(id, w); return (l - 1) * NODE_LH + (l > 1 ? 4 : 0); };
-const cardW = (id: string) => Math.max(236, nameOf(id).length * 9 + 140 + (isLead(id) ? 56 : 0) + (extraTeams(id) > 0 ? 38 : 0) + (chipW(id) ? chipW(id) + 6 : 0));
+const cardW = (id: string) => Math.max(236, bgNeedW(id), nameOf(id).length * 9 + 140 + (isLead(id) ? 56 : 0) + (extraTeams(id) > 0 ? 38 : 0) + (chipW(id) ? chipW(id) + 6 : 0));
 
 /** boss tree among the rows on the map: boss "root", no boss, an unknown boss or a loop all hang under the director. */
 /** Active teams with at least one live member: agent id -> team (first team wins). Their members leave the boss tree and sit in the team's region. */
 function teamGroups() {
-  const out: { team: (typeof teams.list)[number]; ids: string[]; elsewhere: string[] }[] = [], used = new Set<string>(), byName = new Map(Object.values(net.agents).filter((a) => a.name !== ROOT).map((a) => [a.name, a.id]));
+  const out: { team: (typeof teams.list)[number]; ids: string[]; elsewhere: string[] }[] = [], used = new Set<string>(), byName = new Map(Object.values(net.agents).filter((a) => a.name !== ROOT && !placing.has(a.name)).map((a) => [a.name, a.id]));
   for (const t of teams.list) {
     if (t.state !== "active") continue;
     const names = [...(t.lead ? [t.lead] : []), ...t.members.filter((m) => m !== t.lead).sort()], ids: string[] = [];
@@ -76,7 +76,7 @@ function teamGroups() {
   return out;
 }
 function tree(skip: Set<string> = new Set()) {
-  const list = Object.values(net.agents).filter((a) => a.name !== ROOT && !skip.has(a.id));
+  const list = Object.values(net.agents).filter((a) => a.name !== ROOT && !skip.has(a.id) && !placing.has(a.name));
   const byName = new Map(list.map((a) => [a.name, a.id]));
   const kids = new Map<string, string[]>(); const top: string[] = [];
   for (const a of list) {
@@ -117,7 +117,7 @@ const jobsBy = computed(() => {
 });
 /** Lines under a node: one per shown job, plus one for the chips / retired tag. */
 // Background work the agent runs itself (subagents, shells, monitors), posted by the plugin hooks: shown as pills above the job pills.
-const BG_SHOW = 4, BGK: Record<string, string> = { subagent: "agent", shell: "shell", monitor: "watch" };
+const BG_SHOW = 4, BGK: Record<string, string> = { subagent: "Subagent", shell: "Shell", monitor: "Monitor" };
 const bgBy = computed(() => {
   const m = new Map<string, BgRow[]>(), now = net.now || Date.now();
   for (const a of Object.values(net.agents)) {
@@ -126,24 +126,65 @@ const bgBy = computed(() => {
   }
   return m;
 });
-const linesOf = (id: string) => { const nb = bgBy.value.get(id)?.length ?? 0, g = jobsBy.value.get(id); if (!g) return nb; const dn = expandedDone.value.has(id) ? Math.min(3, g.done.length) : 0; return nb + g.run.length + dn + (g.more || g.done.length || g.retired ? 1 : 0); };
-const exOf = (id: string) => (linesOf(id) ? linesOf(id) * (PH + 5) * pillS.value + 12 : 0);
-const jobSig = computed(() => [...new Set([...jobsBy.value.keys(), ...bgBy.value.keys()])].sort().map((k) => k + ":" + linesOf(k)).join(","));
+// A background chip reads "Shell · <sentence>" in full: wrapped to at most 2 lines at the chip width, the chip grows by one text line when it needs the second, and the elapsed time stays at the right.
+const CW = 5.7, LH = 13, BG_W = 360, TIME_W = 5 * CW + 10;
+/** Chip text in at most 2 lines: line 1 leaves room for the elapsed time, line 2 has the full width. Ellipsis only when 2 lines are not enough. */
+const CK_W = 400;
+const chipLines = (text: string, wNode: number, timeW = TIME_W, cap = BG_W) => {
+  const W = Math.min((wNode - 36) / pillS.value, cap), n1 = Math.max(8, Math.floor((W - 25 - timeW) / CW)), n2 = Math.max(8, Math.floor((W - 25) / CW));
+  const words = text.split(/\s+/), out: string[] = [""];
+  for (const w of words) {
+    const i = out.length - 1, cap = i ? n2 : n1;
+    if (!out[i]) out[i] = w; else if (out[i].length + 1 + w.length <= cap) out[i] += " " + w; else if (!i) out.push(w); else { out[i] = out[i].slice(0, Math.max(1, cap - 1)).replace(/[\s·,]+$/, "") + "…"; break; }
+  }
+  return out.map((l, i) => (l.length > (i ? n2 : n1) && l.at(-1) !== "…" ? l.slice(0, (i ? n2 : n1) - 1) + "…" : l));
+};
+const bgLines = (b: BgRow, wNode: number) => chipLines(`${BGK[b.kind] ?? b.kind} · ${b.label}`, wNode);
+
+// ---------- owner checks: an amber chip under the asker's box ("Waiting for you · question"); an agent that is gone hangs it under root, dashed ----------
+const checksBy = computed(() => {
+  const m = new Map<string, Check[]>(), byName = new Map(Object.values(net.agents).map((a) => [a.name, a]));
+  for (const k of Object.values(net.checks).sort((a, b) => a.id - b.id)) {
+    const a = byName.get(k.agent), id = !a || a.name === ROOT ? ROOT : a.id;
+    (m.get(id) ?? m.set(id, []).get(id)!).push(k);
+  }
+  return m;
+});
+const checkText = (k: Check) => (k.state === "pending" ? `Waiting for you · ${k.question}` : `${k.answer} · ${k.question}`);
+const checkLines = (k: Check, wNode: number) => chipLines(checkText(k), wNode, 0, CK_W);
+const checkExtra = (id: string, wNode: number) => (checksBy.value.get(id) ?? []).reduce((a, k) => a + (checkLines(k, wNode).length - 1) * LH, 0);
+const bgExtra = (id: string, wNode: number) => (bgBy.value.get(id) ?? []).reduce((a, b) => a + (bgLines(b, wNode).length - 1) * LH, 0) + checkExtra(id, wNode);
+/** The card width a long chip sentence wants (two lines at the chip font), capped: short sentences keep the normal card. */
+const BG_CARD_MAX = 360;
+const ckNeedW = (id: string) => Math.max(0, ...(checksBy.value.get(id) ?? []).map((k) => Math.ceil(36 + pillS.value * (Math.ceil(checkText(k).length * 0.58) * CW + 32))));
+const bgNeedW = (id: string) => { const ck = Math.min(CK_W + 40, ckNeedW(id)); return Math.max(ck, bgNeedW0(id)); };
+const bgNeedW0 = (id: string) => { const rows = bgBy.value.get(id) ?? [], cks = checksBy.value.get(id) ?? []; if (!rows.length && !cks.length) return 0; const len = Math.min(70, Math.max(0, ...rows.map((b) => (BGK[b.kind] ?? b.kind).length + 3 + b.label.length)));  return Math.min(BG_CARD_MAX, Math.ceil(36 + pillS.value * (((len + 12) * CW + 50 + TIME_W) / 2))); };
+const rootW = computed(() => Math.max(256, bgNeedW(ROOT)));
+const linesOf = (id: string) => { const nb = (bgBy.value.get(id)?.length ?? 0) + (checksBy.value.get(id)?.length ?? 0), g = jobsBy.value.get(id); if (!g) return nb; const dn = expandedDone.value.has(id) ? Math.min(3, g.done.length) : 0; return nb + g.run.length + dn + (g.more || g.done.length || g.retired ? 1 : 0); };
+const exOf = (id: string, w = rootW.value) => (linesOf(id) ? (linesOf(id) * (PH + 5) + bgExtra(id, w)) * pillS.value + 12 : 0);
+const jobSig = computed(() => [...new Set([...jobsBy.value.keys(), ...bgBy.value.keys(), ...checksBy.value.keys()])].sort().map((k) => k + ":" + linesOf(k) + ":" + bgNeedW(k) + ":" + bgExtra(k, nodes.value.get(k)?.w ?? rootW.value)).join(","));
 const jdur = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m" : Math.floor(s / 3600) + "h"; };
-interface It { key: string; kind: "pill" | "chip" | "tag" | "bg"; bg?: BgRow; op?: number; x: number; y: number; w: number; j?: BJ; text: string; tip: string; act?: () => void }
+interface It { key: string; kind: "pill" | "chip" | "tag" | "bg" | "check"; cs?: string; ghost?: boolean; bg?: BgRow; op?: number; x: number; y: number; w: number; h?: number; lines?: string[]; time?: string; j?: BJ; text: string; tip: string; act?: () => void }
 const short = (t: string, n = 18) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
 const jobRows = computed(() => {
   const out = new Map<string, { items: It[]; y: number; x0: number }>();
-  const ids = new Set([...jobsBy.value.keys(), ...bgBy.value.keys()]), none: JG = { run: [], more: 0, done: [], retired: false };
+  const ids = new Set([...jobsBy.value.keys(), ...bgBy.value.keys(), ...checksBy.value.keys()]), none: JG = { run: [], more: 0, done: [], retired: false };
   for (const id of ids) {
     const g = jobsBy.value.get(id) ?? none;
     const n = id === ROOT ? dirNode.value : nodes.value.get(id); if (!n) continue;
     const exp = expandedDone.value.has(id), pills = [...g.run, ...(exp ? g.done.slice(0, 3) : [])];
     const S = pillS.value, x0 = (-n.w / 2 + 26) / S, W0 = (n.w - 36) / S, items: It[] = []; let y = 0;
     const nowT = net.now || Date.now();
+    for (const k of checksBy.value.get(id) ?? []) {
+      const lines = checkLines(k, n.w), ghost = id === ROOT && k.agent !== ROOT, who = `${k.agent}${ghost || !row(id) ? " (closed)" : ""}`;
+      items.push({ key: "ck:" + k.id, kind: "check", cs: k.state === "pending" ? "pending" : k.answerTone ?? "neutral", ghost, x: x0, y, w: Math.min(W0, CK_W), h: PH + (lines.length - 1) * LH, lines, time: "", text: lines.join(" "),
+        tip: k.state === "pending" ? `Waiting for you: ${k.question} · asked by ${who}. Tap to answer.` : `You answered "${k.answer}": ${k.question}`, act: k.state === "pending" ? () => { checkUi.list = false; checkUi.id = k.id; } : undefined });
+      y += PH + (lines.length - 1) * LH + 5;
+    }
     for (const b of bgBy.value.get(id) ?? []) {
       const live = b.state === "running", stale = bgShown(b, nowT) === "stale", el = jdur((live ? nowT : b.endedAt ?? nowT) - b.startedAt), age = live ? 0 : nowT - (b.endedAt ?? nowT);
-      items.push({ key: "bg:" + b.id, kind: "bg", bg: b, x: x0, y, w: Math.min(W0, 190), op: stale || age > BG_KEEP_MS - 20_000 ? 0.45 : 1, text: `${BGK[b.kind] ?? b.kind} · ${short(b.label, 14)} · ${stale ? "stale" : el}`, tip: `${b.kind}: ${b.label} · ${b.state} · ${el}` }); y += PH + 5;
+      const lines = bgLines(b, n.w), h = PH + (lines.length - 1) * LH, time = stale ? "stale" : el, tail = `${b.state} · ${el}`;
+      items.push({ key: "bg:" + b.id, kind: "bg", bg: b, x: x0, y, w: Math.min(W0, BG_W), h, lines, time, op: stale || age > BG_KEEP_MS - 20_000 ? 0.45 : 1, text: `${lines.join(" ")} · ${time}`, tip: `${BGK[b.kind] ?? b.kind}: ${b.label}${b.cmd && b.cmd !== b.label ? `\n${b.cmd}` : ""}\n${tail}` }); y += h + 5;
     }
     for (const j of pills) {
       const live = j.status === "running", el = jdur(live ? (net.now || Date.now()) - j.started : j.runtimeMs);
@@ -191,14 +232,14 @@ function layout() {
     const w0 = Math.max(...rows.map((r) => cardW(r.id))), depth = Math.max(...rows.map((r) => r.depth));
     const label = team ? team.name : row(lead)?.job ?? nameOf(lead);
     const c: C = { id: "c:" + lead, label, team: team?.id, goal: team?.goal ?? null, also: also.get(team?.id ?? ""), ids: rows.map((r) => r.id), x: 0, y: 0, w: Math.max(PAD * 2 + depth * IND + w0, Math.min(label.length, 40) * 7 + 60, team ? 250 : 0), h: 0 };
-    c.h = HEAD + rows.reduce((a, r) => a + ROW + exOf(r.id) + extraH(r.id, c.w - PAD * 2 - r.depth * IND) - noBar(r.id), 0) - (ROW - CH) + PAD;
+    c.h = HEAD + rows.reduce((a, r) => a + ROW + exOf(r.id, c.w - PAD * 2 - r.depth * IND) + extraH(r.id, c.w - PAD * 2 - r.depth * IND) - noBar(r.id), 0) - (ROW - CH) + PAD;
     const hh = headOf(c); c.h += hh - HEAD;
     let yy = hh;
-    for (let i = 0; i < rows.length; i++) { const r = rows[i]; const w = c.w - PAD * 2 - r.depth * IND; const h = CH + extraH(r.id, w) - noBar(r.id); nm.set(r.id, { id: r.id, w, h, x: PAD + r.depth * IND + w / 2, y: yy + h / 2 }); yy += ROW + exOf(r.id) + h - CH; }
+    for (let i = 0; i < rows.length; i++) { const r = rows[i]; const w = c.w - PAD * 2 - r.depth * IND; const h = CH + extraH(r.id, w) - noBar(r.id); nm.set(r.id, { id: r.id, w, h, x: PAD + r.depth * IND + w / 2, y: yy + h / 2 }); yy += ROW + exOf(r.id, w) + h - CH; }
     cl.push(c);
   }
-  const dh = 72 + extraH(ROOT, 256); const d: N = { id: ROOT, w: 256, h: dh, x: 0, y: dh / 2 };
-  const topY = d.h + 64 + exOf(ROOT);
+  const rw = rootW.value, dh = 64 + extraH(ROOT, rw); /* root card has no progress bar: no empty strip under the status line */ const d: N = { id: ROOT, w: rw, h: dh, x: 0, y: dh / 2 };
+  const topY = d.h + 64 + exOf(ROOT, rw);
   if (!portrait()) {
     const maxW = Math.max(520, (W.value - 40) / KMIN);
     const rws: C[][] = [[]]; let rw = 0;
@@ -279,7 +320,11 @@ function glideView(nv: { x: number; y: number; k: number }) {
   const step = (now: number) => { const p = Math.min(1, (now - t0) / 320), e = 1 - (1 - p) ** 3; view.value = { k: lerp(a.k, nv.k, e), x: lerp(a.x, nv.x, e), y: lerp(a.y, nv.y, e) }; if (p < 1) viewRaf = requestAnimationFrame(step); };
   viewRaf = requestAnimationFrame(step);
 }
-function fit() {
+/** True once the user pans or zooms: live updates (status, tasks, new agents) then keep their camera and only the
+ *  Fit button or a double click re-fits. User report 2026-11-09: every status update reset the zoom and pan. */
+let userView = false;
+function fit(auto = false) {
+  const keep = auto && userView;
   const d = target?.d ?? dirNode.value;
   let x0 = d.x - d.w / 2, x1 = d.x + d.w / 2, y0 = 0, y1 = d.h;
   for (const c of target?.cl ?? boxes.value) { x0 = Math.min(x0, c.x, c.via ?? Infinity); x1 = Math.max(x1, c.x + c.w, c.via ?? -Infinity); y1 = Math.max(y1, c.y + c.h); }
@@ -287,12 +332,12 @@ function fit() {
   // Everything in view; the floor KMIN keeps text readable. A desktop canvas also zooms IN (up to KMAX) so a small tree fills the area, centred.
   const k = Math.max(KMIN, portrait() ? Math.min(1, W.value / cw) : Math.min(KMAX, W.value / cw, H.value / ch));
   const nv = { k, x: portrait() ? 12 - x0 * k : W.value / 2 - ((x0 + x1) / 2) * k, y: portrait() ? 20 : Math.max(16, (H.value - (y1 - y0) * k) / 2) };
-  glideView(nv);
-  contentH.value = portrait() ? Math.ceil(ch * k + 8) + reserve() : 0;
+  if (!keep) glideView(nv);
+  contentH.value = portrait() ? Math.ceil(ch * (keep ? view.value.k : k) + 8) + reserve() : 0;
   // Ground truth: the drawn content's real bottom edge, so a wrong estimate never leaves an empty canvas under the last node.
   if (portrait()) nextTick(() => { const b = gEl.value?.getBBox?.(); if (b && b.height > 0) contentH.value = Math.ceil((b.y + b.height) * view.value.k + view.value.y + 16) + reserve(); });
 }
-const relayout = (again = 0) => { layout(); nextTick(() => { fit(); const k = view.value.k, want = narrow() || k >= 0.95 ? 1 : k >= 0.8 ? 1.2 : 1.45; if (want !== pillS.value && jobsBy.value.size && again < 2) { pillS.value = want; relayout(again + 1); } }); };
+const relayout = (again = 0) => { layout(); nextTick(() => { fit(true); const k = view.value.k, want = narrow() || k >= 0.95 ? 1 : k >= 0.8 ? 1.2 : 1.45; if (want !== pillS.value && jobsBy.value.size && again < 2) { pillS.value = want; relayout(again + 1); } }); };
 watch(layoutKey, () => relayout());
 watch(teamsKey, () => relayout());
 watch(jobSig, () => relayout());
@@ -315,10 +360,11 @@ const onMove = (e: PointerEvent) => {
   if (!drag.moved && Math.hypot(dx, dy) < 5) return;
   // Capture only once a real drag starts: capturing on pointerdown retargets the click to the svg, so taps on a node never selected it.
   if (!drag.moved) (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
-  drag.moved = true; view.value = { ...view.value, x: drag.vx + dx, y: drag.vy + dy };
+  drag.moved = true; userView = true; cancelAnimationFrame(viewRaf); view.value = { ...view.value, x: drag.vx + dx, y: drag.vy + dy };
 };
 const onUp = () => { panned = !!drag?.moved; drag = null; setTimeout(() => { panned = false; }, 0); };
 function zoomAt(f: number, cx = W.value / 2, cy = H.value / 2) {
+  userView = true; cancelAnimationFrame(viewRaf);
   const v = view.value, k = Math.max(0.3, Math.min(2.5, v.k * f)), r = k / v.k;
   view.value = { k, x: cx - (cx - v.x) * r, y: cy - (cy - v.y) * r };
 }
@@ -326,8 +372,9 @@ function zoomAt(f: number, cx = W.value / 2, cy = H.value / 2) {
 const onWheel = (e: WheelEvent) => {
   const m = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? H.value : 1, dx = e.deltaX * m, dy = e.deltaY * m;
   if (e.ctrlKey || e.metaKey) { const r = box.value!.getBoundingClientRect(); zoomAt(Math.exp(-dy * 0.01), e.clientX - r.left, e.clientY - r.top); return; }
-  view.value = { ...view.value, x: view.value.x - dx, y: view.value.y - dy };
+  userView = true; cancelAnimationFrame(viewRaf); view.value = { ...view.value, x: view.value.x - dx, y: view.value.y - dy };
 };
+const refit = () => { userView = false; fit(); };
 const pick = (id: string) => { if (!panned) emit("select", id); };
 /** The detail panel floats over the right edge: when it would cover the picked node, slide the map left (300 ms). */
 let tween = 0;
@@ -369,7 +416,7 @@ const promptLine = (doing: string | null | undefined, task: string | undefined):
 };
 const line2 = (id: string) => {
   const r = id === ROOT ? rootRow.value : row(id);
-  if (!r) return id === ROOT ? "Director · main session" : "";
+  if (!r) return id === ROOT ? "Tap to start" : "";
   const task = r.tasks?.find((k) => k.status === "in_progress")?.text;
   const t = r.reported?.blockedOn ? "Blocked: " + r.reported.blockedOn : task ?? promptLine(r.doing, task) ?? humanDoing(r.doing) ?? LABEL[dotOf(id)];
   return id === ROOT && r.state === "idle" && !r.doing ? "Director · idle" : t;
@@ -442,7 +489,7 @@ const linkLive = (l: L) => (l.to.startsWith("trunk:") ? [...geo.parentOf].some((
 const ctxOf = (id: string) => { const r = id === ROOT ? rootRow.value : row(id); const v = ctxView(r); return v ? Math.round(v.pct) : null; };
 /** Short model name on the node: "claude-sonnet-5-5" -> "sonnet". */
 const modelOf = (id: string): string | null => { const m = (id === ROOT ? rootRow.value : row(id))?.model; if (!m) return null; const v = /(haiku|sonnet|opus|fable)[-_ ]?(\d+)(?:[-.](\d+))?/i.exec(m); if (v) return `${v[1].toLowerCase()} ${v[2]}${v[3] ? "." + v[3] : ""}`; const k = /(haiku|sonnet|opus|fable)/i.exec(m); return k ? k[1].toLowerCase() : m; };
-const useTip = (id: string) => { const r = id === ROOT ? rootRow.value : row(id); if (!r) return ""; const p: string[] = []; const cv = ctxView(r); if (cv) p.push(`context ${Math.round(cv.pct)}% of ${Math.round(cv.window / 1000)}k`); if (r.cost != null) p.push(`$${r.cost.toFixed(2)}`); if (r.weekly) p.push(`weekly ${Math.round(r.weekly.pct)}%`); return p.length ? " · " + p.join(" · ") : ""; };
+const useTip = (id: string) => { const r = id === ROOT ? rootRow.value : row(id); if (!r) return ""; const p: string[] = []; const cv = ctxView(r); if (cv) p.push(`context ${Math.round(cv.pct)}% of ${Math.round(cv.window / 1000)}k`); if (r.cost != null) p.push(`$${r.cost.toFixed(2)}`); if (r.weekly) p.push(`weekly ${Math.round(r.weekly.pct)}%`); const g = r.goal ? ` · goal: ${r.goal}` : ""; return (p.length ? " · " + p.join(" · ") : "") + g; };
 /** Hooks lane: a hook that just fired glows for 1.4 s (skipped runs stay quiet). */
 const glow = ref(new Set<string>());
 watch(() => hooks.fires[0], (f) => { if (!f || f.skipped) return; glow.value = new Set(glow.value).add(f.script); setTimeout(() => { const g = new Set(glow.value); g.delete(f.script); glow.value = g; }, 1400); });
@@ -518,13 +565,13 @@ const boxStyle = computed(() => (contentH.value ? { flex: "1 1 0", alignSelf: "f
 const nodeW = (n: N) => target?.nm.get(n.id)?.w ?? n.w;
 const allNodes = computed(() => [...nodes.value.values()]);
 /** A status line that wraps to a new line count changes card heights: lay out again (tweened). */
-const wrapSig = computed(() => boxes.value.map((c) => c.id + ':' + titleLines(c).length + ':' + subBlocks(c).map((b) => b.lines.length).join('.')).join(',') + '|' + [ROOT, ...Object.keys(net.agents)].map((id) => id + ':' + noBar(id) + ':' + lineCount(id, id === ROOT ? 256 : (target?.nm.get(id)?.w ?? nodes.value.get(id)?.w ?? cardW(id)))).join(','));
+const wrapSig = computed(() => boxes.value.map((c) => c.id + ':' + titleLines(c).length + ':' + subBlocks(c).map((b) => b.lines.length).join('.')).join(',') + '|' + [ROOT, ...Object.keys(net.agents)].map((id) => id + ':' + noBar(id) + ':' + lineCount(id, id === ROOT ? rootW.value : (target?.nm.get(id)?.w ?? nodes.value.get(id)?.w ?? cardW(id)))).join(','));
 watch(wrapSig, () => relayout());
 </script>
 
 <template>
   <div ref="box" class="amap" :class="{ narrow: narrow() }" :style="[boxStyle, { '--rv': reserve() + 'px' }]" role="group" :aria-label="`Org chart of ${count} agents`">
-    <svg class="amap-svg" :viewBox="`0 0 ${W} ${H}`" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp" @wheel.prevent="onWheel" @dblclick="fit">
+    <svg class="amap-svg" :viewBox="`0 0 ${W} ${H}`" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp" @wheel.prevent="onWheel" @dblclick="refit">
       <g ref="gEl" :transform="`translate(${view.x} ${view.y}) scale(${view.k})`">
         <g v-for="c in boxes" :key="c.id" class="cl" :class="{ live: working(c), team: !!c.team }" :role="c.team ? 'button' : undefined" :tabindex="c.team ? 0 : undefined" :aria-label="c.team ? `Team ${c.label}` : undefined"
            @click="pickTeam(c)" @keydown.enter="pickTeam(c)">
@@ -545,19 +592,20 @@ watch(wrapSig, () => relayout());
           </g>
         </g>
         <path v-for="l in links" :key="l.to" :d="l.d" :data-to="l.to" class="ln" :class="{ live: linkLive(l), hot: hotLinks.has(l.to) }" />
-        <g class="nd" :class="['s-' + dotOf(ROOT), 'root', { sel: selected === ROOT, hot: hotNodes.has(ROOT) }]" :transform="`translate(${dirNode.x} ${dirNode.y})`" tabindex="0" role="button"
-           :aria-label="`${ROOT}, director`" @click="pick(ROOT)" @keydown.enter="pick(ROOT)" @keydown.space.prevent="pick(ROOT)">
+        <g class="nd" :class="['s-' + dotOf(ROOT), 'root', { sel: selected === ROOT, hot: hotNodes.has(ROOT), setup: !rootRow }]" :transform="`translate(${dirNode.x} ${dirNode.y})`" tabindex="0" role="button"
+           :aria-label="rootRow ? `${ROOT}, director` : `Set up your director`" @click="pick(ROOT)" @keydown.enter="pick(ROOT)" @keydown.space.prevent="pick(ROOT)">
           <rect class="card" :x="-dirNode.w / 2" :y="-dirNode.h / 2" :width="dirNode.w" :height="dirNode.h" rx="12" />
           <circle class="dot" :cx="-dirNode.w / 2 + 18" :cy="-dirNode.h / 2 + 24" r="5" />
-          <text class="nm" :x="-dirNode.w / 2 + 34" :y="-dirNode.h / 2 + 29">{{ ROOT }} (director)</text>
+          <text class="nm" :x="-dirNode.w / 2 + 34" :y="-dirNode.h / 2 + 29">{{ rootRow ? ROOT + " (director)" : "Set up your director" }}</text>
           <text v-if="ctxOf(ROOT) !== null" class="ctx" :class="{ hi: ctxOf(ROOT)! >= 80 }" :x="dirNode.w / 2 - 14" :y="-dirNode.h / 2 + 29" text-anchor="end">{{ ctxOf(ROOT) }}%</text>
-          <text class="sub" :x="-dirNode.w / 2 + 34" :y="-dirNode.h / 2 + 51"><tspan v-for="(ln, i) in subOf(ROOT, 256)" :key="i" :x="-dirNode.w / 2 + 34" :dy="i ? NODE_LH : 0">{{ ln }}</tspan></text>
+          <text class="sub" :x="-dirNode.w / 2 + 34" :y="-dirNode.h / 2 + 51"><tspan v-for="(ln, i) in subOf(ROOT, rootW)" :key="i" :x="-dirNode.w / 2 + 34" :dy="i ? NODE_LH : 0">{{ ln }}</tspan></text>
           <g v-if="jobRows.get(ROOT)" class="bjr" :transform="`translate(0 ${jobRows.get(ROOT)!.y}) scale(${pillS})`">
             <path class="bjl" :d="`M${jobRows.get(ROOT)!.x0 - 12},-4 V${jobRows.get(ROOT)!.items.length ? jobRows.get(ROOT)!.items[0].y + PH / 2 : 8} H${jobRows.get(ROOT)!.x0}`" />
-            <g v-for="it in jobRows.get(ROOT)!.items" :key="it.key" :class="['bjp', it.kind, it.j?.status ?? it.bg?.state]" :style="it.op !== undefined && it.op < 1 ? { opacity: it.op } : undefined" :transform="`translate(${it.x} ${it.y})`" role="button" tabindex="0" :aria-label="it.tip" @click.stop="it.j ? tapJob(it.j, ROOT) : it.act?.()" @keydown.enter.stop="it.j ? tapJob(it.j, ROOT) : it.act?.()">
+            <g v-for="it in jobRows.get(ROOT)!.items" :key="it.key" :class="['bjp', it.kind, it.cs, it.j?.status ?? it.bg?.state, { ghost: it.ghost }]" :style="it.op !== undefined && it.op < 1 ? { opacity: it.op } : undefined" :transform="`translate(${it.x} ${it.y})`" role="button" tabindex="0" :aria-label="it.tip" @click.stop="it.j ? tapJob(it.j, ROOT) : it.act?.()" @keydown.enter.stop="it.j ? tapJob(it.j, ROOT) : it.act?.()">
               <title>{{ it.tip }}</title>
-              <rect :width="it.w" :height="PH" rx="10" />
-              <template v-if="it.j || it.bg"><circle class="bjd" cx="9" :cy="PH / 2" r="3.2" /><text class="bjt" x="17" :y="PH / 2 + 4">{{ it.text }}</text></template>
+              <rect :width="it.w" :height="it.h ?? PH" rx="10" />
+              <template v-if="it.lines"><circle class="bjd" cx="9" :cy="PH / 2" r="3.2" /><text class="bjt" x="17" :y="PH / 2 + 4"><tspan v-for="(ln, i) in it.lines" :key="i" x="17" :dy="i ? LH : 0">{{ ln }}</tspan></text><text class="bjt bjm" :x="it.w - 8" :y="PH / 2 + 4" text-anchor="end">{{ it.time }}</text></template>
+              <template v-else-if="it.j || it.bg"><circle class="bjd" cx="9" :cy="PH / 2" r="3.2" /><text class="bjt" x="17" :y="PH / 2 + 4">{{ it.text }}</text></template>
               <text v-else class="bjt" :x="it.w / 2" :y="PH / 2 + 4" text-anchor="middle">{{ it.text }}</text>
             </g>
           </g>
@@ -576,10 +624,11 @@ watch(wrapSig, () => relayout());
           <template v-if="prog(n.id) !== null"><rect class="pbg" :x="-n.w / 2 + 34" :y="n.h / 2 - 20" :width="n.w - 62" height="6" rx="3" /><rect class="pfg" :x="-n.w / 2 + 34" :y="n.h / 2 - 20" :width="(n.w - 62) * prog(n.id)!" height="6" rx="3" /></template>
           <g v-if="jobRows.get(n.id)" class="bjr" :transform="`translate(0 ${jobRows.get(n.id)!.y}) scale(${pillS})`">
             <path class="bjl" :d="`M${jobRows.get(n.id)!.x0 - 12},-4 V${jobRows.get(n.id)!.items.length ? jobRows.get(n.id)!.items[0].y + PH / 2 : 8} H${jobRows.get(n.id)!.x0}`" />
-            <g v-for="it in jobRows.get(n.id)!.items" :key="it.key" :class="['bjp', it.kind, it.j?.status ?? it.bg?.state]" :style="it.op !== undefined && it.op < 1 ? { opacity: it.op } : undefined" :transform="`translate(${it.x} ${it.y})`" role="button" tabindex="0" :aria-label="it.tip" @click.stop="it.j ? tapJob(it.j, n.id) : it.act?.()" @keydown.enter.stop="it.j ? tapJob(it.j, n.id) : it.act?.()">
+            <g v-for="it in jobRows.get(n.id)!.items" :key="it.key" :class="['bjp', it.kind, it.cs, it.j?.status ?? it.bg?.state, { ghost: it.ghost }]" :style="it.op !== undefined && it.op < 1 ? { opacity: it.op } : undefined" :transform="`translate(${it.x} ${it.y})`" role="button" tabindex="0" :aria-label="it.tip" @click.stop="it.j ? tapJob(it.j, n.id) : it.act?.()" @keydown.enter.stop="it.j ? tapJob(it.j, n.id) : it.act?.()">
               <title>{{ it.tip }}</title>
-              <rect :width="it.w" :height="PH" rx="8.5" />
-              <template v-if="it.j || it.bg"><circle class="bjd" cx="9" :cy="PH / 2" r="3.2" /><text class="bjt" x="17" :y="PH / 2 + 4">{{ it.text }}</text></template>
+              <rect :width="it.w" :height="it.h ?? PH" rx="8.5" />
+              <template v-if="it.lines"><circle class="bjd" cx="9" :cy="PH / 2" r="3.2" /><text class="bjt" x="17" :y="PH / 2 + 4"><tspan v-for="(ln, i) in it.lines" :key="i" x="17" :dy="i ? LH : 0">{{ ln }}</tspan></text><text class="bjt bjm" :x="it.w - 8" :y="PH / 2 + 4" text-anchor="end">{{ it.time }}</text></template>
+              <template v-else-if="it.j || it.bg"><circle class="bjd" cx="9" :cy="PH / 2" r="3.2" /><text class="bjt" x="17" :y="PH / 2 + 4">{{ it.text }}</text></template>
               <text v-else class="bjt" :x="it.w / 2" :y="PH / 2 + 4" text-anchor="middle">{{ it.text }}</text>
             </g>
           </g>
@@ -600,9 +649,8 @@ watch(wrapSig, () => relayout());
     <div class="zoom" role="group" aria-label="Zoom">
       <button type="button" aria-label="Zoom in" @click="zoomAt(1.25)"><Icon name="plus" :size="16" /></button>
       <button type="button" aria-label="Zoom out" @click="zoomAt(1 / 1.25)"><Icon name="minus" :size="16" /></button>
-      <button type="button" aria-label="Fit to screen" @click="fit"><Icon name="maximize" :size="16" /></button>
+      <button type="button" aria-label="Fit to screen" @click="refit"><Icon name="maximize" :size="16" /></button>
     </div>
-    <p v-if="net.connected && !count" class="none">No live agents yet. Agents spawned with <code>spawn-agent.sh</code> show here within seconds.</p>
   </div>
 </template>
 
@@ -624,12 +672,23 @@ watch(wrapSig, () => relayout());
 .bjp:hover rect,.bjp:focus-visible rect{stroke:var(--on)}
 .bjp .bjt{font:600 12px var(--body);fill:var(--muted)}
 .bjp.chip .bjt{fill:var(--ink)}
+.bjp.bg .bjt{fill:var(--ink)}
+.bjp .bjm,.bjp.bg .bjm{font:500 11.5px var(--mono);fill:var(--muted)}
 .bjp .bjd{fill:var(--off)}
 .bjp.running .bjd{fill:var(--on);animation:jpulse 1.6s ease-in-out infinite}
 .bjp.done .bjd{fill:var(--on)} .bjp.failed .bjd{fill:var(--bad)}
+.bjp.check{cursor:pointer}
+.bjp.check rect{fill:color-mix(in srgb,var(--pend) 14%,var(--panel));stroke:var(--pend);stroke-width:1.4;transition:fill .35s var(--ease),stroke .35s var(--ease)}
+.bjp.check.ghost rect{stroke-dasharray:4 3}
+.bjp.check .bjt{fill:var(--ink)}
+.bjp.check .bjd{fill:var(--pend);animation:jpulse 1.6s ease-in-out infinite}
+.bjp.check.good rect{fill:color-mix(in srgb,var(--on) 18%,var(--panel));stroke:var(--on)} .bjp.check.good .bjd{fill:var(--on);animation:none}
+.bjp.check.bad rect{fill:color-mix(in srgb,var(--bad) 16%,var(--panel));stroke:var(--bad)} .bjp.check.bad .bjd{fill:var(--bad);animation:none}
+.bjp.check.neutral rect{fill:color-mix(in srgb,var(--ink) 8%,var(--panel));stroke:var(--muted)} .bjp.check.neutral .bjd{fill:var(--muted);animation:none}
+.bjp.check:not(.pending){cursor:default}
 .bjp.stale .bjd{fill:var(--off)} .bjp.killed .bjd{fill:var(--off)} .bjp.bg{transition:opacity .6s}
 @keyframes jpulse{50%{opacity:.35}}
-@media (prefers-reduced-motion:reduce){.bjp.running .bjd{animation:none}}
+@media (prefers-reduced-motion:reduce){.bjp.running .bjd,.bjp.check .bjd{animation:none}.bjp.check rect{transition:none}}
 .pk{pointer-events:none}
 .pk text{font:700 10px var(--body);fill:#0d0d0f}
 .pk circle{filter:drop-shadow(0 0 5px rgba(255,255,255,.35))}
@@ -665,6 +724,8 @@ watch(wrapSig, () => relayout());
 .nd.sel .card{stroke:var(--sel);stroke-width:2;fill:color-mix(in srgb,var(--sel) 9%,var(--panel-2))}
 .nd:focus-visible .card{stroke:var(--on);stroke-width:2}
 .nd.root .card{fill:color-mix(in srgb,var(--lock) 10%,var(--panel-2))}
+.nd.setup .card{stroke:color-mix(in srgb,var(--on) 60%,var(--line));stroke-dasharray:6 5;fill:color-mix(in srgb,var(--on) 7%,var(--panel-2))}
+.nd.setup .dot{fill:transparent;stroke:var(--on);stroke-width:2}
 .nm{fill:var(--ink);font:650 15px var(--body);pointer-events:none}
 .sub{fill:var(--muted);font:500 13px var(--body);pointer-events:none}
 .ctx{fill:var(--muted);font:600 12px var(--mono);pointer-events:none}
@@ -697,7 +758,6 @@ watch(wrapSig, () => relayout());
 @media (max-width:559px){.amap.narrow .amap-svg{top:88px;height:calc(100% - 88px)}.amap.narrow .zoom{top:4px;right:6px;bottom:auto;flex-direction:row}}
 .zoom button:hover{background:var(--track)}
 .zoom button:focus-visible{outline:2px solid var(--on);outline-offset:2px}
-.none{position:absolute;inset:auto 0 40% 0;margin:0;text-align:center;color:var(--muted)}
 @media (prefers-reduced-motion:reduce){.s-working .dot{animation:none}.cl rect,.ln,.card,.pfg,.hkl li{transition:none}}
 .mchip rect{fill:color-mix(in srgb,var(--ink) 7%,transparent);stroke:color-mix(in srgb,var(--ink) 22%,transparent);stroke-width:1}
 .mchip text{fill:var(--ink);font:600 10.5px var(--mono,ui-monospace,monospace);letter-spacing:.02em;pointer-events:none}

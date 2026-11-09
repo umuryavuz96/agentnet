@@ -32,11 +32,11 @@ describe("lead gate", () => {
     expect((await j(await call("root", "POST", "/teams", { name: "Gated", lead: "lead-1", members: ["mem-1", "mem-2"] }))).status).toBe(201);
     const r = await send("out-1", "mem-1"); expect(r.status).toBe(403); expect(JSON.stringify(r.body)).toContain("send it to its lead lead-1");
     expect((await send("out-1", "lead-1")).status).toBe(200);
-    const root = await send("root", "mem-1"); expect(root.status).toBe(403); expect(JSON.stringify(root.body)).toContain("team gated");
+    expect((await send("root", "mem-1")).status).toBe(200);   // root is never gated
     expect((await send("mem-2", "mem-1")).status).toBe(200);   // teammates keep talking
     expect((await send("mem-1", "lead-1")).status).toBe(200);
     expect((await send("lead-1", "mem-1")).status).toBe(200);  // the lead is never gated
-    const task = await j(await call("root", "POST", "/tasks", { agent: "mem-1", title: "do" })); // tasks use the same gate
+    const task = await j(await call("out-1", "POST", "/tasks", { agent: "mem-1", title: "do" })); // tasks use the same gate
     expect(task.status).toBe(403); expect(JSON.stringify(task.body)).toContain("lead lead-1");
     expect((await j(await call("lead-1", "POST", "/tasks", { agent: "mem-1", title: "do" }))).status).toBeLessThan(300);
   });
@@ -47,6 +47,18 @@ describe("lead gate", () => {
   test("an archived team does not gate", async () => {
     await call("root", "POST", "/teams/gated/archive");
     expect((await send("root", "mem-1")).status).toBe(200);
+  });
+});
+
+describe("lead gone", () => {
+  test("members are reachable once the lead is despawned", async () => {
+    for (const n of ["gl-1", "gm-1"]) tok[n] = rt.createAgent({ name: n, boss: "root", job: "t", by: "test" }).token;
+    await call("root", "POST", "/teams", { name: "Orphan", lead: "gl-1", members: ["gm-1"] });
+    expect((await send("out-1", "gm-1")).status).toBe(403);
+    const { db } = await import("../core/db");
+    db().run("UPDATE agents SET archived_at = ? WHERE name = ?", [Date.now(), "gl-1"]); // what despawn does to the row
+    const after = await send("out-1", "gm-1"); expect(JSON.stringify(after.body)).not.toContain("send it to its lead"); // the dead lead is no door; normal boss rules apply
+    expect((await send("root", "gm-1")).status).toBe(200);
   });
 });
 

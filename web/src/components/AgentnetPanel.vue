@@ -54,6 +54,8 @@ const allDone = computed(() => tasks.value.length > 0 && tasks.value.every((t) =
 const curPct = computed(() => (rep.value?.progress != null && tasks.value.filter((t) => t.status === "in_progress").length === 1 ? Math.round(rep.value.progress) : null));
 const tasks = computed(() => r.value?.tasks ?? []);
 const done = computed(() => tasks.value.filter((t) => t.status === "done").length);
+// Lifecycle hint only (never auto-closes): every task done and idle for over 10 minutes.
+const goalReview = computed(() => !!r.value?.goal && r.value.life === "live" && r.value.state === "idle" && allDone.value && net.now - r.value.stateSince > 600_000);
 const tool = (t: { tool: string; target: string | null }) => humanDoing(t.tool + (t.target ? " · " + t.target : "")) ?? t.tool;
 
 const idRows = computed(() => {
@@ -176,6 +178,11 @@ defineExpose({ el });
           </div>
         </div>
 
+        <section v-if="r.goal" class="goal" aria-label="Goal">
+          <div class="now-h"><span class="lbl">Goal</span><span v-if="goalReview" class="ap-chip goal-hint">Goal reached? Review and close</span></div>
+          <p class="goal-t" :title="r.goal">{{ r.goal }}</p>
+        </section>
+
         <!-- Now: the loudest block, GitHub Actions style -->
         <section :class="['now', { working: dot === 'working', blocked: !!rep?.blockedOn }]" aria-label="Now">
           <div class="now-h"><span class="lbl">Now</span><span v-if="rep?.phase" class="ap-chip ap-ph">{{ rep.phase }}</span></div>
@@ -279,6 +286,9 @@ defineExpose({ el });
 .now{display:grid;gap:8px;padding:12px 14px;border:1px solid var(--line);border-left:3px solid var(--off);border-radius:14px;background:color-mix(in srgb,var(--ink) 5%,transparent)}
 .now.working{border-left-color:var(--on);background:color-mix(in srgb,var(--on) 7%,transparent)}
 .now.blocked{border-left-color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,transparent)}
+.goal{display:grid;gap:6px;padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--ink) 4%,transparent)}
+.goal-t{margin:0;font:500 14px/1.4 var(--body);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.goal-hint{margin-left:auto;font-family:var(--body);color:var(--warn)}
 .now-h{display:flex;align-items:center;gap:8px}
 .now-h .ap-ph{margin-left:auto;font-family:var(--body);max-width:60%}
 .blk{display:flex;gap:7px;align-items:flex-start;margin:0;padding:8px 10px;border-radius:10px;background:var(--warn-bg);color:var(--warn);font:600 13.5px/1.35 var(--body);overflow-wrap:anywhere}

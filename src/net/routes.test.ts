@@ -250,6 +250,36 @@ describe("POST /bg", () => {
     await call("sre-1", "POST", "/bg", { id: "t1", kind: "shell", state: "done" });
     expect(st.all().find((x) => x.name === "sre-1")!.bg![0]!.state).toBe("done");
   });
+  test("a shell without a description gets a summary sentence later; the command stays in cmd; a described one is left alone", async () => {
+    const sum = await import("./bgsum"); const asked: string[] = [];
+    sum.setAsk(async (c) => { asked.push(c); await Bun.sleep(40); return "Waits for the render batch to finish"; });
+    try {
+      await call("sre-1", "POST", "/hello", { session: "sid-s", pid: 2 });
+      const cmd = "until grep -q F6GRID_DONE ~/projects/x/log; do sleep 30; done";
+      await call("sre-1", "POST", "/bg", { items: [{ id: "s1", kind: "shell", label: cmd, raw: true, cmd: cmd + " # long tail kept for the model", state: "running" }, { id: "s2", kind: "shell", label: "Build the site", state: "running" }] });
+      const row = (id: string) => st.all().find((x) => x.name === "sre-1")!.bg!.find((b) => b.id === id)!;
+      expect(row("s1").label).toBe(cmd); // the raw command shows until the sentence arrives
+      for (let i = 0; i < 50 && row("s1").label === cmd; i++) await Bun.sleep(10);
+      expect(row("s1")).toMatchObject({ label: "Waits for the render batch to finish", cmd, state: "running" });
+      expect(asked).toHaveLength(1); expect(asked[0]).toContain("long tail kept");
+      expect(row("s2")).toMatchObject({ label: "Build the site" }); expect(row("s2").cmd).toBeUndefined();
+      await call("sre-1", "POST", "/bg", { id: "s1", kind: "shell", label: cmd, state: "done" }); // later events keep the sentence and are not asked again
+      expect(row("s1")).toMatchObject({ label: "Waits for the render batch to finish", state: "done" });
+      await Bun.sleep(30); expect(asked).toHaveLength(1);
+    } finally { sum.setAsk(null); sum._reset(); }
+  });
+  test("a failed summary leaves the raw command; AGENTNET_BG_SUMMARY=0 never asks", async () => {
+    const sum = await import("./bgsum"); let n = 0;
+    sum.setAsk(async () => { n++; return null; });
+    try {
+      await call("sre-1", "POST", "/bg", { id: "f1", kind: "monitor", label: "tail -f build.log", raw: true, state: "running" });
+      await Bun.sleep(40); expect(n).toBe(1);
+      expect(st.all().find((x) => x.name === "sre-1")!.bg!.find((b) => b.id === "f1")!.label).toBe("tail -f build.log");
+      process.env.AGENTNET_BG_SUMMARY = "0";
+      await call("sre-1", "POST", "/bg", { id: "f2", kind: "shell", label: "sleep 100", raw: true, state: "running" });
+      await Bun.sleep(40); expect(n).toBe(1);
+    } finally { delete process.env.AGENTNET_BG_SUMMARY; sum.setAsk(null); sum._reset(); }
+  });
   test("unknown token = 401; agentPath knows /bg", async () => {
     expect((await call("nope", "POST", "/bg", { id: "x", kind: "shell", state: "running" })).status).toBe(401);
     expect(rt.agentPath("/api/v1/agentnet/bg")).toBe(true);

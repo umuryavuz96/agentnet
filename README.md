@@ -23,20 +23,29 @@ You need Claude Code, tmux and Bun, on macOS or Linux.
 agentnet starts real Claude Code sessions, so every agent uses your Claude Code usage. The web app shows what each one
 used.
 
-```sh
-git clone https://github.com/umuryavuz96/agentnet && cd agentnet
-bun install
-bun run web:build
-bin/agentnet doctor
-bin/agentnet serve
-bin/agentnet spawn hello-1 --job "say hello" --boot-prompt "Add one task, mark it done, report to your boss."
-```
+1. Install.
 
-Run `bin/agentnet serve` in its own terminal and leave it open. Run the last command in a second terminal. Then open
-<http://127.0.0.1:3096>: `hello-1` shows up on the map with its task list.
+   ```sh
+   git clone https://github.com/umuryavuz96/agentnet && cd agentnet
+   bun install
+   bun run web:build
+   ```
 
-The first time, Claude Code asks you to trust the agent's folder. If `hello-1` stays offline, run
-`tmux attach -t agentnet-hello-1`, choose "Yes, I trust this folder", then press Ctrl-b d.
+2. Run `bin/agentnet init`. It checks bun, claude, python3, tmux and the service, tells you what is missing, and
+   prints the one command that starts Claude Code as your director in the current folder. Add `--start` to run it in
+   a tmux session for you, or give a folder: `bin/agentnet init ~/my-project --start`.
+
+3. Start the server in its own terminal and leave it open: `bin/agentnet serve`. Then open <http://127.0.0.1:3096>.
+
+On a fresh install the top of the map shows a dashed **Set up your director** card. Tap it for the same steps in the
+browser: pick the folder, copy the command (or press **Start director for me**), and watch the card turn green when the
+director connects. The director is the one session you talk to. It starts the other agents.
+
+The first time, Claude Code asks you to trust the folder. If the director stays offline, run
+`tmux attach -t agentnet-director`, choose "Yes, I trust this folder", then press Ctrl-b d.
+
+To try a worker without a director, run
+`bin/agentnet spawn hello-1 --job "say hello" --goal "hello task done and reported" --boot-prompt "Add one task, mark it done, report to your boss."`.
 
 To keep agentnet running all the time, run `bin/agentnet install-service`. It writes a launchd agent (macOS) or a
 systemd user unit (Linux) and prints the one command that starts it. It never starts anything by itself.
@@ -44,6 +53,38 @@ systemd user unit (Linux) and prints the one command that starts it. It never st
 Homebrew and a signed installer are coming.
 
 For every command, run `bin/agentnet help`. Data lives in `~/.local/share/agentnet` (set `AGENTNET_HOME` to move it).
+
+## Updating
+
+Run `bin/agentnet update`. It moves a git install to the newest release tag on `origin`:
+
+1. Checks that the checkout is clean, on `main`, and that `origin` is the official repository.
+2. Fetches the newest release tag and fast-forwards to it. It never creates a merge commit.
+3. Runs `bun install --frozen-lockfile`.
+4. Builds the web app into a side folder and swaps it in only when the build worked.
+5. Restarts agentnet if it runs as the service from `install-service`. Otherwise it tells you to restart it.
+6. Waits until the new version answers, then runs the `doctor` checks.
+
+If any step after the checkout fails, agentnet goes back to the commit and the web build it had before, restarts, and
+says why. Store migrations stay automatic. `bin/agentnet update --check` only says whether a newer release exists.
+
+The web app shows an **Update vX.Y.Z** pill in the header when a newer release is out. It opens the changelog and an
+**Update now** button, shows each step as it runs, reconnects by itself after the restart and offers a reload. The button
+works when agentnet runs as the launchd or systemd service of this checkout. Otherwise the sheet shows the terminal
+command instead.
+
+Optional automatic updates: set `AGENTNET_AUTO_UPDATE=1`. They run once a day in the quiet hour, only when no agent is
+working, and use the same path and rollback. A release that was rolled back is skipped until a newer one comes out.
+
+| Setting | Effect |
+|---|---|
+| `AGENTNET_UPDATE_CHECK=0` | Turns off the release check (no calls to api.github.com). |
+| `AGENTNET_WEB_UPDATE=0` | Turns off the update button in the web app. |
+| `AGENTNET_AUTO_UPDATE=1` | Turns on automatic updates. Off by default. |
+| `AGENTNET_AUTO_UPDATE_HOUR` | Hour of the day (0 to 23, local time) for automatic updates. Default 4. |
+| `AGENTNET_UPDATE_BRANCH` | Branch an install must be on to update. Default `main`. |
+| `AGENTNET_SERVICE_LABEL` / `AGENTNET_SERVICE_UNIT` | Name of the launchd label or systemd unit that `install-service` writes and the updater restarts. Default `dev.agentnet.server` / `agentnet`. Use it to run a second install beside the first. |
+| `AGENTNET_UPDATE_REPO` | `owner/repo` that `origin` must match, if you run a fork. Default from `package.json`. |
 
 ## What you get
 
@@ -69,9 +110,10 @@ You can talk to one agent, the director. It answers chat and small jobs itself. 
 personas that debate the job, plus one or two builders. It runs the team over agentnet, grades the result and
 despawns it.
 
-A hook triages each message and tells the director which way to go. Install it with `bin/agentnet install-hooks`.
+A hook triages each message (through your logged-in Claude Code, no API key) and tells the director which way to go. Install it with `bin/agentnet install-hooks`.
 Every spawn picks its own model, effort and persona when you do not name them (`agentnet spawn --scope --novelty --risk --need --ask`,
 or the same fields on the MCP `spawn` tool). The agent's card shows why. In reserve mode the spawn is refused.
+Every new agent and team needs a `goal`: what done looks like (`--goal TEXT`; 8+ characters, else 422). The panel shows it and hints "Goal reached? Review and close" once all tasks are done and the agent has been idle over 10 minutes. `AGENTNET_REQUIRE_GOAL=0` turns the rule off.
 Plan a team with `bin/agentnet council`. The full setup is in [docs/director.md](docs/director.md).
 
 ## How it works
@@ -116,6 +158,10 @@ agentnet has no login. It is safe because of where it listens.
   panel's write controls. It is off by default.
 - There is no login, so never expose it to the internet: no port forwarding, no public tunnel or proxy.
 - Starting and stopping agents and changing settings work only from the machine itself or from the root agent.
+- The update button works only from the machine itself or the root agent, like other writes. If you set
+  `AGENTNET_TRUST_PROXY=private`, anyone on your LAN or tailnet can press it. It can only move agentnet to the newest
+  release tag from `origin` and runs no other command. Set `AGENTNET_WEB_UPDATE=0` to turn it off. The release check
+  calls api.github.com every 6 hours; `AGENTNET_UPDATE_CHECK=0` turns that off.
 - Each agent's token says which agent is calling. It sits in a file only you can read (mode 0600). It is identity, not a
   login.
 

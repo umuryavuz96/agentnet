@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# spawn-agent.sh <name> [--project DIR] [--model ID] [--soul CATALOG_ID] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT] [--boot-prompt TEXT] [--job TEXT] [--boss NAME]
+# spawn-agent.sh <name> [--project DIR] [--model ID] [--soul CATALOG_ID] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT] [--boot-prompt TEXT] [--job TEXT] [--goal TEXT] [--boss NAME]
 #                      [--force-mem] [--no-wait] [--ready-timeout SECS]
 # agentnet's spawner. Registers the agent with agentnet (POST /agentnet/spawn -> 0600 token file), then starts
 # claude in a DETACHED tmux session agentnet-<name> with --plugin-dir plugin. Soul + house rules go in via
@@ -11,7 +11,7 @@ die() { echo "spawn-agent: $*" >&2; exit 1; }
 [ $# -ge 1 ] || { sed -n '2,3p' "$0"; exit 2; }
 NAME=$1; shift
 case "$NAME" in ''|*[!a-z0-9-]*|-*) die "name must be lowercase letters, digits, dashes: $NAME" ;; esac
-PROJECT=$PWD MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60
+PROJECT=$PWD MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) PROJECT="${2:?--project needs a path}"; shift 2 ;;
@@ -24,6 +24,7 @@ while [ $# -gt 0 ]; do
     --ask) ASK="${2:?--ask needs a text}"; shift 2 ;;
     --boot-prompt) PROMPT="${2?--boot-prompt needs a text}"; shift 2 ;;
     --job) JOB="${2:?--job needs a text}"; shift 2 ;;
+    --goal) GOAL="${2:?--goal needs a text}"; shift 2 ;;   # what done looks like (8+ chars); the service refuses a new agent without one
     --boss) BOSS="${2:?--boss needs a name}"; shift 2 ;;
     --force-mem) FORCE_MEM=1; shift ;;
     --no-wait) WAIT=0; shift ;;
@@ -49,7 +50,7 @@ AUTH=(); if [ -n "${AGENTNET_ROOT_TOKEN_FILE:-}" ] && [ -r "$AGENTNET_ROOT_TOKEN
 [ -n "$JOB" ] || JOB="(no job given)"
 
 # Register with agentnet
-BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1],"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK")"
+BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1],"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL")"
 RESP="$(curl -s -m 5 ${AUTH[@]+"${AUTH[@]}"} -H 'content-type: application/json' -X POST "$URL/spawn" -d "$BODY")" \
   || die "service not answering at $URL (is agentnet running? try: agentnet status)"
 TOKEN_FILE="$(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("token_file",""))' 2>/dev/null || true)"

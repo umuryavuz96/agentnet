@@ -7,14 +7,14 @@ process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-mount-"));
 const { V1_PATHS, toLegacy } = await import("../src/net/mount");
 const { agentPath } = await import("../src/net/routes");
 
-const sample = (p: string) => p.replace("{id}", p.startsWith("/v1/agent/tasks") ? "3" : "t-1").replace("{name}", "a-1").replace("{tid}", "3").replace("{op}", "start");
+const sample = (p: string) => p.replace("{id}", p.startsWith("/v1/agent/tasks") || p.includes("/checks/") ? "3" : "t-1").replace("{name}", "a-1").replace("{tid}", "3").replace("{op}", "start");
 describe("toLegacy", () => {
   test("every v1 path maps to an agent or panel route", () => {
     for (const p of V1_PATHS.filter((x) => x !== "/v1/health")) {
       const l = toLegacy(sample(p));
       expect(l, p).not.toBeNull();
       const bare = l!.replace(/^\/api\/v1/, "");
-      const panel = /^\/(agentnet\/(snapshot|stream|usage|scores|summary|windows\/close-all|agents\/[a-z0-9-]+\/(score|tasks|message|open|close|schedules|stop|despawn|run-schedule))|agentnet-panel\/teams.*|trails\/(search|stats)|bgjobs(\/[A-Za-z0-9._-]+(\/file)?)?|arsenal(\/(agent|roles))?|agent-routing|agent-compact|agent-hooks(\/.*)?)$/.test(bare);
+      const panel = /^\/(agentnet\/(snapshot|stream|usage|scores|summary|windows\/close-all|agents\/[a-z0-9-]+\/(score|tasks|message|open|close|schedules|stop|despawn|run-schedule))|agentnet-panel\/(teams.*|checks(\/\d+\/resolve)?)|trails\/(search|stats)|bgjobs(\/[A-Za-z0-9._-]+(\/file)?)?|arsenal(\/(agent|roles))?|agent-routing|agent-compact|agent-hooks(\/.*)?|agent-update(\/.*)?|agent-director(\/start)?)$/.test(bare);
       expect(agentPath(l!) || panel, `${p} -> ${l}`).toBe(true);
     }
   });

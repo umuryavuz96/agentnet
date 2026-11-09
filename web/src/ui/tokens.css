@@ -6,6 +6,8 @@
   --ease:cubic-bezier(.25,.1,.25,1); --spring:cubic-bezier(.3,1.25,.5,1);
   --display:"Barlow Condensed","Segoe UI",sans-serif; --body:"Figtree",-apple-system,"Segoe UI",sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
   --bar-h:52px;
+  /* pending = waiting for the owner (amber), readable on both themes */
+  --pend:#ffb21e; --pend-bg:rgba(255,178,30,.14); --pend-ink:#ffcf6b;
   color-scheme:dark;
 }
 /* Server OS ships a dark theme only; this block is the same palette with the neutrals inverted and the status colours darkened for contrast. */
@@ -13,6 +15,7 @@
   --bg:#f4f4f6; --panel:#ffffff; --panel-2:#eeeef1; --line:#d9d9de; --ink:#16161a; --muted:#62626b;
   --on:#12875a; --on-bg:rgba(18,135,90,.12); --off:#7a7a83; --warn:#a86500; --warn-bg:rgba(168,101,0,.12); --bad:#c8202b; --bad-bg:rgba(200,32,43,.1);
   --accent:#16161a; --track:#e3e3e8; --lock:#5b52c9; --chrome:#55585e;
+  --pend:#9a5b00; --pend-bg:rgba(154,91,0,.12); --pend-ink:#7a4800;
   color-scheme:light;
 }
 *{box-sizing:border-box}

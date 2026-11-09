@@ -6,7 +6,7 @@ import { problem, type Env } from "../core/http";
 import { audit } from "../core/logger";
 import { flush, ensureSchema } from "./store";
 import { ADMIN, BODY_MAX, body, bad, enqueueMessage, isRoot, kindOf, nameMap, releaseBoss, resolveTo, subjectOf, syncBosses, type Ctx } from "./routes";
-import { addMember, addTeamTask, archiveTeam, createTeam, getTeam, getTeamTask, isMember, listTeams, removeMember, setTeamTask, teamTasks, updateTeam, NAME_RE, type Team } from "./teams";
+import { addMember, addTeamTask, archiveTeam, createTeam, getTeam, getTeamTask, isMember, listTeams, removeMember, setTeamTask, teamTasks, updateTeam, goalError, NAME_RE, type Team } from "./teams";
 
 type A = Parameters<typeof enqueueMessage>[0];
 const CHANNEL_KEEP = 80;
@@ -47,6 +47,7 @@ export function teamRoutes(r: Hono<Env>, actorOf: (c: Context) => A, base = "/te
   r.post(base, async (c) => {
     const no = guardRoot(c); if (no) return no;
     const b = await body(c);
+    const ge = goalError(b.goal); if (ge) return bad(c, ge);
     try {
       const t = createTeam({ name: String(b.name ?? ""), goal: typeof b.goal === "string" ? b.goal : undefined, lead: typeof b.lead === "string" && b.lead ? b.lead : undefined, project: typeof b.project === "string" ? b.project : undefined, members: names(b.members), id: typeof b.id === "string" && b.id ? b.id : undefined });
       syncBosses(t.id);

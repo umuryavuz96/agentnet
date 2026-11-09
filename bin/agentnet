@@ -1,2 +1,8 @@
 #!/bin/sh
+if ! command -v bun >/dev/null 2>&1; then
+  echo "agentnet needs Bun on your PATH. It is not found in this shell." >&2
+  echo "Install it from https://bun.sh, open a new terminal, then run this command again." >&2
+  echo "If Bun is already installed, add its folder (usually ~/.bun/bin) to PATH." >&2
+  exit 1
+fi
 exec bun run "$(dirname "$0")/../src/cli.ts" "$@"

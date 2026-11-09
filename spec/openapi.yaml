@@ -64,6 +64,19 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/agent/checks:
+    post:
+      summary: "agent checks: ask the owner to check something in the real world. Body {question, options?: 2-4 of {label, tone good|bad|neutral} (default Works/Not yet), detail?}; root may add agent. Same open question from the same agent returns the existing row (200), a new one is 201"
+      responses:
+        "201":
+          description: Created
+        "200":
+          description: Already pending
+    get:
+      summary: "agent checks: root sees all, an agent its own; ?state=pending|answered"
+      responses:
+        "200":
+          description: OK
   /v1/agent/trail/search:
     post:
       summary: agent trail search
@@ -201,10 +214,12 @@ paths:
           description: OK
   /v1/admin/spawn:
     post:
-      summary: admin spawn
+      summary: admin spawn (body field `goal`, 8+ characters, is required for new agents; members are exempt)
       responses:
         "200":
           description: OK
+        "422":
+          description: "goal is required: what does done look like? (AGENTNET_REQUIRE_GOAL=0 turns the rule off)"
   /v1/admin/plan-spawn:
     post:
       summary: admin plan spawn (no side effects; GET reads query params)
@@ -473,6 +488,26 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/panel/checks:
+    get:
+      summary: "panel checks: owner checks, ?state=pending|answered"
+      responses:
+        "200":
+          description: OK
+  /v1/panel/checks/{id}/resolve:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "panel checks resolve: body {option: label or index, note?}. Sends root a report from owner. 409 when already resolved"
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Already resolved
   /v1/panel/trails/search:
     get:
       summary: panel trails search
@@ -721,3 +756,216 @@ paths:
                   backups: {}
         "403":
           description: Forbidden (root only)
+  /v1/panel/hooks/templates:
+    get:
+      summary: panel hook templates with their state (root only)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates: {}
+        "403":
+          description: Forbidden (root only)
+  /v1/panel/hooks/install:
+    post:
+      summary: "panel install one hook. Body {templateId} or {custom: {event, matcher?, command, timeout?}}, optional dryRun. Root only"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                templateId: {}
+                custom: {}
+                dryRun: {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  installed: {}
+                  backup: {}
+                  fragment: {}
+                  dryRun: {}
+                  hooks: {}
+                  backups: {}
+        "400":
+          description: Bad input
+        "403":
+          description: Forbidden (root only)
+        "404":
+          description: Unknown template
+        "409":
+          description: Already installed
+  /v1/panel/hooks/install-set:
+    post:
+      summary: "panel install several template hooks in one write. Body {ids, dryRun?}. Root only"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: {}
+                dryRun: {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  added: {}
+                  skipped: {}
+                  fragment: {}
+                  backup: {}
+                  dryRun: {}
+                  hooks: {}
+                  backups: {}
+        "400":
+          description: Bad input
+        "403":
+          description: Forbidden (root only)
+  /v1/panel/hooks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      summary: panel remove an installed hook (backs up settings first). Root only
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backup: {}
+                  hooks: {}
+                  backups: {}
+        "400":
+          description: Unknown hook
+        "403":
+          description: Forbidden (root only)
+  /v1/panel/director:
+    get:
+      summary: panel first-run setup (tools found, live root, tmux session, the command that starts the director for ?dir=)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  home: {}
+                  dir: {}
+                  dirError: {}
+                  tools: {}
+                  root: {}
+                  triage:
+                    type: string
+                    enum: [off, ok, nologin, switched-off, unknown]
+                    description: nologin = the last 5 triage records in 24 h were all skips because claude is missing or not logged in.
+                  session: {}
+                  sessionName: {}
+                  command: {}
+  /v1/panel/director/start:
+    post:
+      summary: panel start the director in a detached tmux session (body {dir}); root only
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dir: {}
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad folder
+        "403":
+          description: Forbidden (root only)
+        "409":
+          description: A director session already exists
+        "422":
+          description: tmux or claude missing, or tmux failed
+  /v1/panel/update:
+    get:
+      summary: panel update status (current, latest, availability, blocked reason, job)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  current: {}
+                  latest: {}
+                  available: {}
+                  checkedAt: {}
+                  notes: {}
+                  releaseUrl: {}
+                  web: {}
+                  mode: {}
+                  auto: {}
+                  job: {}
+  /v1/panel/update/check:
+    post:
+      summary: panel check for a new release now
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Forbidden (root only)
+  /v1/panel/update/run:
+    post:
+      summary: panel move to the newest release tag (body {tag}); starts a detached updater
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tag]
+              additionalProperties: false
+              properties:
+                tag:
+                  type: string
+      responses:
+        "202":
+          description: Started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {}
+        "400":
+          description: Bad body or tag
+        "403":
+          description: Forbidden (root only, or web updates off)
+        "409":
+          description: Not the newest release, locked, or blocked
+  /v1/panel/update/stream:
+    get:
+      summary: panel update progress (SSE; hello carries the whole job log)
+      responses:
+        "200":
+          description: OK

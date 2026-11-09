@@ -27,13 +27,19 @@ export function ensureSchema() {
   `CREATE TABLE IF NOT EXISTS team_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, team_id TEXT NOT NULL, text TEXT NOT NULL, owner TEXT, status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
   "CREATE INDEX IF NOT EXISTS team_tasks_team ON team_tasks (team_id, id)",
   "CREATE TABLE IF NOT EXISTS revoked_tokens (hash TEXT PRIMARY KEY, agent_id TEXT NOT NULL, at INTEGER NOT NULL)",
+  // Owner checks: a real-world check only the owner can do. Keyed by agent NAME so the row outlives a despawned agent.
+  `CREATE TABLE IF NOT EXISTS checks (id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT, team TEXT, agent TEXT NOT NULL, question TEXT NOT NULL, detail TEXT,
+     created_by TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'pending', note TEXT, resolved_at INTEGER, options TEXT, answer TEXT, answer_tone TEXT)`,
+  "CREATE INDEX IF NOT EXISTS checks_state ON checks (state, id)",
   );
   try { db().run("ALTER TABLE messages ADD COLUMN channel_id INTEGER"); } catch { /* fresh table or already added */ }
   try { db().run("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'info'"); } catch { /* fresh table has it */ }
   try { db().run("ALTER TABLE agents ADD COLUMN token_file TEXT"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE agents ADD COLUMN compact_window INTEGER"); } catch { /* fresh or already added */ }
+  try { db().run("ALTER TABLE agents ADD COLUMN goal TEXT"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE agents ADD COLUMN audit TEXT"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE agents ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent'"); } catch { /* fresh or already added */ }
+  for (const col of ["options", "answer", "answer_tone"]) try { db().run(`ALTER TABLE checks ADD COLUMN ${col} TEXT`); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE messages ADD COLUMN subject TEXT"); } catch { /* fresh table has it; the live table from 2026-11-07 did not */ }
 }
 
@@ -45,7 +51,8 @@ export interface Task { id: number; text: string; status: "pending" | "in_progre
 /** Background work an agent runs (in-process subagent, background shell, monitor), posted by the plugin hooks. */
 export type BgKind = "subagent" | "shell" | "monitor";
 export type BgState = "running" | "done" | "failed" | "killed";
-export interface BgRow { id: string; kind: BgKind; label: string; state: BgState; startedAt: number; endedAt: number | null }
+/** `cmd` is set when the label began as a raw command (no description): the label may later become a plain-English sentence. */
+export interface BgRow { id: string; kind: BgKind; label: string; cmd?: string; state: BgState; startedAt: number; endedAt: number | null }
 export const BG_KINDS: BgKind[] = ["subagent", "shell", "monitor"], BG_STATES: BgState[] = ["running", "done", "failed", "killed"];
 export const BG_KEEP_MS = 2 * 60_000, BG_MAX = 12;
 /** A cron job the agent made with CronCreate (session-only: it dies with the session and expires after 7 days). */
@@ -53,7 +60,7 @@ export interface ScheduleRow { id: string; cron: string; prompt: string; recurri
 export const SCHEDULE_MAX = 20;
 /** The fold: what root and the page read. Every field has one owner (observed: hooks/connection; reported: the agent's tools). */
 export interface Snapshot {
-  id: string; name: string; gen: number; job: string | null; boss: string | null; model: string | null; effort: string | null; soul: string | null; audit: string | null; compactWindow: number | null; project: string | null;
+  id: string; name: string; gen: number; job: string | null; boss: string | null; model: string | null; effort: string | null; soul: string | null; goal: string | null; audit: string | null; compactWindow: number | null; project: string | null;
   spawnedAt: number; session: string | null; pid: number | null; version: string | null; connectedAt: number | null;
   life: Life; lifeSince: number; goneReason: string | null;
   state: Activity; stateSince: number;
@@ -85,7 +92,7 @@ export function reduce(s: Snapshot | null, e: Event): Snapshot | null {
   const d = e.data, at = e.ts;
   if (!s) {
     if (e.type !== "AgentSpawned") return null;
-    return { id: String(d.id), name: String(d.name), gen: num(d.gen) ?? 1, job: str(d.job), boss: str(d.boss), model: str(d.model), effort: str(d.effort), soul: str(d.soul), audit: str(d.audit), compactWindow: num(d.compactWindow), project: str(d.project),
+    return { id: String(d.id), name: String(d.name), gen: num(d.gen) ?? 1, job: str(d.job), boss: str(d.boss), model: str(d.model), effort: str(d.effort), soul: str(d.soul), goal: str(d.goal), audit: str(d.audit), compactWindow: num(d.compactWindow), project: str(d.project),
       spawnedAt: at, session: null, pid: null, version: null, connectedAt: null, life: "starting", lifeSince: at, goneReason: null, state: "idle", stateSince: at,
       turn: null, turns: 0, action: null, lastTool: null, reported: null, tasks: [], context: null, cost: null, weekly: null, lastMsg: null, lastReport: null, window: null, lastEventAt: at, seq: 0, v: 0 };
   }
@@ -124,9 +131,13 @@ export function reduce(s: Snapshot | null, e: Event): Snapshot | null {
     case "RateWindow": n.weekly = { pct: num(d.pct) ?? 0, resetsAt: str(d.resetsAt) }; break;
     case "BgUpdated": {
       const id = str(d.id), kind = str(d.kind) as BgKind | null, state = str(d.state) as BgState | null;
+      if (id && str(d.sum)) { n.bg = (n.bg ?? []).map((b) => (b.id === id ? { ...b, label: str(d.sum)!.slice(0, 120) } : b)); break; } // the summary sentence for a raw command: label only, state untouched
       if (!id || !kind || !BG_KINDS.includes(kind) || !state || !BG_STATES.includes(state)) break;
       const prevRow = (n.bg ?? []).find((b) => b.id === id);
-      const row: BgRow = { id, kind, label: (str(d.label) ?? prevRow?.label ?? kind).slice(0, 120), state, startedAt: prevRow?.startedAt ?? num(d.startedAt) ?? at, endedAt: state === "running" ? null : prevRow?.endedAt ?? num(d.endedAt) ?? at };
+      // d.raw: the label is the command itself (no description given). The row keeps it as `cmd`; a later event that repeats the same command must not undo the summary sentence.
+      const cmd = d.raw === true && str(d.label) ? str(d.label)!.slice(0, 120) : prevRow?.cmd;
+      const label = cmd && str(d.label) === cmd && prevRow ? prevRow.label : str(d.label) ?? prevRow?.label ?? kind;
+      const row: BgRow = { id, kind, label: label.slice(0, 120), ...(cmd ? { cmd } : {}), state, startedAt: prevRow?.startedAt ?? num(d.startedAt) ?? at, endedAt: state === "running" ? null : prevRow?.endedAt ?? num(d.endedAt) ?? at };
       if (prevRow && prevRow.state !== "running" && state === "running") break; // a late "running" never revives a finished row
       const rest = (n.bg ?? []).filter((b) => b.id !== id && (b.state === "running" || at - (b.endedAt ?? at) < BG_KEEP_MS));
       n.bg = [...rest, row].sort((a, b) => a.startedAt - b.startedAt).slice(-BG_MAX);

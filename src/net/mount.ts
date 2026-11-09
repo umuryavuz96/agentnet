@@ -2,7 +2,7 @@
 const A = "/api/v1/agentnet/";
 const TEAM = "teams(?:/[a-z0-9-]+(?:/(?:archive|members|messages|tasks(?:/\\d+/(?:start|done|claim))?))?)?";
 const RULES: [RegExp, (m: RegExpExecArray) => string][] = [
-  [/^\/v1\/agent\/(hello|bye|poll|ack|send|inbox|report|status|events|trail\/search)$/, (m) => A + m[1]],
+  [/^\/v1\/agent\/(hello|bye|poll|ack|send|inbox|report|status|events|checks|trail\/search)$/, (m) => A + m[1]],
   [/^\/v1\/agent\/(tasks(?:\/\d+\/(?:start|done))?)$/, (m) => A + m[1]],
   [/^\/v1\/agent\/(agents(?:\/[a-z0-9-]+)?)$/, (m) => A + m[1]],
   [new RegExp(`^/v1/agent/(${TEAM})$`), (m) => A + m[1]],
@@ -11,12 +11,16 @@ const RULES: [RegExp, (m: RegExpExecArray) => string][] = [
   [/^\/v1\/panel\/(snapshot|stream|usage|scores|windows\/close-all)$/, (m) => A + m[1]],
   [/^\/v1\/panel\/(agents\/[a-z0-9-]+\/(?:score|tasks|message|open|close|schedules|stop|despawn|run-schedule))$/, (m) => A + m[1]],
   [/^\/v1\/panel\/teams((?:\/[a-z0-9-]+(?:\/(?:archive|members|messages|tasks(?:\/\d+\/(?:start|done|claim))?))?)?)$/, (m) => "/api/v1/agentnet-panel/teams" + m[1]],
+  [/^\/v1\/panel\/checks((?:\/\d+\/resolve)?)$/, (m) => "/api/v1/agentnet-panel/checks" + m[1]],
   [/^\/v1\/panel\/trails\/(search|stats)$/, (m) => "/api/v1/trails/" + m[1]],
   [/^\/v1\/panel\/(bgjobs(?:\/[A-Za-z0-9._-]+(?:\/file)?)?)$/, (m) => "/api/v1/" + m[1]],
   [/^\/v1\/panel\/(arsenal(?:\/(?:agent|roles))?)$/, (m) => "/api/v1/" + m[1]],
   [/^\/v1\/panel\/routing$/, () => "/api/v1/agent-routing"],
   [/^\/v1\/panel\/compact$/, () => "/api/v1/agent-compact"],
-  [/^\/v1\/panel\/hooks((?:\/(?:nodes|stream|fires|rollback|[A-Za-z0-9._:-]+\/enabled))?)$/, (m) => "/api/v1/agent-hooks" + m[1]],
+  [/^\/v1\/panel\/hooks((?:\/(?:nodes|stream|fires|rollback|templates|install-set|install|[A-Za-z0-9._:-]+\/enabled|[A-Za-z0-9._:-]+))?)$/, (m) => "/api/v1/agent-hooks" + m[1]],
+  [/^\/v1\/panel\/update$/, () => "/api/v1/agent-update"],
+  [/^\/v1\/panel\/update\/(check|run|stream)$/, (m) => "/api/v1/agent-update/" + m[1]],
+  [/^\/v1\/panel\/director(\/start)?$/, (m) => "/api/v1/agent-director" + (m[1] ?? "")],
   [/^\/v1\/panel\/summary$/, () => A + "summary"],
 ];
 
@@ -30,7 +34,7 @@ export function toLegacy(path: string): string | null {
 export const V1_PATHS: string[] = [
   "/v1/health",
   ...["hello", "bye", "poll", "ack", "send", "inbox", "report", "status", "events"].map((x) => `/v1/agent/${x}`),
-  "/v1/agent/trail/search",
+  "/v1/agent/trail/search", "/v1/agent/checks",
   "/v1/agent/tasks", "/v1/agent/tasks/{id}/{op}",
   "/v1/agent/agents", "/v1/agent/agents/{name}",
   "/v1/agent/teams", "/v1/agent/teams/{id}",
@@ -42,10 +46,13 @@ export const V1_PATHS: string[] = [
   "/v1/panel/teams", "/v1/panel/teams/{id}",
   ...["archive", "members", "messages", "tasks"].map((x) => `/v1/panel/teams/${"{id}"}/${x}`),
   "/v1/panel/teams/{id}/tasks/{tid}/{op}",
+  "/v1/panel/checks", "/v1/panel/checks/{id}/resolve",
   "/v1/panel/trails/search", "/v1/panel/trails/stats",
   "/v1/panel/summary", "/v1/panel/bgjobs", "/v1/panel/bgjobs/{id}", "/v1/panel/bgjobs/{id}/file",
   "/v1/panel/arsenal", "/v1/panel/arsenal/agent", "/v1/panel/arsenal/roles", "/v1/panel/routing", "/v1/panel/compact", "/v1/panel/hooks",
-  "/v1/panel/hooks/nodes", "/v1/panel/hooks/stream", "/v1/panel/hooks/fires", "/v1/panel/hooks/{id}/enabled", "/v1/panel/hooks/rollback",
+  "/v1/panel/hooks/nodes", "/v1/panel/hooks/stream", "/v1/panel/hooks/fires", "/v1/panel/hooks/{id}/enabled", "/v1/panel/hooks/rollback", "/v1/panel/hooks/templates", "/v1/panel/hooks/install", "/v1/panel/hooks/install-set", "/v1/panel/hooks/{id}",
+  "/v1/panel/update", "/v1/panel/update/check", "/v1/panel/update/run", "/v1/panel/update/stream",
+  "/v1/panel/director", "/v1/panel/director/start",
 ];
 
 /** Legacy panel paths that change state. They are open to the page, so the server makes them root only (access.ts rootOnly). */
@@ -53,4 +60,4 @@ export const isPanelWrite = (method: string, path: string): boolean =>
   (method === "POST" || method === "PUT") && (
     /^\/api\/v1\/agentnet\/(agents\/[a-z0-9-]+\/(message|open|close|stop|despawn|run-schedule)|windows\/close-all)$/.test(path) ||
     path.startsWith("/api/v1/agentnet-panel/") ||
-    path === "/api/v1/arsenal/roles" || path === "/api/v1/agent-routing" || path === "/api/v1/agent-compact" || path.startsWith("/api/v1/agent-hooks/"));
+    path === "/api/v1/arsenal/roles" || path === "/api/v1/agent-routing" || path === "/api/v1/agent-compact" || path.startsWith("/api/v1/agent-hooks/") || path.startsWith("/api/v1/agent-update/") || path === "/api/v1/agent-director/start");

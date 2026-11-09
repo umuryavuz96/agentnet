@@ -2,17 +2,19 @@
 // Hooks tab of the Agent network page: every Claude Code hook from ~/.claude/settings.json with a plain description,
 // an on/off switch (the server backs up settings.json, validates it and can roll back) and, where a log exists,
 // how the hook has been doing (runs, failures, latency, last runs).
-import { ref, computed, onMounted, nextTick } from "vue";
+import { ref, computed, onMounted, nextTick, watch } from "vue";
+import { route, toHash } from "../router";
 import { api, ago, toast } from "../ui/api";
 import Icon from "../ui/Icon.vue";
 import BentoCard from "../ui/BentoCard.vue";
+import HookAddSheet from "./HookAddSheet.vue";
 
 interface Run { at: number; ms: number | null; ok: boolean; text: string }
 interface HookInfo { id: string; event: string; matcher: string | null; command: string; script: string; timeout: number | null; enabled: boolean; name: string; about: string; log: string | null; runs: number; failures: number; avgMs: number | null; p95Ms: number | null; lastAt: number | null; recent: Run[] }
 interface Res { hooks: HookInfo[]; backups: string[]; error?: string }
 
 const hooks = ref<HookInfo[]>([]), backups = ref<string[]>([]), err = ref(""), loaded = ref(false), busy = ref<string | null>(null), open = ref<string | null>(null);
-const ORDER = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Notification", "Stop", "StopFailure", "SubagentStop", "SessionEnd"];
+const ORDER = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Notification", "Stop", "StopFailure", "SubagentStop", "PreCompact", "SessionEnd"];
 /** Groups by event: groups with a failing hook first, then the Claude Code event order; failing hooks first inside a group. */
 const groups = computed(() => {
   const m = new Map<string, HookInfo[]>();
@@ -60,15 +62,49 @@ async function rollback() {
   catch (e) { toast((e as Error).message); } finally { busy.value = null; }
 }
 const ms = (n: number | null) => (n == null ? "—" : n < 1000 ? `${n} ms` : `${(n / 1000).toFixed(1)} s`);
+/** Add flow: the sheet reports a new hook; open its event group, scroll its row in with a short highlight, offer Undo while its backup is still the newest. */
+const adding = ref(false), starter = ref(false), hl = ref<string | null>(null), undo = ref<{ name: string; backup: string } | null>(null), confirmRm = ref<string | null>(null);
+let undoTimer = 0, hlTimer = 0;
+const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+async function reveal(id: string) {
+  const h = hooks.value.find((x) => x.id === id); if (!h) return;
+  toggled.value = { ...toggled.value, [h.event]: true }; open.value = id; await nextTick();
+  document.getElementById("hk-" + id)?.scrollIntoView({ behavior: reduced() ? "auto" : "smooth", block: "center" });
+  if (!reduced()) { hl.value = id; clearTimeout(hlTimer); hlTimer = window.setTimeout(() => { hl.value = null; }, 1500); }
+}
+async function added(r: Res & { installed: string; backup: string | null }, name: string) {
+  take(r); toast(`${name} added`);
+  if (r.backup) { undo.value = { name, backup: r.backup }; clearTimeout(undoTimer); undoTimer = window.setTimeout(() => { undo.value = null; }, 10_000); }
+  await reveal(r.installed);
+}
+const canUndo = computed(() => !!undo.value && backups.value[backups.value.length - 1] === undo.value.backup);
+async function undoAdd() { undo.value = null; await rollback(); }
+async function switchOn(id: string) { const h = hooks.value.find((x) => x.id === id); if (h) { await toggle(h); await reveal(id); } }
+async function remove(h: HookInfo) {
+  if (busy.value) return;
+  if (confirmRm.value !== h.id) { confirmRm.value = h.id; return; }
+  busy.value = h.id; confirmRm.value = null;
+  try { take(await api<Res>(`v1/panel/hooks/${h.id}`, { method: "DELETE" })); toast(`${h.name} removed`); }
+  catch (e) { toast((e as Error).message); } finally { busy.value = null; }
+}
 onMounted(load);
+// Deep link #/hooks?starter=1 (director onboarding): open the sheet on the Starter set review.
+watch(() => route.value.page === "hooks" && route.value.query.starter === "1", (on) => { if (on) { starter.value = true; adding.value = true; } }, { immediate: true });
+function closeSheet() {
+  adding.value = false; starter.value = false;
+  if (route.value.query.starter) { const { starter: _s, ...query } = route.value.query; route.value = { page: "hooks", query }; history.replaceState(null, "", toHash(route.value)); }
+}
 </script>
 
 <template>
   <div class="page">
     <header class="ph"><h1>Hooks</h1>
-      <button type="button" class="ah-btn" :disabled="!backups.length || !!busy" :title="backups.length ? `Put the newest of ${backups.length} backups of settings.json back` : 'No backup yet'" @click="rollback"><Icon name="history" :size="13" /> Roll back settings</button>
+      <span class="ah-hb"><button type="button" class="ah-btn pri" :disabled="!!busy" @click="adding = true"><Icon name="plus" :size="13" /> Add hook</button>
+      <button type="button" class="ah-btn" :disabled="!backups.length || !!busy" :title="backups.length ? `Put the newest of ${backups.length} backups of settings.json back` : 'No backup yet'" @click="rollback"><Icon name="history" :size="13" /> Roll back settings</button></span>
     </header>
     <p class="ah-intro">Hooks run on Claude Code events, before or after Claude acts. Switching one off takes it out of <code>~/.claude/settings.json</code> (a backup is made first); it applies to new sessions.</p>
+    <p v-if="canUndo" class="ah-undo" role="status">{{ undo?.name }} added. <button type="button" class="ah-link" @click="undoAdd">Undo</button></p>
+    <HookAddSheet :open="adding" :starter="starter" @close="closeSheet" @added="added" @switch-on="switchOn" @show="reveal" />
     <p v-if="err" class="ah-err" role="alert">{{ err }}</p>
     <div class="bento bento-auto bento-2" aria-label="Claude Code hooks">
       <BentoCard size="S" title="Failing" class="ah-t">
@@ -80,7 +116,10 @@ onMounted(load);
         <template #foot>{{ groups.length }} {{ groups.length === 1 ? "event" : "events" }} · {{ off }} switched off</template>
       </BentoCard>
 
-      <p v-if="loaded && !hooks.length && !err" class="ah-empty">No hooks configured.</p>
+      <div v-if="loaded && !hooks.length && !err" class="ah-empty">
+        <p>No hooks yet. The starter set adds agentnet's recommended hooks in one step: safety blockers, prompt triage, usage guard, task-list reminder and context warning.</p>
+        <button type="button" class="ah-btn pri" @click="starter = true; adding = true"><Icon name="plus" :size="13" /> Review the starter set</button>
+      </div>
       <BentoCard v-for="[ev, list] in ordered" :id="'ev-' + ev" :key="ev" size="L" :title="ev" flat head-click :class="{ 'ah-shut': !isOpen(ev, list) }" :style="{ viewTransitionName: 'ev-' + ev }" @head="flip(ev, list)">
         <template #control>
           <span class="ah-pips" role="group" :aria-label="`${list.length} hooks, ${list.filter((h) => h.failures).length} failing`">
@@ -93,7 +132,7 @@ onMounted(load);
         </template>
         <div :id="'evb-' + ev" class="ah-body" :class="{ 'is-open': isOpen(ev, list) }" :inert="!isOpen(ev, list) || undefined">
           <ul class="ah-list">
-            <li v-for="h in list" :key="h.id" class="ah-row" :class="{ off: !h.enabled, expanded: open === h.id }">
+            <li v-for="h in list" :id="'hk-' + h.id" :key="h.id" class="ah-row" :class="{ off: !h.enabled, expanded: open === h.id, hl: hl === h.id }">
               <div class="ah-main">
                 <button type="button" class="ah-head" :aria-expanded="open === h.id" @click="open = open === h.id ? null : h.id">
                   <span class="ah-name">{{ h.name }}</span>
@@ -120,6 +159,7 @@ onMounted(load);
                     </ol></div>
                   </template>
                   <p v-else class="ah-nolog">This hook keeps no log, so there are no run numbers.</p>
+                  <button type="button" class="ah-rm" :disabled="!!busy" @click="remove(h)"><Icon name="trash" :size="13" /> {{ confirmRm === h.id ? "Click again to remove for good" : "Remove hook" }}</button>
                 </div>
               </div>
               <button type="button" class="sw" role="switch" :aria-checked="h.enabled" :aria-label="`${h.name}: ${h.enabled ? 'on' : 'off'}`" :class="{ busy: busy === h.id }" :disabled="!!busy" @click="toggle(h)"></button>
@@ -135,10 +175,15 @@ onMounted(load);
 .ah-intro{margin:0;max-width:70ch;color:var(--muted);font:400 13px/1.5 var(--body)}
 .ah-intro code,.ah-cmd{font:500 12px var(--mono)}
 .ah-btn{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 14px;border-radius:9px;border:1px solid var(--line);background:var(--panel-2);color:var(--ink);font:600 12.5px var(--body);cursor:pointer}
+.ah-hb{display:flex;flex-wrap:wrap;gap:8px}
+.ah-btn.pri{background:var(--ink);color:var(--panel);border-color:var(--ink)}
+.ah-undo{margin:0;display:flex;align-items:center;gap:8px;color:var(--ink);font:500 13px var(--body)}
+.ah-rm{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 12px;border-radius:9px;border:1px solid var(--line);background:none;color:var(--bad);font:600 12.5px var(--body);cursor:pointer}
+.ah-row.hl{border-color:var(--ink);box-shadow:0 0 0 2px color-mix(in srgb,var(--ink) 25%,transparent)}
 .ah-btn:disabled{opacity:.45;cursor:default}
 .ah-btn:focus-visible,.ah-tog:focus-visible,.ah-head:focus-visible,.ah-link:focus-visible{outline:2px solid var(--ink);outline-offset:2px;border-radius:8px}
 .ah-link{padding:0;min-height:24px;border:0;background:none;color:var(--ink);font:600 12px var(--body);text-decoration:underline;cursor:pointer}
-.ah-err{color:var(--warn);margin:0}.ah-empty{grid-column:1/-1;margin:0;color:var(--muted)}
+.ah-err{color:var(--warn);margin:0}.ah-empty{grid-column:1/-1;margin:0;color:var(--muted);display:flex;flex-direction:column;align-items:flex-start;gap:10px}.ah-empty p{margin:0;max-width:60ch}
 .bad{color:var(--bad)}
 .bv .bad{color:var(--bad)}
 .ah-pips{display:flex;align-items:center;flex-wrap:wrap;gap:5px}
@@ -162,7 +207,7 @@ onMounted(load);
 .ah-body.is-open{grid-template-rows:1fr;opacity:1}
 .ah-body > .ah-list{overflow:hidden;min-height:0}
 .ah-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-.ah-row{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--panel-2);transition:opacity .2s,border-color .2s}
+.ah-row{scroll-margin:80px;display:flex;gap:14px;align-items:flex-start;justify-content:space-between;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--panel-2);transition:opacity .2s,border-color .2s,box-shadow .4s}
 .ah-row.expanded{border-color:var(--muted)}
 .ah-row.off{opacity:.6}
 .ah-main{min-width:0;flex:1}

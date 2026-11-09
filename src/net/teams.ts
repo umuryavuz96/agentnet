@@ -16,6 +16,11 @@ const toTeam = (r: TRow): Team => ({ id: r.id, name: r.name, goal: r.goal, lead:
 export function getTeam(id: string): Team | null { ensureSchema(); const r = db().query("SELECT * FROM teams WHERE id = ?").get(id) as TRow | null; return r ? toTeam(r) : null; }
 export function listTeams(all = false): Team[] { ensureSchema(); return (db().query(`SELECT * FROM teams ${all ? "" : "WHERE state = 'active'"} ORDER BY created_at, id`).all() as TRow[]).map(toTeam); }
 
+/** Every new agent and team needs a goal: the outcome that means it is done (not what it does). AGENTNET_REQUIRE_GOAL=0 turns the rule off for old callers. */
+export const GOAL_MIN = 8, GOAL_MSG = "goal is required: what does done look like?";
+export const goalRequired = () => process.env.AGENTNET_REQUIRE_GOAL !== "0";
+/** Null when fine, else the 422 detail. */
+export const goalError = (g: unknown): string | null => (!goalRequired() || (typeof g === "string" && g.trim().length >= GOAL_MIN) ? null : GOAL_MSG);
 export interface TeamInput { name: string; goal?: string; lead?: string; project?: string; members?: string[]; id?: string }
 export function createTeam(i: TeamInput, now = Date.now()): Team {
   ensureSchema();
@@ -45,8 +50,10 @@ export function sameTeam(a: string, b: string): boolean {
   ensureSchema();
   return !!db().query("SELECT 1 FROM team_members x JOIN team_members y ON y.team_id = x.team_id JOIN teams t ON t.id = x.team_id WHERE x.agent = ? AND y.agent = ? AND t.state = 'active' LIMIT 1").get(a, b);
 }
-/** Teams where `agent` is a non-lead member of a team that has a lead: the lead is the only door into them for outsiders. */
-const gatedTeams = (agent: string) => teamsOf(agent).filter((t) => t.lead && t.lead !== agent);
+const liveAgent = (name: string) => !!db().query("SELECT 1 FROM agents WHERE name = ? AND archived_at IS NULL").get(name);
+/** Teams where `agent` is a non-lead member of a team that has a live lead: the lead is the only door into them for outsiders.
+ *  A lead that was despawned (no live agent row) opens no door, so the gate lifts and the boss chain and root reach the members. */
+const gatedTeams = (agent: string) => teamsOf(agent).filter((t) => t.lead && t.lead !== agent && liveAgent(t.lead));
 /** The lead of the active team `to` belongs to, when `to` is not that lead; else null. */
 export const leadGate = (to: string): string | null => gatedTeams(to)[0]?.lead ?? null;
 /** Does the lead gate let `from` reach `to`? Yes when `to` is gated by no team, or `from` sits in one of the teams that gate it. */

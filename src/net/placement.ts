@@ -79,12 +79,16 @@ export function nextName(role: string, pattern: string): string {
 function placeTeam(name: string, project: string | null, cfg: PlacementConfig, reasons: string[]): { boss: string; team: TeamPlan | null } {
   if (!project) { reasons.push("no team: no project given; boss root"); return { boss: "root", team: null }; }
   if (!cfg.team_by_project) { reasons.push("no team: team-by-project is off; boss root"); return { boss: "root", team: null }; }
-  const joined = listTeams().find((t) => t.project && normPath(t.project) === project);
+  // A team with a lead was formed on purpose (council, root) for one job: only an explicit --team joins it. Auto-join and
+  // auto-create use the lead-less project teams only, and leave members of led teams alone (designer-1 landed in the hooks
+  // gallery council for an unrelated logo job, 2026-11-09).
+  const teams = listTeams(), led = new Set(teams.filter((t) => t.lead).flatMap((t) => t.members));
+  const joined = teams.find((t) => !t.lead && t.project && normPath(t.project) === project);
   if (joined) {
     reasons.push(joined.lead ? `joins team ${joined.id} (same project); boss is its lead ${joined.lead}` : `joins team ${joined.id} (same project); it has no lead, boss root`);
     return { boss: joined.lead ?? "root", team: { id: joined.id, action: "join", lead: joined.lead, members: [...joined.members, name] } };
   }
-  const other = live().find((s) => s.name !== name && s.name !== "root" && s.project && normPath(s.project) === project);
+  const other = live().find((s) => s.name !== name && s.name !== "root" && !led.has(s.name) && s.project && normPath(s.project) === project);
   if (other) {
     const base = (basename(project).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") + cfg.team_suffix).slice(0, 40);
     let id = base, k = 2; while (!TEAM_ID.test(id) || getTeam(id)) id = `${base.slice(0, 36)}-${k++}`;

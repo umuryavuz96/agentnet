@@ -96,3 +96,10 @@ test("plan_spawn needs a job and is root only", async () => {
   expect((await call("/v1/admin/plan-spawn", { project: "/tmp/x" })).status).toBe(422);
   expect((await call("/v1/admin/plan-spawn?job=fix%20a%20typo&role=lookup")).status).toBe(200);
 });
+
+test("a team with a lead is never auto-joined; its members are not pulled into a new auto team", async () => {
+  expect((await call("/v1/admin/spawn", { name: "architect-9", job: "lead", project: "/tmp/proj-led" })).status).toBe(201);
+  (await import("../src/net/teams")).createTeam({ id: "led-team", name: "led-team", project: "/tmp/proj-led", lead: "architect-9", members: ["architect-9"] } as any);
+  const p = await plan({ job: "make a logo", role: "designer", project: "/tmp/proj-led", boss: "root" });
+  expect(p.team).toBeNull(); expect(p.boss).toBe("root"); expect(p.reasons.join("\n")).toContain("no team");
+});

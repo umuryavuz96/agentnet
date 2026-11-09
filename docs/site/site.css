@@ -177,3 +177,4 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   body::before{display:none}
 }
 @media (prefers-reduced-motion:reduce){.btn:active,.vbtn:active,.copy:active{transform:none}}
+.brand .lockup{height:24px;width:auto;display:block}

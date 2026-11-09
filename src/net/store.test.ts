@@ -51,6 +51,16 @@ describe("bg rows", () => {
     s = bg(s, T0 + 80, { id: "b1", kind: "shell", state: "running" });
     expect(s.bg![0]!.state).toBe("done");
   });
+  test("a raw command keeps cmd; the summary replaces only the label; a repeat of the command does not undo it", () => {
+    let s = bg(base(), T0, { id: "b", kind: "shell", label: "until grep -q DONE log", raw: true, state: "running" });
+    expect(s.bg![0]).toMatchObject({ label: "until grep -q DONE log", cmd: "until grep -q DONE log", state: "running" });
+    s = bg(s, T0 + 5, { id: "b", sum: "Waits for the render to finish" });
+    expect(s.bg![0]).toMatchObject({ label: "Waits for the render to finish", cmd: "until grep -q DONE log", state: "running", startedAt: T0 });
+    s = bg(s, T0 + 9, { id: "b", kind: "shell", label: "until grep -q DONE log", state: "done" }); // the hook repeats the remembered command
+    expect(s.bg![0]).toMatchObject({ label: "Waits for the render to finish", state: "done" });
+    expect(bg(s, T0 + 10, { id: "gone", sum: "x" }).bg).toEqual(s.bg); // no such row: ignored
+    expect(bg(base(), T0, { id: "d", kind: "shell", label: "Build the site", state: "running" }).bg![0]!.cmd).toBeUndefined(); // a described job has no cmd
+  });
   test("finished rows leave after 2 min; bad kind or state is ignored; capped", () => {
     let s = bg(base(), T0, { id: "x", kind: "monitor", label: "m", state: "killed" });
     s = bg(s, T0 + st.BG_KEEP_MS + 1, { id: "y", kind: "subagent", label: "s", state: "running" });
