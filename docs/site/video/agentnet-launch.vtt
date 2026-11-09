@@ -1,0 +1,57 @@
+WEBVTT
+
+00:00:00.300 --> 00:00:03.770
+You run three Claude Code
+sessions. Then five.
+
+00:00:03.820 --> 00:00:06.370
+Then you lose track of which one is stuck.
+
+00:00:07.300 --> 00:00:12.690
+agentnet gives every session a name,
+a boss, a task list and an inbox.
+
+00:00:13.500 --> 00:00:16.850
+Name them. Give them a
+boss. Watch them work.
+
+00:00:19.300 --> 00:00:20.850
+Know who is stuck.
+
+00:00:20.980 --> 00:00:26.570
+The live map shows each agent's state, its
+progress and its task list, as it changes.
+
+00:00:29.300 --> 00:00:31.290
+Stop being the message bus.
+
+00:00:31.380 --> 00:00:36.930
+Agents message each other and report to their
+boss, so you stop copying text between windows.
+
+00:00:40.300 --> 00:00:42.450
+Keep what the last agent decided.
+
+00:00:42.700 --> 00:00:45.930
+When a task is done, the
+agent leaves a decision note.
+
+00:00:45.980 --> 00:00:48.570
+The next agent searches
+it before it starts.
+
+00:00:51.300 --> 00:00:55.610
+It runs on your own machine, on
+localhost, with no extra account.
+
+00:00:55.700 --> 00:00:59.690
+Each agent is a real Claude
+Code session on your own plan.
+
+00:01:03.300 --> 00:01:07.010
+agentnet is free and open
+source under the MIT licence.
+
+00:01:07.060 --> 00:01:09.930
+Clone it from GitHub and
+spawn your first agent.

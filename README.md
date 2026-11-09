@@ -19,10 +19,7 @@ An org chart for your Claude Code agents.
 **Name them. Give them a boss. Watch them work.** agentnet gives every Claude Code session a name, a boss, a task list
 and an inbox, and shows the whole team live on your own machine.
 
-<!-- TODO (launch video, after phase 5b): GitHub cannot autoplay video in a README. Add a poster image that links to the
-     video on the site, for example:
-     [![agentnet launch video (with sound)](docs/site/img/video-poster.png)](https://umuryavuz96.github.io/agentnet/video/agentnet-launch.mp4)
-     or an autoplaying GIF: ![agentnet launch video](docs/site/img/agentnet-launch.gif) -->
+[![agentnet launch video, 72 s with sound. Demo team, real app.](docs/site/img/video-poster.png)](https://umuryavuz96.github.io/agentnet/video/agentnet-launch.mp4)
 
 ## Quick start
 
