@@ -9,17 +9,12 @@ An org chart for your Claude Code agents.
 
 [Website](https://umuryavuz96.github.io/agentnet/) · [Quick start](#quick-start) · [Security](#security-model) · [Credits](#credits)
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/shots/webapp/agents-1280-light.png">
-  <img src="docs/shots/webapp/agents-1280-dark.png" width="1280" height="800" alt="The agentnet web app's Agents map: a root agent above a demo team of two builders and a review team of one.">
-</picture>
+<a href="https://umuryavuz96.github.io/agentnet/"><img src="docs/site/img/agentnet-launch.gif" width="800" height="500" alt="agentnet live: a demo team of Claude Code agents splitting work, with live task lists and progress. Click for the 72 s launch video with sound."></a>
 
-*Demo team, real app.*
+*Real app, demo team. [Watch the 72 s launch video with sound](https://umuryavuz96.github.io/agentnet/video/agentnet-launch.mp4).*
 
 **Name them. Give them a boss. Watch them work.** agentnet gives every Claude Code session a name, a boss, a task list
 and an inbox, and shows the whole team live on your own machine.
-
-[![agentnet launch video, 72 s with sound. Demo team, real app.](docs/site/img/video-poster.png)](https://umuryavuz96.github.io/agentnet/video/agentnet-launch.mp4)
 
 ## Quick start
 
