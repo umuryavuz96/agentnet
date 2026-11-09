@@ -42,6 +42,21 @@ test("open: 404 without a session, one window per agent, raise when attached; cl
   expect(wn.detach("agentnet-b1", f.t)).toBe(true); expect(f.sessions["agentnet-b1"]).toBe(0);
   expect(wn.agentSessions(f.t)).toEqual(["agentnet-a1", "agentnet-b1"]); // never main or other
 });
+test("open root without tmux: raise the hosting app, else a clear message", () => {
+  const f = fake({}), opened: string[][] = [], o = (a: string[]) => opened.push(a);
+  if (process.platform === "darwin") {
+    expect(wn.openWindow("root", f.t, o, 42, () => "iTerm")).toEqual({ ok: true, opened: false, app: "iTerm" });
+    expect(opened.at(-1)).toEqual(["-a", "iTerm"]);
+  }
+  expect(wn.openWindow("root", f.t, o, 42, () => null)).toEqual({ ok: false, status: 404, detail: wn.NOT_IN_TMUX });
+  expect(wn.openWindow("root", f.t, o, null)).toMatchObject({ ok: false, detail: wn.NOT_IN_TMUX });
+  expect(wn.openWindow("a1", f.t, o, 42, () => "iTerm")).toMatchObject({ ok: false, detail: "no tmux session agentnet-a1" }); // only root falls back
+});
+test("appOfPid walks parents to the first .app", () => {
+  const rows: Record<number, { ppid: number; comm: string }> = { 9: { ppid: 8, comm: "claude" }, 8: { ppid: 7, comm: "-zsh" }, 7: { ppid: 1, comm: "/Applications/Ghostty.app/Contents/MacOS/ghostty" } };
+  expect(wn.appOfPid(9, (p) => rows[p] ?? null)).toBe("Ghostty");
+  expect(wn.appOfPid(8, () => null)).toBe(null);
+});
 test("the sweep sets window.open from tmux clients; the reaper kills only agentnet sessions of gone agents", async () => {
   for (const n of ["a1", "root"]) { st.emit({ agent: `${n}#1`, type: "AgentSpawned", data: { id: `${n}#1`, name: n }, source: "spawn" }); st.emit({ agent: `${n}#1`, type: "AgentConnected", data: { session: "s", pid: process.pid }, source: "mod" }); }
   st.flush();

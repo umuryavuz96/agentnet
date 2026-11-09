@@ -10,7 +10,7 @@ import { ROOT } from "../core/config";
 import { audit, logEvent } from "../core/logger";
 import { problem, type Env } from "../core/http";
 import { byName, NAME_RE } from "./routes";
-import { onPatch } from "./store";
+import { live, onPatch } from "./store";
 
 export const rootSession = () => process.env.AGENTNET_ROOT_SESSION ?? "agentnet-root";
 export const sessionOf = (name: string) => (name === "root" ? rootSession() : `agentnet-${name}`);
@@ -39,11 +39,31 @@ export const killSession = (s: string, t: Tmux = realTmux) => t.run(["kill-sessi
 export const agentSessions = (t: Tmux = realTmux) => t.run(["list-sessions", "-F", "#{session_name}"]).out.split("\n").map((l) => l.trim()).filter(isAgentSession);
 
 export const DIR = () => join(ROOT, "run", "agentnet");
-/** Open: raise Terminal when a client is already attached, else start one window on the session. */
-export function openWindow(name: string, t: Tmux = realTmux, open: (args: string[]) => void = (a) => { Bun.spawn(["/usr/bin/open", ...a], { stdout: "ignore", stderr: "ignore" }); }): { ok: true; opened: boolean } | { ok: false; status: 404 | 422; detail: string } {
+/** The terminal app (macOS .app name) that hosts process `pid`: walk the parents, first command inside an .app bundle wins. */
+export function appOfPid(pid: number, ps: (p: number) => { ppid: number; comm: string } | null = psRow): string | null {
+  for (let p: number | null = pid, i = 0; p && p > 1 && i < 32; i++) {
+    const r = ps(p); if (!r) return null;
+    const m = /\/([^/]+)\.app\/Contents\//.exec(r.comm); if (m) return m[1]!;
+    p = r.ppid;
+  }
+  return null;
+}
+function psRow(p: number): { ppid: number; comm: string } | null {
+  const r = Bun.spawnSync(["/bin/ps", "-o", "ppid=,comm=", "-p", String(p)]); const m = /^\s*(\d+)\s+(.+)$/.exec(new TextDecoder().decode(r.stdout).trim());
+  return m ? { ppid: Number(m[1]), comm: m[2]! } : null;
+}
+export const NOT_IN_TMUX = "The director runs in your own terminal, not in tmux. Switch to that terminal window.";
+/** Open: raise Terminal when a client is already attached, else start one window on the session. No tmux session but a known
+ *  pid (a director started by hand): bring the app that hosts that pid to the front, else say where it runs. */
+export function openWindow(name: string, t: Tmux = realTmux, open: (args: string[]) => void = (a) => { Bun.spawn(["/usr/bin/open", ...a], { stdout: "ignore", stderr: "ignore" }); }, pid: number | null = null, appOf: (pid: number) => string | null = appOfPid): { ok: true; opened: boolean; app?: string } | { ok: false; status: 404 | 422; detail: string } {
   if (!NAME_RE.test(name)) return { ok: false, status: 422, detail: "bad agent name" };
   const s = sessionOf(name);
-  if (!hasSession(s, t)) return { ok: false, status: 404, detail: `no tmux session ${s}` };
+  if (!hasSession(s, t)) {
+    if (name !== "root") return { ok: false, status: 404, detail: `no tmux session ${s}` };
+    const app = process.platform === "darwin" && pid && pid > 1 ? appOf(pid) : null;
+    if (app) { open(["-a", app]); return { ok: true, opened: false, app }; }
+    return { ok: false, status: 404, detail: NOT_IN_TMUX };
+  }
   if (attachedSessions(t).has(s)) { open(["-a", "Terminal"]); return { ok: true, opened: false }; }
   if (!existsSync(DIR())) mkdirSync(DIR(), { recursive: true, mode: 0o700 });
   const f = join(DIR(), `open-${name}.command`);
@@ -63,10 +83,10 @@ export function agentnetWindowRoutes(api: Hono<Env>) { // panel auth (not the ag
   api.post("/agentnet/agents/:name/open", (c) => {
     const name = String(c.req.param("name"));
     if (name !== "root" && !byName(name)) return problem(c, 404, "Not Found", "no live agent by that name");
-    const r = openWindow(name);
+    const r = openWindow(name, realTmux, undefined, name === "root" ? live().find((a) => a.name === "root")?.pid ?? null : null);
     if (!r.ok) return problem(c, r.status, r.status === 404 ? "Not Found" : "Can't do that", r.detail);
     audit(c.get("actor"), "agentnet.open", name, "ok", c.get("trace"), { opened: r.opened });
-    return c.json({ agent: name, session: sessionOf(name), opened: r.opened, raised: !r.opened });
+    return c.json({ agent: name, session: sessionOf(name), opened: r.opened, raised: !r.opened, ...(r.app ? { app: r.app } : {}) });
   });
   api.post("/agentnet/agents/:name/close", (c) => {
     const name = String(c.req.param("name"));

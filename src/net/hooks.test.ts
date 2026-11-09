@@ -165,3 +165,15 @@ test("catalogue: missing or broken file gives generic names; bad entries are ski
   expect(names).toEqual(["skill-dispatch.js", "triage.py", "agent-pretrust.py"]);
   expect(listHooks().every((h) => h.log === null && h.about.length > 0)).toBe(true);
 });
+
+test("fresh install (no catalogue): a shipped template hook still gets its log, stats and fires", async () => {
+  process.env.AGENTNET_HOOK_CATALOG = join(d, "none.json"); // missing file = empty catalogue
+  const { installHook, listHooks, recentFires, templateList } = await import("./hooks");
+  const t = templateList().find((x) => x.id === "agentnet-triage")!;
+  installHook({ templateId: t.id });
+  mkdirSync(process.env.AGENTNET_HOOK_LOGS!, { recursive: true });
+  writeFileSync(join(process.env.AGENTNET_HOOK_LOGS!, "triage.jsonl"), JSON.stringify({ ts: new Date().toISOString(), ms: 120, agent: "root", p: "hi", route: "inline" }) + "\n");
+  const h = listHooks().find((x) => x.command === t.command)!;
+  expect(h).toMatchObject({ script: "agentnet-triage", log: "triage.jsonl", runs: 1, enabled: true });
+  expect(recentFires("root")).toMatchObject([{ script: "agentnet-triage", name: t.name, agent: "root", ok: true }]);
+});

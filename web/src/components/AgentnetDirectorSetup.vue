@@ -40,6 +40,15 @@ async function copy() {
   if (!info.value) return;
   try { await navigator.clipboard.writeText(info.value.command); copied.value = true; setTimeout(() => (copied.value = false), 1600); } catch { toast("Copy failed"); }
 }
+const picking = ref(false), pickMsg = ref("");
+/** Native folder dialog on the server Mac. Cancel keeps the field; no dialog available leaves the typed path as the way. */
+async function pick() {
+  picking.value = true; pickMsg.value = "";
+  try {
+    const r = await api<{ dir: string | null }>("v1/panel/director/pick-folder", { method: "POST", body: {} });
+    if (r.dir) dir.value = r.dir;
+  } catch (e) { pickMsg.value = (e as Error).message; } finally { picking.value = false; }
+}
 async function start() {
   busy.value = true; err.value = "";
   try {
@@ -70,7 +79,8 @@ const state = (n: number) => (n < 3 ? (connected.value || open.value > n ? "done
         <li :class="['ds-s', { on: open === 1, ok: state(1) === 'done' }]">
           <button type="button" class="ds-sh" :aria-expanded="open === 1" @click="open = open === 1 ? 0 : 1"><i class="ds-n"><Icon v-if="state(1) === 'done'" name="check" :size="14" /><template v-else>1</template></i><b>Project folder</b><span v-if="open !== 1" class="ds-sum">{{ dir }}</span></button>
           <div class="ds-x2"><div class="ds-in">
-            <label class="ds-f"><span>The director works in this folder</span><input v-model="dir" type="text" spellcheck="false" autocomplete="off" placeholder="/Users/you/project" /></label>
+            <label class="ds-f"><span>The director works in this folder</span><span class="ds-pick"><input v-model="dir" type="text" spellcheck="false" autocomplete="off" placeholder="/Users/you/project" /><button type="button" class="ds-b ghost" :disabled="picking" @click.prevent="pick"><Icon name="folder-open" :size="15" /> {{ picking ? "Waiting…" : "Choose…" }}</button></span></label>
+            <p v-if="pickMsg" class="ds-t sm" role="status">{{ pickMsg }}</p>
             <p v-if="info?.dirError" class="ds-err" role="alert">{{ info.dirError }}</p>
             <button type="button" class="ds-b" :disabled="!!info?.dirError || !dir" @click="open = 2">Next</button>
           </div></div>
@@ -142,6 +152,7 @@ const state = (n: number) => (n < 3 ? (connected.value || open.value > n ? "done
 .ds-s.on .ds-x2{grid-template-rows:1fr}
 .ds-in{overflow:hidden;display:grid;gap:10px;padding:0 12px;visibility:hidden;transition:visibility 0s .28s}
 .ds-s.on .ds-in{padding-bottom:12px;visibility:visible;transition-delay:0s}
+.ds-pick{display:flex;gap:8px;align-items:stretch}.ds-pick input{flex:1;min-width:0}.ds-pick .ds-b{flex:none;text-transform:none;letter-spacing:0}
 .ds-f{display:grid;gap:6px}.ds-f span{color:var(--muted);font:600 11px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
 .ds input{padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--track);color:var(--ink);font:13px var(--mono)}
 .ds-t{margin:0;font-size:13.5px;line-height:1.45}.ds-t.sm{font-size:12.5px;color:var(--muted)}

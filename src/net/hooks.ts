@@ -91,7 +91,16 @@ export function logStats(file: string) {
 
 // ---------- live: a hook that keeps a log "fires" whenever a line is appended to it (fs.watch, no timer) ----------
 export interface HookFire { script: string; name: string; /** agentnet agent that fired it; null = a non-agentnet session (the main bot, you) */ agent: string | null; at: number; ms: number | null; ok: boolean; skipped?: boolean; reason?: string }
-const logHooks = () => catalog().filter((k) => k.log && k.script).map((k) => ({ file: k.log!, script: k.script!, name: k.name }));
+/** Hooks agentnet ships write these logs ($AGENTNET_HOME/logs). A fresh install has no hook-catalog.json, so without this
+ *  table the panel's HOOKS section would stay "none yet" and the Hooks page would show no run stats for them. A catalogue entry for the same log wins. */
+const SHIPPED_LOGS: Record<string, string> = { "agentnet-triage": "triage.jsonl", "agentnet-usage-guard": "usage-guard.jsonl", "agentnet-task-guard": "task-guard.jsonl" };
+const shippedLog = (templateId?: string) => (templateId ? SHIPPED_LOGS[templateId] : undefined);
+const logHooks = () => {
+  const cat = catalog().filter((k) => k.log && k.script).map((k) => ({ file: k.log!, script: k.script!, name: k.name }));
+  const have = new Set(catalog().filter((k) => k.log).map((k) => k.log));
+  const own = templates().filter((t) => shippedLog(t.id) && !have.has(shippedLog(t.id))).map((t) => ({ file: shippedLog(t.id)!, script: t.id, name: t.name }));
+  return [...cat, ...own];
+};
 const subs = new Set<(f: HookFire) => void>();
 const offsets = new Map<string, number>();
 let logWatch: FSWatcher | null = null;
@@ -145,10 +154,10 @@ export function listHooks(): HookInfo[] {
     // an inline shell command (a template or a custom one) has no script file: name it from its template, else call it a custom hook
     const tpl = k ? undefined : templates().find((t) => t.command === command), inline = /[;|&$<>(\n]/.test(command);
     const script = tpl ? tpl.id : inline ? "custom-" + hookId(event, matcher, command) : basename(scriptOf(command));
-    const st = k?.log ? logStats(k.log) : null;
+    const log = k?.log ?? shippedLog(tpl?.id), st = log ? logStats(log) : null;
     return {
       id: hookId(event, matcher, command), event, matcher, command, script, timeout: typeof h.timeout === "number" ? h.timeout : null, enabled,
-      name: k?.name ?? tpl?.name ?? (inline ? "Custom hook" : script), about: k?.about ?? tpl?.about ?? EVENT_ABOUT[event] ?? "A custom hook.", log: k?.log ?? null,
+      name: k?.name ?? tpl?.name ?? (inline ? "Custom hook" : script), about: k?.about ?? tpl?.about ?? EVENT_ABOUT[event] ?? "A custom hook.", log: log ?? null,
       runs: st?.runs ?? 0, failures: st?.failures ?? 0, avgMs: st?.avgMs ?? null, p95Ms: st?.p95Ms ?? null, lastAt: st?.lastAt ?? null, recent: st?.recent ?? [],
     };
   };

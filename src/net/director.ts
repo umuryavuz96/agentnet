@@ -12,11 +12,13 @@ import { HOST, PORT } from "../core/config";
 import { problem, type Env } from "../core/http";
 import { logEvent } from "../core/logger";
 import { live } from "./store";
+import { rootSession } from "./windows";
 import { listHooks, readHookLog } from "./hooks";
 import { templates } from "./hook-templates";
 
 export const REPO = join(import.meta.dir, "..", "..");
-export const SESSION = "agentnet-director";
+/** The director runs in the root agent's tmux session, so Open window on root finds it. */
+export const SESSION = rootSession();
 
 export interface Tools { bun: boolean; claude: boolean; tmux: boolean; python3: boolean }
 export const tools = (): Tools => ({ bun: !!process.versions.bun, claude: !!Bun.which("claude"), tmux: !!Bun.which("tmux"), python3: !!Bun.which("python3") });
@@ -76,12 +78,34 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
   return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}` };
 }
 
+export type PickResult = { ok: true; dir: string } | { ok: false; code: "cancelled" | "unsupported" | "failed"; detail: string };
+export type PickRun = (cmd: string[]) => Promise<{ status: number | null; out: string; err: string }>;
+const realPick: PickRun = async (cmd) => { const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", stdin: "ignore" }); const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]); return { status: await p.exited, out, err }; };
+/** Ask the server's own desktop for a folder: macOS osascript, Linux zenity. Returns the chosen absolute path (no trailing slash). */
+export async function pickFolder(run: PickRun = realPick, platform: string = process.platform, has: (b: string) => boolean = (b) => !!Bun.which(b)): Promise<PickResult> {
+  let cmd: string[];
+  if (platform === "darwin") cmd = ["osascript", "-e", "POSIX path of (choose folder with prompt \"Choose the director's project folder\")"];
+  else if (has("zenity")) cmd = ["zenity", "--file-selection", "--directory"];
+  else return { ok: false, code: "unsupported", detail: "No folder dialog on this machine. Type the path instead." };
+  let r; try { r = await run(cmd); } catch { return { ok: false, code: "unsupported", detail: "No folder dialog on this machine. Type the path instead." }; }
+  if (r.status === 0) { const d = r.out.trim().replace(/(.)\/+$/, "$1"); return d ? { ok: true, dir: d } : { ok: false, code: "cancelled", detail: "No folder chosen." }; }
+  if (/-128|cancel/i.test(r.err) || (platform !== "darwin" && r.status === 1 && !r.err.trim())) return { ok: false, code: "cancelled", detail: "No folder chosen." };
+  if (/-1743|-1712|not allowed|no display|cannot open display|display/i.test(r.err)) return { ok: false, code: "unsupported", detail: "The folder dialog cannot open here (no screen or no permission). Type the path instead." };
+  return { ok: false, code: "failed", detail: "The folder dialog failed. Type the path instead." };
+}
+
 export function directorRoutes(api: Hono<Env>): void {
   api.get("/agent-director", (c) => {
     const q = c.req.query("dir"), home = homedir();
     const d = checkDir(q ?? home);
     const dir = "dir" in d ? d.dir : home;
     return c.json({ home, dir, dirError: "error" in d ? d.error : null, tools: tools(), root: hasRoot(), triage: triageNow(), session: hasSession(), sessionName: SESSION, command: directorCommand(dir) });
+  });
+  api.post("/agent-director/pick-folder", async (c) => {
+    const r = await pickFolder();
+    if (r.ok) return c.json({ dir: r.dir });
+    if (r.code === "cancelled") return c.json({ dir: null, cancelled: true });
+    return problem(c, r.code === "unsupported" ? 501 : 500, r.code, r.detail);
   });
   api.post("/agent-director/start", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as { dir?: unknown };

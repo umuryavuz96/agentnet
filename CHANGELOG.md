@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2
+
+Fixes from a fresh install.
+
+- "Start director for me" now starts the director in the tmux session that "Open window" looks for. Before, Open window failed with "no tmux session".
+- A director you started in your own terminal: "Open window" brings that terminal app to the front, or says where the director runs, instead of a raw error.
+- First-run setup: a "Choose…" button opens the system folder dialog (macOS, and Linux with zenity). Typing the path still works.
+- Shipped hooks (prompt triage, usage guard, task guard) now show their runs on a fresh install, without a hook catalog file.
+
 ## 0.4.1
 
 - Agent cards on the map show what the agent is doing now. The status line follows the newest signal (tool use in plain words, such as "Running tests" or "Editing App.vue"), and turns into "Idle · last: …" after a minute without activity. Before, a task title could stay on the card for several minutes while the agent was doing something else.

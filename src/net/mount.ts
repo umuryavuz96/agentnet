@@ -20,7 +20,7 @@ const RULES: [RegExp, (m: RegExpExecArray) => string][] = [
   [/^\/v1\/panel\/hooks((?:\/(?:nodes|stream|fires|rollback|templates|install-set|install|[A-Za-z0-9._:-]+\/enabled|[A-Za-z0-9._:-]+))?)$/, (m) => "/api/v1/agent-hooks" + m[1]],
   [/^\/v1\/panel\/update$/, () => "/api/v1/agent-update"],
   [/^\/v1\/panel\/update\/(check|run|stream)$/, (m) => "/api/v1/agent-update/" + m[1]],
-  [/^\/v1\/panel\/director(\/start)?$/, (m) => "/api/v1/agent-director" + (m[1] ?? "")],
+  [/^\/v1\/panel\/director(\/(?:start|pick-folder))?$/, (m) => "/api/v1/agent-director" + (m[1] ?? "")],
   [/^\/v1\/panel\/summary$/, () => A + "summary"],
 ];
 
@@ -52,7 +52,7 @@ export const V1_PATHS: string[] = [
   "/v1/panel/arsenal", "/v1/panel/arsenal/agent", "/v1/panel/arsenal/roles", "/v1/panel/routing", "/v1/panel/compact", "/v1/panel/hooks",
   "/v1/panel/hooks/nodes", "/v1/panel/hooks/stream", "/v1/panel/hooks/fires", "/v1/panel/hooks/{id}/enabled", "/v1/panel/hooks/rollback", "/v1/panel/hooks/templates", "/v1/panel/hooks/install", "/v1/panel/hooks/install-set", "/v1/panel/hooks/{id}",
   "/v1/panel/update", "/v1/panel/update/check", "/v1/panel/update/run", "/v1/panel/update/stream",
-  "/v1/panel/director", "/v1/panel/director/start",
+  "/v1/panel/director", "/v1/panel/director/start", "/v1/panel/director/pick-folder",
 ];
 
 /** Legacy panel paths that change state. They are open to the page, so the server makes them root only (access.ts rootOnly). */
@@ -60,4 +60,4 @@ export const isPanelWrite = (method: string, path: string): boolean =>
   (method === "POST" || method === "PUT") && (
     /^\/api\/v1\/agentnet\/(agents\/[a-z0-9-]+\/(message|open|close|stop|despawn|run-schedule)|windows\/close-all)$/.test(path) ||
     path.startsWith("/api/v1/agentnet-panel/") ||
-    path === "/api/v1/arsenal/roles" || path === "/api/v1/agent-routing" || path === "/api/v1/agent-compact" || path.startsWith("/api/v1/agent-hooks/") || path.startsWith("/api/v1/agent-update/") || path === "/api/v1/agent-director/start");
+    path === "/api/v1/arsenal/roles" || path === "/api/v1/agent-routing" || path === "/api/v1/agent-compact" || path.startsWith("/api/v1/agent-hooks/") || path.startsWith("/api/v1/agent-update/") || path === "/api/v1/agent-director/start" || path === "/api/v1/agent-director/pick-folder");

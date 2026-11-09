@@ -14,7 +14,7 @@ describe("toLegacy", () => {
       const l = toLegacy(sample(p));
       expect(l, p).not.toBeNull();
       const bare = l!.replace(/^\/api\/v1/, "");
-      const panel = /^\/(agentnet\/(snapshot|stream|usage|scores|summary|windows\/close-all|agents\/[a-z0-9-]+\/(score|tasks|message|open|close|schedules|stop|despawn|run-schedule))|agentnet-panel\/(teams.*|checks(\/\d+\/resolve)?)|trails\/(search|stats)|bgjobs(\/[A-Za-z0-9._-]+(\/file)?)?|arsenal(\/(agent|roles))?|agent-routing|agent-compact|agent-hooks(\/.*)?|agent-update(\/.*)?|agent-director(\/start)?)$/.test(bare);
+      const panel = /^\/(agentnet\/(snapshot|stream|usage|scores|summary|windows\/close-all|agents\/[a-z0-9-]+\/(score|tasks|message|open|close|schedules|stop|despawn|run-schedule))|agentnet-panel\/(teams.*|checks(\/\d+\/resolve)?)|trails\/(search|stats)|bgjobs(\/[A-Za-z0-9._-]+(\/file)?)?|arsenal(\/(agent|roles))?|agent-routing|agent-compact|agent-hooks(\/.*)?|agent-update(\/.*)?|agent-director(\/(start|pick-folder))?)$/.test(bare);
       expect(agentPath(l!) || panel, `${p} -> ${l}`).toBe(true);
     }
   });

@@ -905,6 +905,18 @@ paths:
           description: A director session already exists
         "422":
           description: tmux or claude missing, or tmux failed
+  /v1/panel/director/pick-folder:
+    post:
+      summary: panel open the server machine's native folder dialog (macOS osascript, Linux zenity); root only
+      responses:
+        "200":
+          description: "{dir} the chosen absolute path, or {dir: null, cancelled: true}"
+        "403":
+          description: Forbidden (root only)
+        "501":
+          description: No folder dialog here (no GUI, no zenity, or no permission)
+        "500":
+          description: The dialog failed
   /v1/panel/update:
     get:
       summary: panel update status (current, latest, availability, blocked reason, job)

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-const { triageState, directorCommand, checkDir, startDirector, sq, SESSION } = await import("./director");
+const { pickFolder, triageState, directorCommand, checkDir, startDirector, sq, SESSION } = await import("./director");
 const { directorRoutes } = await import("./director");
 const { Hono } = await import("hono");
 const { isPanelWrite, toLegacy } = await import("./mount");
@@ -75,4 +75,22 @@ describe("director setup", () => {
     expect(typeof j.triage).toBe("string");
     expect("apiKey" in j).toBe(false);
   });
+});
+
+test("pickFolder: path, cancel, no dialog, failure", async () => {
+  const mk = (status: number | null, out = "", err = "") => async () => ({ status, out, err });
+  expect(await pickFolder(mk(0, "/Users/x/proj/\n"), "darwin")).toEqual({ ok: true, dir: "/Users/x/proj" });
+  expect(await pickFolder(mk(0, "/\n"), "darwin")).toEqual({ ok: true, dir: "/" });
+  expect(await pickFolder(mk(1, "", "execution error: User canceled. (-128)"), "darwin")).toMatchObject({ ok: false, code: "cancelled" });
+  expect(await pickFolder(mk(1, "", "not allowed to send keystrokes (-1743)"), "darwin")).toMatchObject({ code: "unsupported" });
+  expect(await pickFolder(mk(1, "", "boom"), "darwin")).toMatchObject({ code: "failed" });
+  expect(await pickFolder(mk(0), "linux", () => false)).toMatchObject({ code: "unsupported" });
+  let used: string[] = []; await pickFolder(async (c) => { used = c; return { status: 1, out: "", err: "" }; }, "linux", () => true);
+  expect(used).toEqual(["zenity", "--file-selection", "--directory"]);
+  expect(await pickFolder(mk(1), "linux", () => true)).toMatchObject({ code: "cancelled" });
+  expect(await pickFolder(async () => { throw new Error("x"); }, "darwin")).toMatchObject({ code: "unsupported" });
+});
+test("pick-folder is a loopback-root panel write and rewritten", () => {
+  expect(toLegacy("/v1/panel/director/pick-folder")).toBe("/api/v1/agent-director/pick-folder");
+  expect(isPanelWrite("POST", "/api/v1/agent-director/pick-folder")).toBe(true);
 });
