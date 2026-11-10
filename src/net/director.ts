@@ -4,18 +4,19 @@
 // The request body carries one thing, the project folder: it must be an existing absolute directory and is quoted
 // for the shell. No command text from a request ever reaches a shell.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Hono } from "hono";
 import { HOST, PORT, ROOT } from "../core/config";
 import { problem, type Env } from "../core/http";
 import { logEvent } from "../core/logger";
 import { all, flush, forgetByName, live } from "./store";
 import { byName, retireAgent } from "./routes";
-import { findRootSession, hasSession as tmuxHas, healRootSession, killSession, realTmux, rootPid, rootSession } from "./windows";
+import { createdOf, findRootSession, hasSession as tmuxHas, healRootSession, killSession, realTmux, rootPid, rootSession, type Tmux } from "./windows";
 import { listHooks, readHookLog } from "./hooks";
 import { templates } from "./hook-templates";
+import { precheck } from "./adopt-scan";
 
 export const REPO = join(import.meta.dir, "..", "..");
 /** The director runs in the root agent's tmux session, so Open window on root finds it. */
@@ -27,11 +28,73 @@ export const tools = (): Tools => ({ bun: !!process.versions.bun, claude: !!Bun.
 /** POSIX single-quote: safe for any string, newlines included. */
 export const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
+/** How the director session starts. clean: own home, the project attached with --add-dir. adopt: runs in the workspace, its instructions stay, agentnet precedence is appended.
+ *  scan: adopt's folder, read-only phase (the plugin gate reads the env). No mode = the plain legacy command, no soul. */
+export type DirectorMode = "clean" | "adopt" | "scan";
+export interface CommandOpts { mode?: DirectorMode; repo?: string; port?: number; host?: string; resume?: string; promptFile?: string; home?: string; roots?: string[] }
+
+/** First message of the scan session: an interactive claude waits at an empty prompt otherwise (D8). It is the last argument, after every flag, because --add-dir style flags are variadic and would swallow it.
+ *  --setting-sources user: the workspace's project and local settings (hooks, MCP approvals) never load, so claude has nothing to ask or to write into the workspace (D6, D9). --strict-mcp-config: project .mcp.json servers are ignored. */
+export const SCAN_PROMPT = "Begin the scan.";
+
 /** The command that makes a Claude Code session the director: join as "root", then start claude with the plugin.
  *  AGENTNET_URL goes inside the substitution (a prefix before eval would apply too late for it) and only when the server is not on the default port, so a scratch instance never points at the real one. */
-export function directorCommand(dir: string, repo = REPO, port = PORT, host = HOST, resume?: string): string {
+export function directorCommand(dir: string, o: CommandOpts = {}): string {
+  const { mode, repo = REPO, port = PORT, host = HOST, resume, promptFile, home = join(ROOT, "director"), roots } = o;
   const url = port === 3096 && host === "127.0.0.1" ? "" : `AGENTNET_URL=${sq(`http://${host}:${port}/api/v1/agentnet`)} `;
-  return `cd ${sq(dir)} && eval "$(${url}${sq(join(repo, "scripts", "agentnet-join.sh"))} root Director ${sq(dir)})" && claude --plugin-dir "$AGENTNET_MOD"${resume ? ` --resume ${sq(resume)}` : ""}`;
+  const join_ = (p: string) => `eval "$(${url}${sq(join(repo, "scripts", "agentnet-join.sh"))} root Director ${sq(p)})"`;
+  const tail = `claude --plugin-dir "$AGENTNET_MOD"${promptFile ? ` --append-system-prompt-file ${sq(promptFile)}` : ""}`;
+  if (mode === "clean") return `cd ${sq(home)} && ${join_(home)} && ${tail}${resume ? ` --resume ${sq(resume)}` : ""} --add-dir ${sq(dir)}`;
+  if (mode === "scan") return `cd ${sq(dir)} && export AGENTNET_ADOPT_PHASE=scan AGENTNET_ADOPT_ROOTS=${sq((roots?.length ? roots : [dir]).join(":"))} && ${join_(dir)} && ${tail} --setting-sources user --strict-mcp-config -n scan ${sq(SCAN_PROMPT)}`;
+  return `cd ${sq(dir)} && ${join_(dir)} && ${tail}${resume ? ` --resume ${sq(resume)}` : ""}`;
+}
+
+const ASSETS = join(REPO, "assets", "director");
+const asset = (f: string) => readFileSync(join(ASSETS, f), "utf8").trim();
+const HOUSE_RULES = "# House rules\nUse the agentnet tools (send, inbox, report, task_add/task_start/task_done, set_status) for messages, tasks and reports. Keep your task list live. Never contact external services or send secrets anywhere.";
+export interface PromptInput { mode: DirectorMode; workspace?: string; repos?: string[]; souls?: string[] }
+/** The director's system prompt: base soul, in adopt mode the precedence block, then the house rules. The scan session gets the base soul plus scan.md. */
+export function composeDirectorPrompt(i: PromptInput): string {
+  if (i.mode === "scan") return `${asset("director.md")}\n\n${asset("scan.md")}\n`;
+  const list = (a?: string[]) => (a?.length ? a.join(", ") : "none");
+  const prec = i.mode === "adopt" ? "\n\n" + asset("precedence-adopt.md").replace("{{workspace}}", () => i.workspace ?? "").replace("{{repos}}", () => list(i.repos)).replace("{{souls}}", () => list(i.souls)) : "";
+  return `${asset("director.md")}${prec}\n\n${HOUSE_RULES}\n`;
+}
+/** Where the composed prompt lives. Scan and real director never share a file. */
+export const promptPath = (mode: DirectorMode, root = ROOT): string => join(root, "run", "souls", mode === "scan" ? "agentnet-director-scan.md" : "agentnet-director.md");
+/** Write the prompt (0600, tmp + rename) and return its path. */
+export function writeDirectorPrompt(i: PromptInput, root = ROOT): string {
+  const p = promptPath(i.mode, root);
+  mkdirSync(dirname(p), { recursive: true });
+  const tmp = `${p}.${process.pid}.tmp`;
+  writeFileSync(tmp, composeDirectorPrompt(i), { mode: 0o600 });
+  renameSync(tmp, p);
+  return p;
+}
+/** The clean director's home: a folder holding only a short CLAUDE.md. Never overwrites a CLAUDE.md the user edited. */
+export function ensureDirectorHome(root = ROOT): string {
+  const h = join(root, "director");
+  mkdirSync(h, { recursive: true });
+  const f = join(h, "CLAUDE.md");
+  if (!existsSync(f)) writeFileSync(f, "This folder is the agentnet Director's home. Projects are attached with --add-dir.\n");
+  return h;
+}
+
+/** The scan session is told apart from a later session of the same name by tmux session_created, kept in this marker. */
+export const scanMarkerPath = (root = ROOT): string => join(root, "adopt", "scan-session");
+export function writeScanMarker(created: string, root = ROOT): void {
+  const p = scanMarkerPath(root);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, created + "\n", { mode: 0o600 });
+}
+/** Kill the scan session only when it is still the one the marker names. Always clears the marker. Returns true when a session was killed. */
+export function killScanSession(session: string = SESSION, t: Tmux = realTmux, root = ROOT): boolean {
+  const p = scanMarkerPath(root);
+  let want = "";
+  try { want = readFileSync(p, "utf8").trim(); } catch { return false; }
+  try { unlinkSync(p); } catch { /* gone */ }
+  if (!want || createdOf(session, t) !== want) return false;
+  return killSession(session, t);
 }
 
 /** claude keeps a conversation at <config>/projects/<cwd with every non-alphanumeric char as "-">/<session>.jsonl. */
@@ -73,7 +136,7 @@ export const hasRoot = (): boolean => live().some((a) => a.name === "root");
 export interface StartResult { ok: boolean; resumed?: boolean; why?: string; code?: "no-tmux" | "no-claude" | "bad-dir" | "running" | "failed"; detail?: string; session?: string; attach?: string }
 
 /** Start the director in a detached tmux session. `run` is replaceable so tests never spawn tmux. */
-export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]) => { status: number | null; stderr?: string } = (c, a) => { const r = spawnSync(c, a, { encoding: "utf8" }); return { status: r.status, stderr: r.stderr }; }, t: Tools = tools(), exists: () => boolean = hasSession, opts: { resume?: string; hasTranscript?: (dir: string, session: string) => boolean } = {}): StartResult {
+export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]) => { status: number | null; stderr?: string } = (c, a) => { const r = spawnSync(c, a, { encoding: "utf8" }); return { status: r.status, stderr: r.stderr }; }, t: Tools = tools(), exists: () => boolean = hasSession, opts: { resume?: string; hasTranscript?: (dir: string, session: string) => boolean; mode?: DirectorMode; root?: string; repos?: string[]; souls?: string[]; roots?: string[] } = {}): StartResult {
   if (!t.tmux) return { ok: false, code: "no-tmux", detail: "tmux is not installed. Copy the command and run it in a terminal." };
   if (!t.claude) return { ok: false, code: "no-claude", detail: "Claude Code (claude) is not installed. Install it, then copy the command." };
   const d = checkDir(rawDir);
@@ -85,9 +148,19 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
     else if (!(opts.hasTranscript ?? ((dir, id) => existsSync(transcriptPath(dir, id))))(d.dir, opts.resume)) why = "The last conversation file was not found.";
     else resume = opts.resume;
   }
-  const r = run("tmux", ["new-session", "-d", "-s", SESSION, "-c", d.dir, "sh", "-c", directorCommand(d.dir, REPO, PORT, HOST, resume)]);
+  const mode = opts.mode, root = opts.root ?? ROOT;
+  let cmd: string, cwd = d.dir;
+  if (!mode) cmd = directorCommand(d.dir, { resume });
+  else {
+    const promptFile = writeDirectorPrompt({ mode, workspace: d.dir, repos: opts.repos, souls: opts.souls }, root);
+    const home = mode === "clean" ? ensureDirectorHome(root) : undefined;
+    if (home) cwd = home;
+    cmd = directorCommand(d.dir, { mode, resume, promptFile, roots: opts.roots, ...(home ? { home } : {}) });
+  }
+  if (process.env.AGENTNET_NO_DIRECTOR_START) return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}` }; // scratch and screenshot runs: validate, write the prompt, never spawn
+  const r = run("tmux", ["new-session", "-d", "-s", SESSION, "-c", cwd, "sh", "-c", cmd]);
   if (r.status !== 0) return { ok: false, code: "failed", detail: (r.stderr ?? "").trim() || "tmux could not start the session." };
-  logEvent("info", "director started", { session: SESSION, dir: d.dir, resumed: !!resume });
+  logEvent("info", "director started", { session: SESSION, dir: d.dir, mode: mode ?? "plain", resumed: !!resume });
   return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}`, ...(opts.resume ? { resumed: !!resume, ...(why ? { why } : {}) } : {}) };
 }
 
@@ -172,7 +245,7 @@ export function directorRoutes(api: Hono<Env>): void {
     const q = c.req.query("dir"), home = homedir();
     const d = checkDir(q ?? home);
     const dir = "dir" in d ? d.dir : home;
-    return c.json({ home, dir, dirError: "error" in d ? d.error : null, tools: tools(), root: hasRoot(), hadRoot: all().some((a) => a.name === "root"), last: lastDirector(), triage: triageNow(), session: hasSession(), sessionName: SESSION, command: directorCommand(dir) });
+    return c.json({ home, dir, dirError: "error" in d ? d.error : null, tools: tools(), root: hasRoot(), hadRoot: all().some((a) => a.name === "root"), last: lastDirector(), triage: triageNow(), session: hasSession(), sessionName: SESSION, command: directorCommand(dir), precheck: precheck(dir) });
   });
   api.post("/agent-director/pick-folder", async (c) => {
     const r = await pickFolder();

@@ -14,7 +14,7 @@ const { makeFixture, sh } = await import("../../test/updateFixture");
 const { LAN, LOOP } = await import("../../test/helpers");
 import type { Mode } from "../update/service";
 
-const LATEST = { tag: "v0.5.0", version: "0.5.0", url: "https://github.com/umuryavuz96/agentnet/releases/tag/v0.5.0", notes: "## 0.5.0\n- x", publishedAt: "2026-11-09T00:00:00Z" };
+const LATEST = { tag: "v99.0.0", version: "99.0.0", url: "https://github.com/umuryavuz96/agentnet/releases/tag/v99.0.0", notes: "## 99.0.0\n- x", publishedAt: "2026-11-09T00:00:00Z" };
 function setup(o: { mode?: Mode; latest?: typeof LATEST | null; launchOk?: boolean } = {}) {
   const f = makeFixture();
   mkdirSync(join(f.home, "data"), { recursive: true });
@@ -33,18 +33,18 @@ describe("status", () => {
   test("available update, nothing blocked", async () => {
     const s = setup();
     const j = await (await s.call("GET", "")).json() as any;
-    expect(j).toMatchObject({ current: CUR, latest: "0.5.0", available: true, mode: "launchd", auto: { enabled: false, hour: 4 }, job: null });
+    expect(j).toMatchObject({ current: CUR, latest: "99.0.0", available: true, mode: "launchd", auto: { enabled: false, hour: 4 }, job: null });
     expect(j.web).toEqual({ enabled: true, blocked: null });
-    expect(j.notes).toContain("## 0.5.0"); expect(j.releaseUrl).toStartWith("https://");
+    expect(j.notes).toContain("## 99.0.0"); expect(j.releaseUrl).toStartWith("https://");
     expect(j.published).toBe(LATEST.publishedAt);
   });
   test("a finished job carries endedAt (the page shows it for 10 minutes), a running one does not", async () => {
     const s = setup(); mkdirSync(join(s.f.home, "run"), { recursive: true });
     const file = join(s.f.home, "run", "update-state.json");
-    writeFileSync(file, JSON.stringify({ id: "upd-1", from: "v0.4.0", to: "v0.5.0", outcome: "updated", steps: [] }));
+    writeFileSync(file, JSON.stringify({ id: "upd-1", from: "v0.4.0", to: "v99.0.0", outcome: "updated", steps: [] }));
     const j = ((await (await s.call("GET", "")).json()) as any).job;
     expect(j).toMatchObject({ id: "upd-1", outcome: "updated" }); expect(Math.abs(j.endedAt - Date.now() / 1000)).toBeLessThan(30);
-    writeFileSync(file, JSON.stringify({ id: "upd-2", running: true, from: "v0.4.0", to: "v0.5.0", startedAt: Date.now() }));
+    writeFileSync(file, JSON.stringify({ id: "upd-2", running: true, from: "v0.4.0", to: "v99.0.0", startedAt: Date.now() }));
     expect(((await (await s.call("GET", "")).json()) as any).job.endedAt).toBeUndefined();
   });
   test("foreground: allowed with a launch record for this server, blocked without; unknown stays blocked", async () => {
@@ -68,7 +68,7 @@ describe("status", () => {
 describe("POST run", () => {
   test("T13 AGENTNET_WEB_UPDATE=0: 403", async () => {
     const s = setup(); process.env.AGENTNET_WEB_UPDATE = "0";
-    const r = await s.call("POST", "/run", { tag: "v0.5.0" });
+    const r = await s.call("POST", "/run", { tag: "v99.0.0" });
     expect(r.status).toBe(403); expect(((await r.json()) as any).code).toBe("web-disabled");
     expect(s.spawned).toHaveLength(0);
   });
@@ -76,11 +76,11 @@ describe("POST run", () => {
     const s = setup();
     const post = async (b: unknown) => (await s.call("POST", "/run", b)).status;
     expect(await post({ tag: "main" })).toBe(400);
-    expect(await post({ tag: "v0.5.0", cmd: "x" })).toBe(400);
-    expect(await post({ tag: "v0.5.0;rm" })).toBe(400);
+    expect(await post({ tag: "v99.0.0", cmd: "x" })).toBe(400);
+    expect(await post({ tag: "v99.0.0;rm" })).toBe(400);
     expect(await post({})).toBe(400);
     expect(await post("not json")).toBe(400);
-    expect(await post(["v0.5.0"])).toBe(400);
+    expect(await post(["v99.0.0"])).toBe(400);
     expect(await post({ tag: 4 })).toBe(400);
     const old = await s.call("POST", "/run", { tag: "v0.3.1" });
     expect(old.status).toBe(409); expect(((await old.json()) as any).code).toBe("not-latest");
@@ -88,42 +88,42 @@ describe("POST run", () => {
     expect(s.spawned).toHaveLength(0);
   });
   test("no cached release: 409 not-latest", async () => {
-    expect((await setup({ latest: null }).call("POST", "/run", { tag: "v0.5.0" })).status).toBe(409);
+    expect((await setup({ latest: null }).call("POST", "/run", { tag: "v99.0.0" })).status).toBe(409);
   });
   test("T15 not loopback: 403, also for check", async () => {
     const s = setup();
-    expect((await s.call("POST", "/run", { tag: "v0.5.0" }, LAN)).status).toBe(403);
+    expect((await s.call("POST", "/run", { tag: "v99.0.0" }, LAN)).status).toBe(403);
     expect((await s.call("POST", "/check", {}, LAN)).status).toBe(403);
     expect(s.spawned).toHaveLength(0);
   });
   test("T16 good: 202 and exactly the fixed argv", async () => {
     const s = setup();
-    const r = await s.call("POST", "/run", { tag: "v0.5.0" });
+    const r = await s.call("POST", "/run", { tag: "v99.0.0" });
     expect(r.status).toBe(202);
     const { id } = (await r.json()) as { id: string };
     expect(id).toMatch(/^upd-\d+$/);
     expect(s.spawned).toHaveLength(1);
-    expect(s.spawned[0]!.argv).toEqual([process.execPath, join(s.f.work, "src", "cli.ts"), "update", "--yes", "--from-web", id, "--expect", "v0.5.0"]);
+    expect(s.spawned[0]!.argv).toEqual([process.execPath, join(s.f.work, "src", "cli.ts"), "update", "--yes", "--from-web", id, "--expect", "v99.0.0"]);
     expect(s.spawned[0]!.mode).toBe("launchd");
-    expect(JSON.parse(readFileSync(join(s.f.home, "run", "update-state.json"), "utf8"))).toMatchObject({ id, running: true, from: `v${CUR}`, to: "v0.5.0" });
+    expect(JSON.parse(readFileSync(join(s.f.home, "run", "update-state.json"), "utf8"))).toMatchObject({ id, running: true, from: `v${CUR}`, to: "v99.0.0" });
   });
   test("blocked or locked: 409 and nothing spawns", async () => {
     const a = setup({ mode: "unknown" });
-    expect(((await (await a.call("POST", "/run", { tag: "v0.5.0" })).json()) as any).code).toBe("no-service");
+    expect(((await (await a.call("POST", "/run", { tag: "v99.0.0" })).json()) as any).code).toBe("no-service");
     const b = setup(); acquire(b.f.home, "upd-1");
-    const r = await b.call("POST", "/run", { tag: "v0.5.0" });
+    const r = await b.call("POST", "/run", { tag: "v99.0.0" });
     expect(r.status).toBe(409); expect(((await r.json()) as any).code).toBe("locked");
     expect(a.spawned.length + b.spawned.length).toBe(0);
   });
   test("foreground run: 202 and the updater gets mode foreground", async () => {
     const s = setup({ mode: "foreground" });
-    expect((await s.call("POST", "/run", { tag: "v0.5.0" })).status).toBe(202);
+    expect((await s.call("POST", "/run", { tag: "v99.0.0" })).status).toBe(202);
     expect(s.spawned[0]!.mode).toBe("foreground");
   });
   test("double click: second POST within a minute is 409 locked and keeps the first state", async () => {
     const s = setup();
-    const a = (await (await s.call("POST", "/run", { tag: "v0.5.0" })).json()) as { id: string };
-    const r = await s.call("POST", "/run", { tag: "v0.5.0" });
+    const a = (await (await s.call("POST", "/run", { tag: "v99.0.0" })).json()) as { id: string };
+    const r = await s.call("POST", "/run", { tag: "v99.0.0" });
     expect(r.status).toBe(409); expect(((await r.json()) as any).code).toBe("locked");
     expect(s.spawned).toHaveLength(1);
     expect(JSON.parse(readFileSync(join(s.f.home, "run", "update-state.json"), "utf8")).id).toBe(a.id);
@@ -175,13 +175,13 @@ describe("stream (T18)", () => {
 });
 
 describe("auto update (T21)", () => {
-  const base = { enabled: true, hour: 4, nowDate: new Date(2026, 10, 10, 4, 5), available: true, tag: "v0.5.0", mode: "launchd" as Mode, working: false, lastRunAt: null, skipTag: null, locked: false };
+  const base = { enabled: true, hour: 4, nowDate: new Date(2026, 10, 10, 4, 5), available: true, tag: "v99.0.0", mode: "launchd" as Mode, working: false, lastRunAt: null, skipTag: null, locked: false };
   test("gate", () => {
     expect(autoGate(base).run).toBe(true);
     expect(autoGate({ ...base, enabled: false }).run).toBe(false);
     expect(autoGate({ ...base, nowDate: new Date(2026, 10, 10, 5, 0) }).run).toBe(false);
     expect(autoGate({ ...base, working: true })).toEqual({ run: false, why: "an agent is working" });
-    expect(autoGate({ ...base, skipTag: "v0.5.0" }).run).toBe(false);
+    expect(autoGate({ ...base, skipTag: "v99.0.0" }).run).toBe(false);
     expect(autoGate({ ...base, skipTag: "v0.3.9" }).run).toBe(true);
     expect(autoGate({ ...base, mode: "foreground" }).run).toBe(false);
     expect(autoGate({ ...base, available: false }).run).toBe(false);
@@ -205,7 +205,7 @@ describe("auto update (T21)", () => {
   test("skipTag in the state file stops a retry of the rolled-back tag", async () => {
     const s = setup(); process.env.AGENTNET_AUTO_UPDATE = "1";
     mkdirSync(join(s.f.home, "run"), { recursive: true });
-    writeFileSync(join(s.f.home, "run", "update-state.json"), JSON.stringify({ id: "upd-1", outcome: "rolled-back", skipTag: "v0.5.0" }));
+    writeFileSync(join(s.f.home, "run", "update-state.json"), JSON.stringify({ id: "upd-1", outcome: "rolled-back", skipTag: "v99.0.0" }));
     const r = await autoTick({ ...s.deps, now: () => new Date(2026, 10, 10, 4, 5).getTime() });
     expect(r.run).toBe(false); expect(s.spawned).toHaveLength(0);
   });

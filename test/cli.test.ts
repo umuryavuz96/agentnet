@@ -164,3 +164,39 @@ describe("bg and misc", () => {
     expect((await cli(["update", "--bogus"])).code).toBe(2); // bad option; update itself is tested in test/update.test.ts on a fixture repo
   });
 });
+
+describe("adopt", () => {
+  test("usage errors exit 2", async () => {
+    expect((await cli(["adopt"])).code).toBe(2);
+    expect((await cli(["adopt", "scan"])).code).toBe(2);
+    expect((await cli(["adopt", "plan"])).code).toBe(2);
+    expect((await cli(["adopt", "apply"])).code).toBe(2);
+  });
+  test("runs and rollback work with no server and an empty home", async () => {
+    expect((await cli(["adopt", "runs"])).out).toContain("no adopt runs");
+    expect((await cli(["adopt", "rollback"])).out).toContain("nothing to roll back");
+  });
+  test("static scan then plan and apply talk to the panel routes", async () => {
+    const report = { scanId: "scan-1", summary: "Basic scan: 1 thing.", findings: [{ id: "f1", title: "A", risk: "low", actions: [{ id: "a1" }] }, { id: "f2", title: "B", risk: "high", actions: [] }] };
+    const f = fake({
+      "POST /api/v1/agent-adopt/scan": () => json({ ok: true, scanId: "scan-1", phase: "reported" }),
+      "GET /api/v1/agent-adopt": () => json({ phase: "reported", scanId: "scan-1", report }),
+      "POST /api/v1/agent-adopt/plan": () => json({ planId: "plan-1", ops: [{ op: "park-mcp", file: "/w/.mcp.json", diff: "-x\n+y" }], warnings: [], backupDir: "/b", needsConfirmGlobal: false }),
+      "POST /api/v1/agent-adopt/apply": () => json({ ok: true, runId: "run-1" }),
+    });
+    const env = { AGENTNET_URL: `${f.url}/api/v1/agentnet` };
+    const s = await cli(["adopt", "scan", "--dir", "/w", "--static"], env);
+    expect(s.code).toBe(0); expect(s.out).toContain("f1"); expect(s.out).toContain("Basic scan");
+    expect(f.calls.find((c) => c.path.endsWith("/scan"))?.body).toEqual({ dir: "/w", mode: "static" });
+    const p = await cli(["adopt", "plan", "--scan", "scan-1"], env);
+    expect(p.code).toBe(0); expect(p.out).toContain("plan-1");
+    expect(f.calls.find((c) => c.path.endsWith("/plan"))?.body).toEqual({ scanId: "scan-1", picks: { findings: { f1: "apply", f2: "skip" } } });
+    const a = await cli(["adopt", "apply", "--plan", "plan-1"], env);
+    expect(a.code).toBe(0); expect(a.out).toContain("rollback run-1");
+  });
+  test("a 409 from the server prints its detail and exits 1", async () => {
+    const f = fake({ "POST /api/v1/agent-adopt/apply": () => json({ detail: "That is not the current plan. Preview again." }, 409) });
+    const r = await cli(["adopt", "apply", "--plan", "x"], { AGENTNET_URL: `${f.url}/api/v1/agentnet` });
+    expect(r.code).toBe(1); expect(r.err).toContain("not the current plan");
+  });
+});

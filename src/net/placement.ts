@@ -9,6 +9,7 @@ import { ensureSchema, live } from "./store";
 import { listTeams, getTeam, TEAM_ID } from "./teams";
 import { compactFor, windowTokens } from "./compact";
 import { routeSpawn, type RouteInput, type Routed } from "./autoroute";
+import { wsRoleSoul } from "./workspace";
 
 /** Keywords per role for inferring the role from a job. Key order = tie-break order. */
 export const ROLE_KEYWORDS: Record<string, string[]> = {
@@ -45,12 +46,14 @@ export function placementConfig(): PlacementConfig {
   } catch { return { ...PLACEMENT_DEFAULTS }; }
 }
 
-export interface PlanInput extends Omit<RouteInput, "name"> { name?: string; role?: string; project?: string; boss?: string; team?: string }
+export interface PlanInput extends Omit<RouteInput, "name"> { name?: string; role?: string; project?: string; /** the project is only the caller's cwd fallback, a workspace soul may replace it */ projectDefault?: boolean; boss?: string; team?: string }
 export interface TeamPlan { id: string; action: "join" | "create"; lead: string | null; members: string[] }
 export interface Plan extends Routed {
   name: string; role: string; boss: string; project: string | null; team: TeamPlan | null; reasons: string[];
   /** Auto-compact window in tokens (the panel setting, per-role override). */
   compactWindow: number;
+  /** true when a workspace soul chose the project (its repo) */
+  workspaceProject?: true;
 }
 
 const normPath = (p?: string) => (p ? resolve(p.replace(/^~(?=$|\/)/, homedir())).replace(/\/+$/, "") : null);
@@ -104,7 +107,7 @@ function placeTeam(name: string, project: string | null, cfg: PlacementConfig, r
 /** The plan. No side effects: nothing is created and the pick scripts do not log. Explicit inputs win and say so in `reasons`. */
 export async function planSpawn(i: PlanInput, opts: { log?: boolean } = {}): Promise<Plan> {
   const cfg = placementConfig(), reasons: string[] = [];
-  const project = normPath(i.project);
+  let project = normPath(i.project);
   let name = i.name, role: string;
   if (name) { role = name.replace(/-\d+$/, ""); reasons.push(`name ${name}: explicit`); }
   else {
@@ -112,6 +115,10 @@ export async function planSpawn(i: PlanInput, opts: { log?: boolean } = {}): Pro
     else { const r = inferRole(i.job ?? "", cfg); role = r.role; reasons.push(r.why); }
     name = nextName(role, cfg.naming); reasons.push(`name ${name}: next free ${role} number`);
   }
+  // A workspace role (a repo agent registered by an adopt run) starts in its repo with its own soul. Explicit soul/project win.
+  let soul = i.soul;
+  const ws = !i.soul && (!i.project || i.projectDefault) ? wsRoleSoul(role) : null;
+  if (ws) { soul = ws.id; project = normPath(ws.project); reasons.push(`soul ${ws.id}: workspace soul from run ${ws.run}`, `project ${project}: the soul's repo`); }
   let boss: string, team: TeamPlan | null;
   if (i.team) {
     const t = getTeam(i.team);
@@ -126,8 +133,8 @@ export async function planSpawn(i: PlanInput, opts: { log?: boolean } = {}): Pro
   }
   // A member of a team with a lead reports to that lead, whatever boss was asked for (the lead itself keeps its own boss).
   if (team?.lead && team.lead !== name && boss !== team.lead) { reasons.push(`boss ${team.lead}: lead of team ${team.id}${i.boss ? ` (overrides explicit ${i.boss})` : ""}`); boss = team.lead; }
-  const routed = await routeSpawn({ ...i, name, noLog: !(opts.log ?? false) });
+  const routed = await routeSpawn({ ...i, soul, name, noLog: !(opts.log ?? false) });
   if (i.model) reasons.push(`model ${i.model}: explicit`); else if (routed.model) reasons.push(`model ${routed.model}, effort ${routed.effort}: routed`);
-  if (i.soul) reasons.push(`soul ${i.soul}: explicit`); else if (routed.soul) reasons.push(`soul ${routed.soul}: routed`);
-  return { ...routed, name, role, boss, project, team, reasons: [...reasons, `compact window ${compactFor(name)}`], compactWindow: windowTokens(compactFor(name)) };
+  if (i.soul) reasons.push(`soul ${i.soul}: explicit`); else if (!ws && routed.soul) reasons.push(`soul ${routed.soul}: routed`);
+  return { ...routed, ...(ws ? { workspaceProject: true as const } : {}), name, role, boss, project, team, reasons: [...reasons, `compact window ${compactFor(name)}`], compactWindow: windowTokens(compactFor(name)) };
 }

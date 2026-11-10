@@ -11,10 +11,10 @@ die() { echo "spawn-agent: $*" >&2; exit 1; }
 [ $# -ge 1 ] || { sed -n '2,3p' "$0"; exit 2; }
 NAME=$1; shift
 case "$NAME" in ''|*[!a-z0-9-]*|-*) die "name must be lowercase letters, digits, dashes: $NAME" ;; esac
-PROJECT=$PWD MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60
+PROJECT=$PWD PROJECT_SET=0 MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60
 while [ $# -gt 0 ]; do
   case "$1" in
-    --project) PROJECT="${2:?--project needs a path}"; shift 2 ;;
+    --project) PROJECT="${2:?--project needs a path}"; PROJECT_SET=1; shift 2 ;;
     --model) MODEL_ID="${2:?--model needs an id}"; shift 2 ;;
     --soul) SOUL="${2:?--soul needs a catalog id}"; shift 2 ;;
     --scope) SCOPE="${2:?--scope needs 1-5}"; shift 2 ;;
@@ -50,14 +50,16 @@ AUTH=(); if [ -n "${AGENTNET_ROOT_TOKEN_FILE:-}" ] && [ -r "$AGENTNET_ROOT_TOKEN
 [ -n "$JOB" ] || JOB="(no job given)"
 
 # Register with agentnet
-BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1],"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL")"
+BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1],"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None,"project_default":a[14]=="0"}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL" "$PROJECT_SET")"
 RESP="$(curl -s -m 5 ${AUTH[@]+"${AUTH[@]}"} -H 'content-type: application/json' -X POST "$URL/spawn" -d "$BODY")" \
   || die "service not answering at $URL (is agentnet running? try: agentnet status)"
 TOKEN_FILE="$(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("token_file",""))' 2>/dev/null || true)"
 [ -n "$TOKEN_FILE" ] || die "spawn refused: $RESP"
 # The service routed model/effort/soul: use what it chose (an explicit --model/--soul comes back unchanged).
-IFS=$'\t' read -r MODEL_ID EFFORT SOUL COMPACT RBOSS < <(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r.get(k) or "-") for k in ("model","effort","soul","compact_window","boss"))); [print("spawn-agent: auto "+l, file=sys.stderr) for l in (r.get("audit") or "").split("\n") if l]; [print("spawn-agent: "+w, file=sys.stderr) for w in r.get("warnings") or []]') || true
+IFS=$'\t' read -r MODEL_ID EFFORT SOUL COMPACT RBOSS RPROJECT < <(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r.get(k) or "-") for k in ("model","effort","soul","compact_window","boss","project"))); [print("spawn-agent: auto "+l, file=sys.stderr) for l in (r.get("audit") or "").split("\n") if l]; [print("spawn-agent: "+w, file=sys.stderr) for w in r.get("warnings") or []]') || true
 [ "$MODEL_ID" != "-" ] || MODEL_ID=""; [ "$EFFORT" != "-" ] || EFFORT=""; [ "$SOUL" != "-" ] || SOUL=""; [ "$COMPACT" != "-" ] || COMPACT=""; [ "$RBOSS" = "-" ] || BOSS="$RBOSS"; [ -n "$BOSS" ] || BOSS=root
+# A workspace soul starts in its own repo when the caller gave no --project.
+if [ "$PROJECT_SET" = 0 ] && [ "$RPROJECT" != "-" ] && [ -d "$RPROJECT" ]; then PROJECT="$RPROJECT"; fi
 echo "spawn-agent: registered '$NAME' (boss $BOSS), token file $TOKEN_FILE" >&2
 
 # Soul + house rules -> one file for --append-system-prompt-file
@@ -65,18 +67,21 @@ ARS="${ARSENAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/arsenal}"
 SOUL_DIR="${AGENTNET_HOME:-$HOME/.local/share/agentnet}/run/souls"
 mkdir -p "$SOUL_DIR"
 SOUL_FILE="$SOUL_DIR/agentnet-$NAME.md"
-/usr/bin/env python3 - "$ARS" "$SOUL" "$NAME" "$SOUL_FILE" <<'PYS' || true
+/usr/bin/env python3 - "$ARS" "$SOUL" "$NAME" "$SOUL_FILE" "${AGENTNET_HOME:-$HOME/.local/share/agentnet}/workspace" <<'PYS' || true
 import json, os, re, sys
-ars, sid, name, out = sys.argv[1:5]
+ars, sid, name, out, wsd = sys.argv[1:6]
 head = ""
 if sid:
     try:
-        cat = json.load(open(f"{ars}/catalog.json"))
+        base = wsd if sid.startswith("ws/") else ars  # workspace souls (adopt runs) live in $AGENTNET_HOME/workspace
+        cat = json.load(open(f"{base}/catalog.json"))
         a = next(x for x in cat["agents"] if x["id"] == sid)
         if (a.get("review") or {}).get("status") == "dropped": raise SystemExit
-        body = open(os.path.join(ars, a["path"])).read()
+        fp = os.path.realpath(os.path.join(base, a["path"]))
+        if not fp.startswith(os.path.realpath(base) + os.sep): raise SystemExit
+        body = open(fp).read()
         body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S).strip()
-        head = f"# Persona: {a.get('name', sid)} (arsenal soul {sid}, from {a.get('repo','')})\n\n{body}\n\n---\n"
+        head = f"# Persona: {a.get('name', sid)} ({'workspace' if sid.startswith('ws/') else 'arsenal'} soul {sid}, from {a.get('repo','')})\n\n{body}\n\n---\n"
         print(f"spawn-agent: soul={sid} installed", file=sys.stderr)
     except BaseException:
         print(f"spawn-agent: WARNING soul '{sid}' not found or dropped; spawning without a persona", file=sys.stderr)

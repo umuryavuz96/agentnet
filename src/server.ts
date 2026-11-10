@@ -25,6 +25,7 @@ import { agentControlRoutes } from "./net/controls";
 import { startUpdateTimers, updateRoutes } from "./net/update";
 import { checksPanelRoutes } from "./net/checksPanel";
 import { directorRoutes } from "./net/director";
+import { adoptRoutes } from "./net/adopt";
 import { snapshotDiscipline } from "./net/scores";
 
 export function buildApp(): Hono<Env> {
@@ -38,7 +39,7 @@ export function buildApp(): Hono<Env> {
   // Page routes before agentnetRoutes, as in the original server.
   agentnetStreamRoutes(api); agentnetUsageRoutes(api); agentnetPanelSendRoute(api); agentnetTeamPanelRoutes(api);
   trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); ownerChatRoutes(api); agentControlRoutes(api); checksPanelRoutes(api);
-  summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api); updateRoutes(api); directorRoutes(api);
+  summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api); updateRoutes(api); directorRoutes(api); adoptRoutes(api);
   agentnetRoutes(api);
   app.route("/api/v1", api);
   webRoutes(app);

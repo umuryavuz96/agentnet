@@ -45,8 +45,8 @@ describe("B: resume the last session", () => {
   const ID = "0f1e2d3c-1111-2222-3333-444455556666";
   const run = (calls: string[][]) => (c: string, a: string[]) => { calls.push([c, ...a]); return { status: 0 }; };
   test("directorCommand adds --resume after --plugin-dir, quoted", () => {
-    expect(dr.directorCommand("/x", "/r", 3096, "127.0.0.1", ID)).toEndWith(`claude --plugin-dir "$AGENTNET_MOD" --resume '${ID}'`);
-    expect(dr.directorCommand("/x", "/r", 3096, "127.0.0.1")).not.toContain("--resume");
+    expect(dr.directorCommand("/x", { repo: "/r", port: 3096, host: "127.0.0.1", resume: ID })).toEndWith(`claude --plugin-dir "$AGENTNET_MOD" --resume '${ID}'`);
+    expect(dr.directorCommand("/x", { repo: "/r", port: 3096, host: "127.0.0.1" })).not.toContain("--resume");
   });
   test("transcript path: every non-alphanumeric char becomes a dash", () => {
     expect(dr.transcriptSlug("/Users/a.b/my_proj")).toBe("-Users-a-b-my-proj");

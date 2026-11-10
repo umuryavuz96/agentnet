@@ -1,6 +1,7 @@
 // agentnet HTTP API (/api/v1/agentnet/*): identity by per-agent token, the message outbox with a server-owned cursor,
 // the one hierarchy check, status posts, and root-only spawn/despawn. Mounted only with AGENTNET=1.
 import type { Hono, Context } from "hono";
+import { adoptFacts, adoptReportRoute } from "./adopt";
 import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../core/db";
@@ -59,7 +60,7 @@ export const byName = (n: string) => (ensureSchema(), db().query("SELECT * FROM 
 
 /** The agent endpoints, listed explicitly: the panel's requireAuth lets only these through to this module's own bearer
  *  check (unknown token = 401 here). snapshot and stream are not listed: they stay behind panel auth. */
-export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|gate|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
+export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|gate|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|adopt\/(facts|report)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
 
 // ---------- the one hierarchy check: boss, own reports, teammates under the same boss; root outbound exempt ----------
 export const isRoot = (a: { name: string }) => a.name === "root";
@@ -373,6 +374,8 @@ export function agentnetRoutes(api: Hono<Env>) {
     const out = await trailInject(name, "spawn", text, typeof b.repo === "string" && b.repo ? b.repo : undefined);
     return c.json({ text: out.text, skipped: out.skipped ?? null });
   });
+  r.get("/adopt/facts", (c: Ctx) => { if (!isRoot(c.get("agent"))) return problem(c, 403, "Forbidden", "root only"); return adoptFacts(c as never); });
+  r.post("/adopt/report", async (c: Ctx) => { if (!isRoot(c.get("agent"))) return problem(c, 403, "Forbidden", "root only"); return adoptReportRoute(c as never, await body(c)); });
   /** B2: the mod asks before every work tool. Allowed (200 {allow:true}) or a reason the agent reads. Root, the loopback admin and team members are exempt. */
   r.get("/gate", (c: Ctx) => {
     const a = c.get("agent"), exempt = isRoot(a) || a.id === ADMIN.id || a.kind === "member";
@@ -466,12 +469,12 @@ export function agentnetRoutes(api: Hono<Env>) {
       // Agents (not members): name, boss, team, model, effort, persona and compact window come from the one placement plan for every field the caller left out.
       const plan = kind === "agent" ? await planSpawn(planInput(b), { log: true }) : null;
       const name = plan?.name ?? String(b.name ?? "");
-      const made = createAgent({ name, job: str(b.job), goal: str(b.goal)?.trim().slice(0, 500), boss: plan?.boss ?? str(b.boss) ?? a.name, model: plan?.model ?? str(b.model), effort: plan?.effort ?? str(b.effort), soul: plan?.soul ?? str(b.soul), audit: plan?.audit ?? undefined, compactWindow: plan?.compactWindow, project: str(b.project), by: a.name, kind });
+      const made = createAgent({ name, job: str(b.job), goal: str(b.goal)?.trim().slice(0, 500), boss: plan?.boss ?? str(b.boss) ?? a.name, model: plan?.model ?? str(b.model), effort: plan?.effort ?? str(b.effort), soul: plan?.soul ?? str(b.soul), audit: plan?.audit ?? undefined, compactWindow: plan?.compactWindow, project: plan?.workspaceProject ? plan.project ?? undefined : str(b.project), by: a.name, kind });
       const tm = plan?.team;
       if (tm?.action === "create") createTeam({ id: tm.id, name: tm.id, goal: str(b.goal)?.trim().slice(0, 500) ?? str(b.job), lead: tm.lead ?? undefined, project: plan!.project ?? undefined, members: tm.members });
       else if (tm && getTeam(tm.id)) addMember(tm.id, name); // an unknown team id is ignored: old callers pass agmsg team names
       audit(`agent:${a.name}`, "agentnet.spawn", made.id, "ok", c.get("trace"));
-      return c.json({ agent: made.id, token_file: made.tokenFile, state: "starting", name, boss: plan?.boss ?? null, team: tm?.id ?? null, model: plan?.model ?? null, effort: plan?.effort ?? null, soul: plan?.soul ?? null, goal: str(b.goal) ?? null, audit: plan?.audit ?? null, compact_window: plan?.compactWindow ?? null, reasons: plan?.reasons ?? [], warnings: plan?.warnings ?? [] }, 201); // M6: spawn.sh launches it with this file
+      return c.json({ agent: made.id, token_file: made.tokenFile, state: "starting", name, boss: plan?.boss ?? null, team: tm?.id ?? null, model: plan?.model ?? null, effort: plan?.effort ?? null, soul: plan?.soul ?? null, project: plan?.project ?? null, goal: str(b.goal) ?? null, audit: plan?.audit ?? null, compact_window: plan?.compactWindow ?? null, reasons: plan?.reasons ?? [], warnings: plan?.warnings ?? [] }, 201); // M6: spawn.sh launches it with this file
     } catch (e) { return e instanceof RouteBlocked ? problem(c, 409, "Reserve mode", e.message) : bad(c, (e as Error).message); }
   });
   r.post("/agents/:name/placement", async (c: Ctx) => { // spawn.sh after launch: where the pane is ("session:@win.%pane")
@@ -506,5 +509,5 @@ const str = (x: unknown) => (typeof x === "string" && x ? x : undefined);
 /** Spawn/plan body to planner input. Numbers may arrive as strings (query params). */
 const planInput = (b: Record<string, unknown>): PlanInput => {
   const n = (x: unknown) => { const v = typeof x === "string" && x.trim() ? Number(x) : x; return typeof v === "number" && Number.isFinite(v) ? v : undefined; };
-  return { name: str(b.name), role: str(b.role), job: str(b.job), project: str(b.project), boss: str(b.boss), team: str(b.team), model: str(b.model), effort: str(b.effort), soul: str(b.soul), scope: n(b.scope), novelty: n(b.novelty), risk: n(b.risk), need: str(b.need), ask: str(b.ask) };
+  return { name: str(b.name), role: str(b.role), job: str(b.job), project: str(b.project), projectDefault: b.project_default === true, boss: str(b.boss), team: str(b.team), model: str(b.model), effort: str(b.effort), soul: str(b.soul), scope: n(b.scope), novelty: n(b.novelty), risk: n(b.risk), need: str(b.need), ask: str(b.ask) };
 };

@@ -116,6 +116,8 @@ or the same fields on the MCP `spawn` tool). The agent's card shows why. In rese
 Every new agent and team needs a `goal`: what done looks like (`--goal TEXT`; 8+ characters, else 422). The panel shows it and hints "Goal reached? Review and close" once all tasks are done and the agent has been idle over 10 minutes. `AGENTNET_REQUIRE_GOAL=0` turns the rule off.
 Plan a team with `bin/agentnet council`. The full setup is in [docs/director.md](docs/director.md).
 
+Already have a Claude Code setup with its own rules, hooks or per-repo agents? Choose **Adopt my workspace** in the first-run window. agentnet scans read-only, shows every change as a diff, backs up what it touches and can undo it. Repo agents become spawnable workspace souls. See [Adopt an existing workspace](docs/director.md#adopt-an-existing-workspace).
+
 ## How it works
 
 ```mermaid

@@ -89,6 +89,40 @@ For `route=team` the director follows [rules/council-teams.md](rules/council-tea
 
 Rules for model choice are in [rules/model-routing.md](rules/model-routing.md). Point `AGENTNET_RULES_DIR` at your own copy to change them.
 
+## Adopt an existing workspace
+
+If your project folder already has Claude Code instructions, hooks or per-repo agents, pick **Adopt my workspace** in the first-run window (step 2). Two coordination systems on the same agents would clash, so adopting is a clean switch with a preview, a backup and an undo. **Clean** is the other choice: the director gets its own home folder and your project is attached with `--add-dir`. Nothing in the project is read or changed.
+
+How adopt works:
+
+1. **Scan.** The collector gathers signals (hooks, MCP servers, instruction lines, running agent panes, repo agent definitions). It never recognises tools by name and never reads `.env`, keys or tokens. The director reads the evidence in a read-only session: the plugin denies every tool except reading files inside the workspace and the two scan tools. **Basic scan** makes no model call.
+2. **Review.** The findings show as cards. You choose per card: switch off a second message system, add repo agents as workspace souls, replace identity lines, or keep as is. Things only you can do (stop a tmux session, unload a launchd job) show as commands to copy. agentnet never runs them.
+3. **Preview.** The plan lists every file with a real diff and every file it creates. The plan id is bound to Apply: if a file changed since the preview, Apply answers 409 and you preview again.
+4. **Apply.** Everything touched is backed up first under `$AGENTNET_HOME/adopt/<runId>/`, then changed, then the scan session stops and the real director starts. If a step fails, the run rolls itself back.
+5. **Undo.** Rollback restores the backups. A file you edited after Apply is kept and reported unless you force it. Rollback also removes the workspace souls the run created.
+
+The director starts in your workspace in adopt mode. Your `CLAUDE.md` and rules still load. agentnet appends a precedence block (`assets/director/precedence-adopt.md`): the director is `root`, coordination goes through agentnet only, and repo rules still win on project matters.
+
+Which `CLAUDE.md` files load, checked on Claude Code 2.1.322 with `claude -p` and marker lines:
+
+| Launch mode | Working folder | Workspace `CLAUDE.md` | Project `CLAUDE.md` |
+|---|---|---|---|
+| adopt, scan | the workspace | loads | loads if it is the workspace folder |
+| clean | `$AGENTNET_HOME/director` | not loaded | not loaded (`--add-dir` does not load it) |
+
+`--add-dir` loads the added folder's `CLAUDE.md` only when `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` is set. Keep it unset for the clean director.
+
+### Workspace souls
+
+A repo's own agent definition (`.claude/agents/<name>.md`), or a stub that points at its `CLAUDE.md`, becomes a soul `ws/<name>` in `$AGENTNET_HOME/workspace/` (`catalog.json`, `roles.json`, `souls/<name>.md`). The shipped arsenal is never written. Spawning with role `<name>` (for example `agentnet spawn --role ios`) starts the agent in that repo with that soul. An explicit `--soul` or `--project` still wins. A name that is also a built-in role gets a soul but no role mapping. Souls are copies: the source file is read once and its sha stored.
+
+### Where it lives
+
+- State: `$AGENTNET_HOME/adopt/state.json`. Runs: `$AGENTNET_HOME/adopt/<runId>/` (`manifest.json`, `backup/`, folders 0700, files 0600, kept for the last 5 runs).
+- Panel API (root only for writes): `GET /v1/panel/adopt`, `POST /v1/panel/adopt/scan|cancel|plan|apply|rollback|clean`. Agent API (root token, scan phase only): `adopt_facts`, `adopt_report`. See [api.md](api.md).
+- CLI: `agentnet adopt scan --dir D [--static]` (`--static` skips the model and reads the files only), `adopt plan --scan ID [--accept all|recommended]` (prints the diffs; `recommended` skips high-risk findings), `adopt apply --plan ID [--confirm-global]`, `adopt rollback [RUN] [--force]`, `adopt runs`. The first three need the server running. `rollback` and `runs` read the backup folder directly, so they work with the server down. Rollback keeps files you edited after the apply unless you pass `--force`.
+- Not done in v1: stopping other systems' tmux, launchd or cron jobs; migrating old messages; keeping souls in sync with their source files.
+
 ## Requirements
 
 Claude Code 2.1.293 or later (2.1.318+ recommended). The plugin uses `$.tool.register` with `isDeferred` and `$.session.append` (added in 2.1.293); from 2.1.318 the `prompt.submit` attachments stay in the user turn. `agentnet doctor` and `agentnet init` check `claude --version`; the plugin logs one warning if the session is older.

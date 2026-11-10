@@ -22,6 +22,11 @@ def load(p):
     except Exception: return None
 cat, roles = load(f"{ARS}/catalog.json"), load(f"{ARS}/roles.json")
 if not cat or not roles or not a.role: sys.exit(1)
+# Workspace souls (adopt runs) join the candidates; a shipped role or id is never replaced by one.
+WS = os.path.join(AGH, "workspace")
+wcat, wroles = load(f"{WS}/catalog.json") or {}, load(f"{WS}/roles.json") or {}
+cat["agents"] = list(cat.get("agents", [])) + [x for x in wcat.get("agents", []) if isinstance(x, dict) and str(x.get("id", "")).startswith("ws/")]
+roles["roles"] = {**(wroles.get("roles") or {}), **(roles.get("roles") or {})}
 agents = {x["id"]: x for x in cat.get("agents", []) if (x.get("review") or {}).get("status", "clean") != "dropped"}
 role = (a.role or "").lower(); role = re.sub(r"-\d+$", "", role)
 r = (roles.get("roles") or {}).get(role)

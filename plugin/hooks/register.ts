@@ -54,6 +54,8 @@ const ROOT_TOOLS: ToolSpec[] = [
     inputSchema: obj({ job: str("what it is for"), goal: str("the outcome that means it is done (needed by spawn, ignored here)"), project: str("project folder"), role: str("role, else inferred from the job"), name: str("fixed name, else the next free <role>-N"), boss: str("explicit boss"), team: str("explicit team id"), model: str("explicit model"), effort: str("explicit effort"), soul: str("explicit persona id"), scope: int("1-5, default 2"), novelty: int("1-3, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner\'s words") }, ["job"]) },
   { name: "grade", description: "Root: grade a finished task of an agent (1-5) for its scorecard. rework = root had to ask for a fix on it; owner_rounds = how many back-and-forth rounds the owner needed on the job before it was right (0 = right first time).",
     inputSchema: obj({ agent: str("agent name"), task_id: int("the agent's task id"), grade: int("1-5"), note: str("short note; a 'rework:' prefix also marks rework"), rework: { type: "boolean", description: "a fix was requested on this task" }, owner_rounds: int("rounds the owner needed, 0 = right first time") }, ["agent", "task_id", "grade"]) },
+  { name: "adopt_facts", description: "Root, adopt scan only: the facts collected from the workspace (signals with refs g1..., repos, roots). Read-only.", inputSchema: obj({}) },
+  { name: "adopt_report", description: "Root, adopt scan only: submit the findings. Every evidence signal must be a ref from adopt_facts; actions use the ops park-hook, park-mcp, disable-lines, register-souls, manual. Nothing is applied until the owner clicks Apply.", inputSchema: obj({ summary: str("what you found, 2-3 plain sentences"), findings: { type: "array", description: "findings, riskiest first, max 40", items: { type: "object" } } }, ["summary", "findings"]) },
   { name: "despawn", description: "Root: retire an agent (token revoked, session closed).", inputSchema: obj({ agent: str("agent name"), reason: str("why") }, ["agent"]) },
 ];
 /** tool name → method + path (+ body) on the service. */
@@ -68,6 +70,7 @@ const ROUTES: Record<string, (a: Json) => { method: string; path: string; body?:
   set_status: (a) => ({ method: "POST", path: "/status", body: a }),
   list_agents: (a) => ({ method: "GET", path: `/agents${a.all ? "?all=1" : ""}` }), get_status: (a) => ({ method: "GET", path: `/agents/${encodeURIComponent(String(a.agent))}${a.events ? `?events=${Number(a.events)}` : ""}` }),
   grade: (a) => { const { agent, ...rest } = a; return { method: "POST", path: `/agents/${encodeURIComponent(String(agent))}/grade`, body: rest }; },
+  adopt_facts: () => ({ method: "GET", path: "/adopt/facts" }), adopt_report: (a) => ({ method: "POST", path: "/adopt/report", body: a }),
   spawn: (a) => ({ method: "POST", path: "/spawn", body: a }), plan_spawn: (a) => ({ method: "POST", path: "/plan-spawn", body: a }), despawn: (a) => ({ method: "POST", path: "/despawn", body: a }),
 };
 /** Secrets typed in a command must not reach the event log: blank values after token/key/secret/password/authorization words and long hex or base64 runs. */
@@ -75,6 +78,7 @@ const redact = (v: string) => v.replace(/\b(authorization\s*[=:]\s*)(?:bearer\s+
 const target = (e: Json): string | null => { for (const k of ["command", "file_path", "pattern", "description", "subject", "query", "url"]) { const v = e[k]; if (typeof v === "string" && v) return redact(v.replace(/\s+/g, " ")).slice(0, 80); } return null; };
 
 // Module state (reset on a reload: the server owns the cursor, so nothing is lost). `$` goes only to top-level functions (validator rule).
+const SCAN = { on: false, roots: [] as string[], home: "" };
 const S = { base: DEFAULT_URL, token: "", session: "", busy: false, alive: true, looping: false, registered: false, versionWarned: false, gateUntil: 0, downSince: 0, status: "" as string };
 /** Only these end reasons mean the process is going away; anything else (clear, resume, ...) keeps the agent and its poll loop. */
 const FINAL_END = new Set(["prompt_input_exit", "logout", "other"]);
@@ -172,6 +176,24 @@ async function poll($: $) {
   }
 }
 
+/** Adopt scan phase (env AGENTNET_ADOPT_PHASE=scan, set by the scan command): the director may only read inside the scan roots and use the adopt/task tools. A test keeps DENY equal to src/net/adopt-safe.ts. */
+export const SCAN_DENY_NAMES: RegExp[] = [/^\.env(\..*)?$/i, /\.pem$/i, /\.key$/i, /\.p12$/i, /^id_rsa/i, /^id_ed25519/i, /\.kdbx$/i, /credentials/i, /secret/i, /token/i];
+export const SCAN_DENY_HOME = [".ssh", ".aws", ".gnupg", "Library/Keychains", ".config/gcloud", ".docker/config.json", ".npmrc", ".netrc"];
+const SCAN_OK = new Set(["mcp__agentnet__adopt_facts", "mcp__agentnet__adopt_report", "mcp__agentnet__set_status", "mcp__agentnet__task_add", "mcp__agentnet__task_start", "mcp__agentnet__task_done", "ToolSearch"]);
+const norm = (p: string) => { const out: string[] = []; for (const s of p.split("/")) { if (s === "..") out.pop(); else if (s && s !== ".") out.push(s); } return "/" + out.join("/"); };
+/** Null when the call may run during a scan, else the reason. Lexical on purpose: the plugin has no realpath. */
+export function scanGate(tool: string, ev: Json, roots: string[], home: string): string | null {
+  if (SCAN_OK.has(tool)) return null;
+  if (tool !== "Read" && tool !== "Glob" && tool !== "Grep") return "agentnet scan: read-only phase";
+  const raw = String(ev.file_path ?? ev.path ?? "");
+  if (!raw.startsWith("/")) return "agentnet scan: read-only phase (absolute path needed)";
+  const p = norm(raw);
+  if (!roots.some((r) => { const n = norm(r); return p === n || p.startsWith(n + "/"); })) return "agentnet scan: read-only phase (outside the scan roots)";
+  if (p.split("/").some((b) => SCAN_DENY_NAMES.some((re) => re.test(b)))) return "agentnet scan: read-only phase (denied file name)";
+  const h = norm(home);
+  if (SCAN_DENY_HOME.some((d) => { const f = h + "/" + d; return p === f || p.startsWith(f + "/"); })) return "agentnet scan: read-only phase (denied folder)";
+  return null;
+}
 export const register: Register = (on) => {
   on("session.start", async ($, e, next) => {
     const file = await $.env.get("AGENTNET_TOKEN_FILE");
@@ -179,6 +201,9 @@ export const register: Register = (on) => {
     const u = (await $.env.get("AGENTNET_URL")) ?? DEFAULT_URL;
     if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(u)) return next(e); // the bearer token only ever goes to this machine
     S.base = u;
+    SCAN.on = (await $.env.get("AGENTNET_ADOPT_PHASE")) === "scan";
+    SCAN.roots = ((await $.env.get("AGENTNET_ADOPT_ROOTS")) ?? "").split(":").filter(Boolean);
+    SCAN.home = (await $.env.get("HOME")) ?? "";
     S.token = (await $.fs.read(file)).trim();
     S.alive = true;
     if (await hello($)) startLoop($); else void helloRetry($);
@@ -210,6 +235,7 @@ export const register: Register = (on) => {
   });
   on("tool.call", async ($, e, next) => {
     const ev = e as unknown as Json, id = String(ev.tool_use_id ?? ""), t = target(ev), t0 = Date.now();
+    if (SCAN.on && S.token && !ev.agentId) { const why = scanGate(String(e.tool), ev, SCAN.roots, SCAN.home); if (why) return { deny: why }; }
     // Work gate (docs/task-discipline.md B2): the service says no while this agent has no task in progress. Task tools, ToolSearch and the inbox are never asked; a service that does not answer lets the call through.
     if (S.token && !ev.agentId && !String(e.tool).startsWith("mcp__agentnet__") && e.tool !== "ToolSearch" && Date.now() >= S.gateUntil) {
       const g = await api($, "GET", "/gate").catch(() => null);

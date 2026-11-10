@@ -17,6 +17,8 @@ const HELP = `agentnet: a local network for Claude Code agents
   install-hooks [--write]   print the triage hook snippet for ~/.claude/settings.json; --write merges it (backup first)
   plan-spawn --job TEXT [--project DIR] [--role R] ...   where a new agent would land (name, boss, team, model, soul); changes nothing
   despawn <name> [--reason R]
+  adopt scan --dir D [--static] | plan --scan ID [--accept all|recommended] | apply --plan ID [--confirm-global] | rollback [RUN] [--force] | runs
+                            adopt an existing workspace: scan, preview, apply with a backup, roll back. rollback and runs work with the server down
   status                    health and agent list of the running server
   init [dir] [--start]      first run: check the setup, print the command that starts the director; --start runs it in tmux
   discipline [--day [YYYY-MM-DD]] [--json]   task discipline score per agent and per day; --day also writes the daily snapshot
@@ -273,6 +275,69 @@ async function exportCmd(args: string[]): Promise<number> {
   } catch (e) { console.error((e as Error).message); return 1; }
 }
 
+/** `agentnet adopt ...`: scan/plan/apply talk to the running server; rollback and runs read the backup folder directly. */
+async function adopt(args: string[]): Promise<number> {
+  const [sub, ...rest] = args;
+  const opt = (n: string) => { const i = rest.indexOf(n); return i >= 0 ? rest[i + 1] : undefined; };
+  const base = url().replace(/\/agentnet$/, "") + "/agent-adopt";
+  const call = async (path: string, body?: unknown, ms = 30000): Promise<{ status: number; json: any }> => {
+    const r = await fetch(base + path, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+    return { status: r.status, json: await r.json().catch(() => ({})) };
+  };
+  const fail = (r: { status: number; json: any }) => { console.error(`agentnet: adopt failed (${r.status}): ${r.json?.detail ?? r.json?.error ?? "unknown"}`); for (const e of r.json?.errors ?? []) console.error("  - " + e); return 1; };
+  const show = (rep: any) => { console.log(rep.summary ?? ""); for (const f of rep.findings ?? []) console.log(`  ${f.id}  [${f.risk}] ${f.title}  (${f.actions?.length ?? 0} action${f.actions?.length === 1 ? "" : "s"})`); };
+  try {
+    switch (sub) {
+      case "scan": {
+        const dir = opt("--dir");
+        if (!dir) { console.error("usage: agentnet adopt scan --dir D [--static]"); return 2; }
+        const r = await call("/scan", { dir: resolve(dir), mode: rest.includes("--static") ? "static" : "director" });
+        if (r.status !== 200) return fail(r);
+        console.log(`scan ${r.json.scanId} started`);
+        for (let i = 0; i < 100; i++) {
+          const v = await call("");
+          if (v.json.phase !== "scanning") { if (v.json.report) { show(v.json.report); console.log(`next: agentnet adopt plan --scan ${v.json.scanId} --accept recommended`); return 0; } console.error("agentnet: scan ended without a report"); return 1; }
+          if (v.json.failed) { console.error("agentnet: " + v.json.failed); return 1; }
+          await Bun.sleep(2000);
+        }
+        console.error("agentnet: scan still running after 200 s. Check the panel."); return 1;
+      }
+      case "plan": {
+        const scan = opt("--scan"), accept = opt("--accept") ?? "recommended";
+        if (!scan || !["all", "recommended"].includes(accept)) { console.error("usage: agentnet adopt plan --scan ID [--accept all|recommended]"); return 2; }
+        const v = await call("");
+        const findings: { id: string; risk: string; actions?: { id: string; op: string }[] }[] = v.json.report?.findings ?? [];
+        const { acceptPicks, opLabel } = await import("./net/adopt-plan");
+        const r = await call("/plan", { scanId: scan, picks: acceptPicks(findings as any, accept as "all" | "recommended") });
+        if (r.status !== 200) return fail(r);
+        for (const o of r.json.ops) console.log(`--- ${o.op} ${opLabel(o)}\n${o.diff ?? ""}`);
+        for (const w of r.json.warnings ?? []) console.log("warning: " + w);
+        console.log(`plan ${r.json.planId}: ${r.json.ops.length} change${r.json.ops.length === 1 ? "" : "s"}; backup ${r.json.backupDir}\nnext: agentnet adopt apply --plan ${r.json.planId}${r.json.needsConfirmGlobal ? " --confirm-global" : ""}`);
+        return 0;
+      }
+      case "apply": {
+        const plan = opt("--plan");
+        if (!plan) { console.error("usage: agentnet adopt apply --plan ID [--confirm-global]"); return 2; }
+        const r = await call("/apply", { planId: plan, confirmGlobal: rest.includes("--confirm-global") }, 120000);
+        if (r.status !== 200) return fail(r);
+        console.log(`applied ${r.json.runId}. Undo: agentnet adopt rollback ${r.json.runId}`);
+        return 0;
+      }
+      case "rollback": case "runs": {
+        const a = await import("./net/adopt-apply");
+        if (sub === "runs") { const runs = a.listRuns(ROOT); if (!runs.length) console.log("no adopt runs"); for (const r of runs) console.log(`${r.runId}  ${r.state}  ${r.files} file${r.files === 1 ? "" : "s"}`); return 0; }
+        const id = rest.find((x) => !x.startsWith("--"));
+        const r = (await import("./net/adopt")).doRollback(id, rest.includes("--force")); // also moves the panel state to rolledback
+        if (!r.ok) { console.error("agentnet: rollback failed: " + (r.error ?? "unknown")); return 1; }
+        if (r.nothingToDo) { console.log("nothing to roll back"); return 0; }
+        console.log(`rolled back ${r.runId}: ${r.restored.length} restored, ${r.kept.length} kept (edited after apply; use --force to overwrite)`);
+        return 0;
+      }
+      default: console.error("usage: agentnet adopt scan|plan|apply|rollback|runs (see help)"); return 2;
+    }
+  } catch (e) { console.error(`agentnet: adopt failed: ${(e as Error).message}`); return 1; }
+}
+
 async function main(): Promise<number> {
   loadEnvFile();
   const [cmd, ...rest] = process.argv.slice(2);
@@ -295,6 +360,7 @@ async function main(): Promise<number> {
     case "install-hooks": return installHooks(rest);
     case "plan-spawn": return planSpawn(rest);
     case "despawn": return despawn(rest);
+    case "adopt": return adopt(rest);
     case "status": return status();
     case "init": return init(rest);
     case "doctor": return doctor();

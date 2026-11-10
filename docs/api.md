@@ -91,3 +91,8 @@ Templates ship in `config/hook-templates.json` (override: `AGENTNET_HOOK_TEMPLAT
 | `DELETE /v1/panel/hooks/{id}` | Remove a hook for good, on or switched off. 404 when not found. |
 
 Risk is derived from the command: `network` (curl, wget, nc, ssh, http), else `writes` (redirect to a file outside /tmp, or an in-place formatter), else `blocks` (`exit 2`), else `read-only`. Custom hooks: event is one of the 10 Claude Code events; a matcher only on PreToolUse, PostToolUse and PermissionRequest and it must compile as a regex; timeout 1 to 600 s (default 10); command 1 to 4096 characters.
+
+## Adopt workspace (0.5.0)
+
+Panel (root only for writes): `GET /v1/panel/adopt` (phase, scanner, report, plan, runs), `POST /v1/panel/adopt/scan {dir, mode: director|static}`, `/cancel`, `/plan {scanId, picks:{findings:{id:"apply"|"skip"}, skipActions:[id]}}`, `/apply {planId, confirmGlobal}`, `/rollback {runId?, force?}`, `/clean {dir}`.
+Admin (root agent token, scan phase only): `GET /v1/admin/adopt/facts`, `POST /v1/admin/adopt/report`. Apply answers 409 when the plan is not the current plan or a file changed since the preview.

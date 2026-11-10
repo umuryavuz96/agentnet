@@ -244,6 +244,20 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/admin/adopt/facts:
+    get:
+      summary: admin adopt facts (root only, scan phase only)
+      responses:
+        "200":
+          description: OK
+  /v1/admin/adopt/report:
+    post:
+      summary: admin adopt report (root only, scan phase only)
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Conflict
   /v1/admin/agents/{name}/placement:
     parameters:
       - name: name
@@ -896,6 +910,60 @@ paths:
           description: Unknown hook
         "403":
           description: Forbidden (root only)
+  /v1/panel/adopt:
+    get:
+      summary: panel adopt-workspace state: phase, report, plan, runs
+      responses:
+        "200":
+          description: OK
+  /v1/panel/adopt/scan:
+    post:
+      summary: panel adopt start a scan of a workspace folder (body {dir, mode director|static}); root only
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Conflict
+  /v1/panel/adopt/cancel:
+    post:
+      summary: panel adopt stop the scan and reset; root only
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Conflict
+  /v1/panel/adopt/plan:
+    post:
+      summary: panel adopt build the preview for picked findings (body {scanId, picks}); changes nothing; root only
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Conflict
+  /v1/panel/adopt/apply:
+    post:
+      summary: panel adopt back up and apply the plan (body {planId, confirmGlobal}); root only
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Conflict
+  /v1/panel/adopt/rollback:
+    post:
+      summary: panel adopt restore the files of a run from its backup (body {runId?, force?}); root only
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Conflict
+  /v1/panel/adopt/clean:
+    post:
+      summary: panel adopt start a clean director with the folder attached read-only to its home; root only
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Conflict
   /v1/panel/director:
     get:
       summary: panel first-run setup (tools found, live root, tmux session, the command that starts the director for ?dir=)
