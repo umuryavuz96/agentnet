@@ -9,7 +9,7 @@ import { net, hooks, layoutKey, humanDoing, ctxView, bgVisible, bgShown, BG_KEEP
 import { api } from "../ui/api";
 import { cardLine } from "../cardline";
 
-const props = defineProps<{ selected: string | null; cover?: number }>();
+const props = defineProps<{ selected: string | null; cover?: number; hadRoot?: boolean }>();
 const emit = defineEmits<{ select: [id: string] }>();
 
 const ROOT = "root";
@@ -417,7 +417,7 @@ const promptLine = (doing: string | null | undefined, task: string | undefined):
 };
 const line2 = (id: string) => {
   const r = id === ROOT ? rootRow.value : row(id);
-  if (!r) return id === ROOT ? "Tap to start" : "";
+  if (!r) return id === ROOT ? (props.hadRoot ? "Tap to resume" : "Tap to start") : "";
   const fresh = cardLine(r, net.now || Date.now(), Object.values(net.checks));
   if (fresh) return fresh;
   return id === ROOT && r.state === "idle" && !r.doing ? "Director · idle" : promptLine(r.doing, undefined) ?? humanDoing(r.doing) ?? LABEL[dotOf(id)];
@@ -597,7 +597,7 @@ watch(wrapSig, () => relayout());
            :aria-label="rootRow ? `${ROOT}, director` : `Set up your director`" @click="pick(ROOT)" @keydown.enter="pick(ROOT)" @keydown.space.prevent="pick(ROOT)">
           <rect class="card" :x="-dirNode.w / 2" :y="-dirNode.h / 2" :width="dirNode.w" :height="dirNode.h" rx="12" />
           <circle class="dot" :cx="-dirNode.w / 2 + 18" :cy="-dirNode.h / 2 + 24" r="5" />
-          <text class="nm" :x="-dirNode.w / 2 + 34" :y="-dirNode.h / 2 + 29">{{ rootRow ? ROOT + " (director)" : "Set up your director" }}</text>
+          <text class="nm" :x="-dirNode.w / 2 + 34" :y="-dirNode.h / 2 + 29">{{ rootRow ? ROOT + " (director)" : hadRoot ? "Director · Not running" : "Set up your director" }}</text>
           <text v-if="ctxOf(ROOT) !== null" class="ctx" :class="{ hi: ctxOf(ROOT)! >= 80 }" :x="dirNode.w / 2 - 14" :y="-dirNode.h / 2 + 29" text-anchor="end">{{ ctxOf(ROOT) }}%</text>
           <text class="sub" :x="-dirNode.w / 2 + 34" :y="-dirNode.h / 2 + 51"><tspan v-for="(ln, i) in subOf(ROOT, rootW)" :key="i" :x="-dirNode.w / 2 + 34" :dy="i ? NODE_LH : 0">{{ ln }}</tspan></text>
           <g v-if="jobRows.get(ROOT)" class="bjr" :transform="`translate(0 ${jobRows.get(ROOT)!.y}) scale(${pillS})`">

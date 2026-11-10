@@ -412,6 +412,30 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/panel/agents/{name}/prompt:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel agents {name} prompt
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/feed:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel agents {name} feed
+      responses:
+        "200":
+          description: OK
   /v1/panel/teams:
     get:
       summary: panel teams
@@ -888,6 +912,9 @@ paths:
                   dirError: {}
                   tools: {}
                   root: {}
+                  hadRoot: {}
+                  last:
+                    description: Root's last run ({session, dir, at}), or null when root never ran.
                   triage:
                     type: string
                     enum: [off, ok, nologin, switched-off, unknown]
@@ -907,6 +934,9 @@ paths:
               properties:
                 dir: {}
                 restart: {}
+                resume:
+                  type: boolean
+                  description: Continue root's last conversation (claude --resume) when its transcript exists. The result carries resumed and, when false, why.
       responses:
         "200":
           description: OK
@@ -928,6 +958,16 @@ paths:
           description: Forbidden (root only)
         "422":
           description: The director is not running, did not stop, or tmux or claude is missing
+  /v1/panel/director/reset:
+    post:
+      summary: panel stop the director if it runs, back up and forget root so first-run setup shows again; agents, teams, tasks and transcripts are kept; root only
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Forbidden (root only)
+        "422":
+          description: The director did not stop
   /v1/panel/director/pick-folder:
     post:
       summary: panel open the server machine's native folder dialog (macOS osascript, Linux zenity); root only

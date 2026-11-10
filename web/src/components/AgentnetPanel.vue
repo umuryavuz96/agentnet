@@ -26,8 +26,6 @@ const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit"
 const r = computed(() => props.row);
 const isRoot = computed(() => props.name === "root");
 const gone = computed(() => !!r.value && (r.value.life === "gone" || r.value.life === "failed"));
-// The chat footer is always drawn; when nothing can receive, the reason sits in the disabled input.
-const blocked = computed(() => isRoot.value ? "This is root (you)" : !r.value ? "Not connected" : gone.value ? "Retired: read-only history" : r.value.life !== "live" || !r.value.connectedAt ? "Not connected" : null);
 const dot = computed(() => {
   const x = r.value; if (!x) return "root";
   if (x.life === "starting") return "starting";
@@ -119,7 +117,7 @@ defineExpose({ el });
 </script>
 
 <template>
-  <aside ref="el" :class="['ap', 'side-panel', 'glass-strong', { sheet }]" :role="sheet ? 'dialog' : 'complementary'" :aria-modal="sheet || undefined" :aria-label="`${name} details`" tabindex="-1" @keydown="trap">
+  <aside ref="el" :class="['ap', 'side-panel', 'glass-strong', { sheet, 'chat-on': tab === 'chat' }]" :role="sheet ? 'dialog' : 'complementary'" :aria-modal="sheet || undefined" :aria-label="`${name} details`" tabindex="-1" @keydown="trap">
     <header class="hd" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp">
       <span v-if="sheet" class="grab" aria-hidden="true" />
       <div class="t1">
@@ -128,23 +126,26 @@ defineExpose({ el });
         <span v-if="modelChip" class="ap-chip" :title="r?.model ?? ''">{{ modelChip }}</span>
         <button type="button" class="x" data-close aria-label="Close panel" @click="emit('close')"><Icon name="x" :size="20" /></button>
       </div>
+      <!-- Chat needs the height: these rows fold away while it is open (Overview keeps them) -->
+      <div :class="['fold-r', 'hdf', { shut: tab === 'chat' }]" :inert="tab === 'chat' || undefined"><div class="fold-in">
       <p v-if="r?.job || isRoot" class="job" :title="r?.job ?? ''">{{ r?.job ?? "Director of every agent · main session" }}</p>
       <div v-if="r" class="acts">
         <button type="button" class="btn sm ghost" :disabled="!windows.available || !!windows.busy || gone" @click="emit('open')"><Icon name="square-terminal" :size="15" /> Open window</button>
         <button type="button" class="btn sm ghost" :disabled="!windows.available || !!windows.busy" @click="emit('closeWin')"><Icon name="x" :size="15" /> Close window</button>
       </div>
       <AgentnetControls v-if="r && !isRoot && !gone" mode="actions" :name="name" :can-act="r.life === 'live'" @closed="emit('close')" />
+      </div></div>
       <div class="tabs" role="tablist" aria-label="Agent sections" @keydown="tabKey">
         <i class="ind" aria-hidden="true" :style="{ transform: `translateX(${tabIdx * 100}%)`, width: `calc(100% / ${TABS.length})` }" />
         <button v-for="t in TABS" :key="t.id" type="button" role="tab" :id="`ap-tab-${t.id}`" :data-tab="t.id" :aria-selected="tab === t.id" :aria-controls="`ap-pn-${t.id}`" :tabindex="tab === t.id ? 0 : -1" :class="{ on: tab === t.id }" @click="setTab(t.id)">{{ t.label }}</button>
       </div>
     </header>
 
-    <AgentnetJobs v-if="r" mode="jobs" :name="name" :tasks="tasks" />
+    <div :class="['fold-r', { shut: tab === 'chat' }]" :inert="tab === 'chat' || undefined"><div class="fold-in"><AgentnetJobs v-if="r" mode="jobs" :name="name" :tasks="tasks" /></div></div>
 
     <div :class="['bd', { fill: shown === 'chat' }]">
      <Transition :name="'tab-' + slide" mode="out-in" @before-enter="shown = tab">
-      <AgentnetChat v-if="tab === 'chat'" id="ap-pn-chat" key="chat" role="tabpanel" aria-labelledby="ap-tab-chat" :name="name" :blocked="blocked" />
+      <AgentnetChat v-if="tab === 'chat'" id="ap-pn-chat" key="chat" role="tabpanel" aria-labelledby="ap-tab-chat" :name="name" :is-root="isRoot" :gone="gone && !isRoot" :connected="!!r && r.life === 'live' && !!r.connectedAt" :working="!!r && r.life === 'live' && r.state === 'working'" />
       <div v-else id="ap-pn-overview" key="overview" class="ap-pn" role="tabpanel" aria-labelledby="ap-tab-overview">
       <p v-if="!r" class="none">No live reading for {{ name }} yet.</p>
       <template v-else>
@@ -330,6 +331,12 @@ defineExpose({ el });
 .hk span{flex:none;color:var(--muted)}
 .hk time{flex:none;color:var(--muted);font:500 11px var(--mono)}
 
+.fold-r{flex:none;display:grid;grid-template-rows:1fr;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease),margin .3s cubic-bezier(.2,.8,.2,1)}
+.fold-r.shut{grid-template-rows:0fr;opacity:0}
+.fold-in{min-height:0;overflow:hidden;display:grid;gap:8px}
+.hdf{margin-inline:-8px}.hdf .fold-in{padding-inline:8px}
+.hdf.shut{margin-bottom:-8px}
+.ap.sheet.chat-on{height:92dvh;transition:transform .32s cubic-bezier(.2,.8,.2,1),height .3s cubic-bezier(.2,.8,.2,1)}
 .tabs{position:relative;display:grid;margin:0;overflow:visible;grid-template-columns:repeat(2,minmax(0,1fr));padding:3px;border:1px solid var(--line);border-radius:12px;background:var(--track)}
 .tabs .ind{position:absolute;top:3px;bottom:3px;left:3px;width:calc((100% - 6px) / 2);border-radius:9px;background:color-mix(in srgb,var(--ink) 12%,transparent);box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .3s cubic-bezier(.2,.8,.2,1)}
 .tabs button{position:relative;min-height:36px;border:0;border-radius:9px;background:transparent;color:var(--muted);font:600 13px/1 var(--body);cursor:pointer;transition:color .2s var(--ease)}
@@ -346,5 +353,5 @@ defineExpose({ el });
 
 .sheet .hd{padding-top:8px;touch-action:none;cursor:grab}
 .grab{justify-self:center;width:40px;height:5px;border-radius:3px;background:color-mix(in srgb,var(--ink) 28%,transparent)}
-@media (prefers-reduced-motion:reduce){.tabs .ind{transition:none}.tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s}.tab-fwd-enter-from,.tab-back-leave-to,.tab-fwd-leave-to,.tab-back-enter-from{transform:none}.ap-dot.s-working,.ap-spin{animation:none}.rf,.ap-bar i,.cv-i,.fb,.fb > div{transition:none}.ap.sheet{transition:none}}
+@media (prefers-reduced-motion:reduce){.tabs .ind{transition:none}.tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s}.tab-fwd-enter-from,.tab-back-leave-to,.tab-fwd-leave-to,.tab-back-enter-from{transform:none}.ap-dot.s-working,.ap-spin{animation:none}.rf,.ap-bar i,.cv-i,.fb,.fb > div{transition:none}.ap.sheet,.ap.sheet.chat-on,.fold-r{transition:none}}
 </style>

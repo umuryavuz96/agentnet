@@ -6,9 +6,15 @@ import { computed } from "vue";
 import Icon from "../ui/Icon.vue";
 import { net, windows, humanDoing, ctxView, bgVisible, bgShown, type AgentRow } from "../net";
 
-const props = defineProps<{ row: AgentRow | null; name: string; selected?: boolean; hadRoot?: boolean }>();
-const emit = defineEmits<{ select: []; open: []; close: [] }>();
+const props = defineProps<{ row: AgentRow | null; name: string; selected?: boolean; hadRoot?: boolean; last?: { dir: string | null; at: number } | null }>();
+const emit = defineEmits<{ select: []; open: []; close: []; resume: []; fresh: [] }>();
 
+const folder = computed(() => props.last?.dir?.replace(/^\/Users\/[^/]+/, "~") ?? null);
+const ago = computed(() => {
+  const t = props.last?.at; if (!t) return null;
+  const m = Math.max(0, Math.round(((net.now || Date.now()) - t) / 60000));
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+});
 const TIP = "Opens a Terminal window on the server Mac";
 const gone = computed(() => !!props.row && (props.row.life === "gone" || props.row.life === "failed"));
 const isRoot = computed(() => props.row?.name === "root");
@@ -52,7 +58,12 @@ const btnTip = computed(() => (isRoot.value && gone.value ? "Start director" : g
       <span v-if="row?.model" class="chip" :class="{ nm2: winOpen }" :title="row.model">{{ row.model.replace(/^claude-/, "").replace(/-\d+(-\d+)*$/, "") }}</span>
     </header>
     <p class="job" :title="row?.job ?? undefined">{{ row ? (row.job ?? "no job") : hadRoot ? "Not running" : "No director connected yet" }}</p>
-    <p v-if="!row" class="cta">{{ hadRoot ? "Start director" : "Set up now" }} <Icon name="arrow-up-right" :size="14" /></p>
+    <p v-if="!row && hadRoot && folder" class="last" :title="last?.dir ?? undefined"><span class="mono">{{ folder }}</span><span v-if="ago">last active {{ ago }}</span></p>
+    <div v-if="!row && hadRoot" class="rs">
+      <button type="button" class="cta" @click.stop="emit('resume')">Resume director <Icon name="arrow-up-right" :size="14" /></button>
+      <button type="button" class="fresh" @click.stop="emit('fresh')">Start fresh</button>
+    </div>
+    <p v-else-if="!row" class="cta">Set up now <Icon name="arrow-up-right" :size="14" /></p>
     <p v-if="row" class="boss"><Icon name="users" :size="13" /> {{ row.boss ?? "no boss" }}</p>
 
     <p v-if="row" class="doing" :class="{ warn: blocked }" :title="doingText">{{ doingText }}</p>
@@ -114,6 +125,13 @@ const btnTip = computed(() => (isRoot.value && gone.value ? "Start director" : g
 .s-starting{border-style:dashed}
 .anc.setup{border-style:dashed;border-color:color-mix(in srgb,var(--on) 55%,var(--line));background:color-mix(in srgb,var(--on) 6%,var(--panel))}
 .anc.setup .dot{background:transparent;border:2px dashed var(--on)}
+.last{margin:0;display:grid;gap:2px;min-width:0;color:var(--muted);font-size:12px;line-height:1.35}
+.last .mono{font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rs{margin:auto 0 0;display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px}
+.rs .cta{margin:0;border:0;cursor:pointer}
+.fresh{border:0;background:transparent;color:var(--muted);font:600 13px var(--body);min-height:36px;padding:0 6px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.fresh:hover{color:var(--ink)}
+.rs button:focus-visible{outline:2px solid var(--on);outline-offset:2px}
 .cta{margin:auto 0 0;display:inline-flex;align-items:center;gap:6px;justify-self:start;align-self:flex-start;min-height:36px;padding:0 14px;border-radius:12px;background:var(--on);color:#06210f;font:600 13px/36px var(--body)}
 .s-stopping{opacity:.6}
 .s-root .dot{background:var(--lock)}

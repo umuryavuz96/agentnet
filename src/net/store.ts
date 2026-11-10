@@ -208,6 +208,13 @@ export function flush(): Patch[] {
   if (out.length) for (const s of subs) s(out);
   return out;
 }
+/** Forget an agent name for good: its folds, its stored fold rows and its events. Returns the folds it removed (for a backup). Other agents are never touched. */
+export function forgetByName(name: string): Snapshot[] {
+  load();
+  const gone = [...status.values()].filter((s) => s.name === name);
+  db().transaction(() => { for (const s of gone) { db().run("DELETE FROM agent_status WHERE agent_id = ?", [s.id]); db().run("DELETE FROM agent_events WHERE agent_id = ?", [s.id]); status.delete(s.id); finished.delete(s.id); } })();
+  return gone;
+}
 export function onPatch(fn: (p: Patch[]) => void) { subs.add(fn); return () => subs.delete(fn); }
 export function get(agent: string): Snapshot | null { load(); return status.get(agent) ?? null; }
 /** Agents on the live view: never gone or failed ("never hold an offline agent"). */

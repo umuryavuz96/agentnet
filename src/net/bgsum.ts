@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 const MAX_CMD = 400, MAX_WORDS = 12, MAX_CHARS = 70, TIMEOUT_MS = 40_000, PARALLEL = 2, CACHE_MAX = 300;
 
 /** Replace anything that looks like a credential. Cheap and greedy: a wrong hit only makes the sentence vaguer. */
-export function redact(cmd: string): string {
+export function redactText(cmd: string): string {
   return cmd
     .replace(/(-----BEGIN [A-Z ]*PRIVATE KEY-----)[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----)/g, "$1…$2")
     .replace(/\b(Authorization|Proxy-Authorization)(\s*[:=]\s*)(?:(Bearer|Basic|Token)\s+)?("[^"]*"|'[^']*'|[^\s"']+)/gi, "$1$2•••")
@@ -19,8 +19,10 @@ export function redact(cmd: string): string {
     .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)?/g, "•••")
     .replace(/\b[A-Fa-f0-9]{32,}\b/g, "•••")
     .replace(/\b(?=[A-Za-z0-9+/_-]*[A-Z])(?=[A-Za-z0-9+/_-]*[a-z])(?=[A-Za-z0-9+/_-]*\d)[A-Za-z0-9+/_-]{28,}\b/g, "•••")
-    .replace(/\s+/g, " ").trim().slice(0, MAX_CMD);
+    ;
 }
+/** `redactText` flattened to one line and cut to MAX_CMD, for a shell command. */
+export function redact(cmd: string): string { return redactText(cmd).replace(/\s+/g, " ").trim().slice(0, MAX_CMD); }
 
 /** The model's answer as one short line, or null when it is not usable. */
 export function tidy(out: string): string | null {

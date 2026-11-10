@@ -59,7 +59,7 @@ watch(count, deepLink);
 watch(() => route.value, () => { applied = ""; deepLink(); });
 const setup = ref(false), triageSheet = ref(false), tipN = ref(0);
 const triageAdded = (_r: unknown, name: string) => { toast(`${name} added`); tipN.value++; };
-const pick = (id: string) => { if (id === ROOT && !rootRow.value) { if (hadRoot.value) void startRoot(); else setup.value = true; return; } sel.value = sel.value === id ? null : id; };
+const pick = (id: string) => { if (id === ROOT && !rootRow.value) { if (hadRoot.value) void startRoot(true); else setup.value = true; return; } sel.value = sel.value === id ? null : id; };
 // Hook stream only while something draws hooks (the map lane, or the open panel's Hooks section): Chrome allows
 // 6 HTTP/1.1 connections per host, and this page already holds the main SSE plus the shared agentnet stream.
 let stopHooks: (() => void) | null = null;
@@ -108,14 +108,17 @@ async function win(path: string, what: string) {
   if (r.code === "NOT_IN_TMUX") { moveAsk.value = true; return; } // runs outside tmux and no terminal app found: offer to move it into an agentnet window
   toast(r.ok ? what : r.detail ?? "Failed");
 }
-const moveAsk = ref(false), moving = ref(false), hadRoot = ref(false);
+const moveAsk = ref(false), moving = ref(false), hadRoot = ref(false), lastRun = ref<{ session: string | null; dir: string | null; at: number } | null>(null);
 // A director that ran before and is gone shows "Not running" + Start director; a first run shows the setup card.
-const loadHad = async () => { try { hadRoot.value = (await api<{ hadRoot?: boolean }>("v1/panel/director")).hadRoot === true; } catch { /* keep */ } };
+const loadHad = async () => { try { const d = await api<{ hadRoot?: boolean; last?: typeof lastRun.value }>("v1/panel/director"); hadRoot.value = d.hadRoot === true; lastRun.value = d.last ?? null; } catch { /* keep */ } };
 watch(() => !!rootRow.value, () => void loadHad(), { immediate: true });
-/** Not running card: start the director where it last ran (tmux session agentnet-root), then open its window. */
-async function startRoot() {
-  try { await api("v1/panel/director/start", { method: "POST", body: { restart: true } }); toast("Starting the director"); await win("/agents/root/open", "Opening the director in Terminal on the server Mac"); }
-  catch (e) { setup.value = true; toast((e as Error).message || "Could not start the director"); } // no tmux or claude: the setup sheet explains and gives the command
+/** Not running card: start the director where it last ran (tmux session agentnet-root), then open its window.
+ *  resume = continue the last conversation (Resume director); false = a new conversation in the same folder (Start fresh). */
+async function startRoot(resume = true) {
+  try {
+    const r = await api<{ resumed?: boolean }>("v1/panel/director/start", { method: "POST", body: { restart: true, resume } });
+    toast(!resume ? "Started a new conversation" : r.resumed ? "Resumed the last conversation" : "Started a new conversation (the old one was not found)"); await win("/agents/root/open", "Opening the director in Terminal on the server Mac");
+  } catch (e) { setup.value = true; toast((e as Error).message || "Could not start the director"); } // no tmux or claude: the setup sheet explains and gives the command
 }
 async function moveRoot() {
   moving.value = true;
@@ -154,12 +157,12 @@ const TIP = "Terminal windows on the server Mac";
 
     <div class="anv-b">
       <Transition name="mode" mode="out-in">
-      <AgentnetMap v-if="mode === 'map'" key="map" :selected="sel" :cover="cover" @select="pick" />
+      <AgentnetMap v-if="mode === 'map'" key="map" :selected="sel" :cover="cover" :had-root="hadRoot" @select="pick" />
       <section v-else key="cards" class="grid-wrap" aria-label="Live agents">
         <div class="grp">
           <h2>Director</h2>
           <div class="an-grid">
-            <AgentnetCard :row="rootRow" :had-root="hadRoot" :name="ROOT" :selected="sel === ROOT" @select="pick(ROOT)" @open="openWin(ROOT)" @close="closeWin(ROOT)" />
+            <AgentnetCard :row="rootRow" :had-root="hadRoot" :last="lastRun" :name="ROOT" :selected="sel === ROOT" @select="pick(ROOT)" @resume="startRoot(true)" @fresh="startRoot(false)" @open="openWin(ROOT)" @close="closeWin(ROOT)" />
           </div>
         </div>
         <TransitionGroup name="anc">

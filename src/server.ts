@@ -19,6 +19,7 @@ import { routingRoutes } from "./net/routing";
 import { compactRoutes } from "./net/compact";
 import { hooksRoutes } from "./net/hooks";
 import { webRoutes } from "./net/web";
+import { ownerChatRoutes } from "./net/ownerChat";
 import { agentnetWindowRoutes, healRootSession, startSessionReaper } from "./net/windows";
 import { agentControlRoutes } from "./net/controls";
 import { startUpdateTimers, updateRoutes } from "./net/update";
@@ -36,7 +37,7 @@ export function buildApp(): Hono<Env> {
   api.use("*", (c, next) => (isPanelWrite(c.req.method, c.req.path) ? rootOnly(c, next) : next())); // panel writes: loopback or the root token
   // Page routes before agentnetRoutes, as in the original server.
   agentnetStreamRoutes(api); agentnetUsageRoutes(api); agentnetPanelSendRoute(api); agentnetTeamPanelRoutes(api);
-  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); agentControlRoutes(api); checksPanelRoutes(api);
+  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); ownerChatRoutes(api); agentControlRoutes(api); checksPanelRoutes(api);
   summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api); updateRoutes(api); directorRoutes(api);
   agentnetRoutes(api);
   app.route("/api/v1", api);

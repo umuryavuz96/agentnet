@@ -13,14 +13,15 @@ import Search from "./pages/Search.vue";
 import Hooks from "./pages/Hooks.vue";
 import Routing from "./pages/Routing.vue";
 import Personas from "./pages/Personas.vue";
+import Settings from "./pages/Settings.vue";
 import BrandLockup from "./brand/BrandLockup.vue";
 import UpdatePill from "./components/UpdatePill.vue";
 
 const em = readEmbed(location.search);
-const COMPONENTS: Record<Page, Component> = { agents: Agents, usage: Usage, scores: Scores, trails: Trails, search: Search, hooks: Hooks, routing: Routing, personas: Personas };
+const COMPONENTS: Record<Page, Component> = { agents: Agents, usage: Usage, scores: Scores, trails: Trails, search: Search, hooks: Hooks, routing: Routing, personas: Personas, settings: Settings };
 const NAV: Record<Page, [string, IconName]> = {
   agents: ["Agents", "network"], usage: ["Usage", "chart-line"], scores: ["Scores", "gauge"], trails: ["Trails", "history"],
-  search: ["Search", "search"], hooks: ["Hooks", "webhook"], routing: ["Routing", "sliders"], personas: ["Personas", "sparkles"],
+  search: ["Search", "search"], hooks: ["Hooks", "webhook"], routing: ["Routing", "sliders"], personas: ["Personas", "sparkles"], settings: ["Settings", "settings"],
 };
 const page = computed(() => route.value.page);
 /** The page on screen. The shell layout follows it when the new page enters, so the old page keeps its layout while it fades out (out-in). */

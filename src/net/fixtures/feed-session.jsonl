@@ -1,0 +1,9 @@
+{"type":"user","uuid":"u1","timestamp":"2026-11-10T10:00:00.000Z","origin":{"kind":"human"},"message":{"role":"user","content":"Please run the tests"}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-11-10T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"secret thoughts"},{"type":"text","text":"On it. Key is API_KEY=sk-abcdef1234567890abcd"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"bun test","description":"Run tests"}},{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/x/web/src/App.vue","old_string":"a","new_string":"b"}}]}}
+{"type":"user","uuid":"u2","timestamp":"2026-11-10T10:00:05.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"358 pass\n0 fail"},{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"no match"}]}}
+{"type":"user","uuid":"u3","timestamp":"2026-11-10T10:00:06.000Z","isMeta":true,"origin":{"kind":"plugin","name":"agentnet"},"message":{"role":"user","content":"Messages from other agents arrive as one line each"}}
+{"type":"user","uuid":"u4","timestamp":"2026-11-10T10:00:07.000Z","origin":{"kind":"plugin","name":"agentnet"},"message":{"role":"user","content":"The agentnet plugin sent a message:\n#1077 [task] root: \"Fix it\"\n\nThis is how Claude Code surfaces a prompt"}}
+{"type":"user","uuid":"u5","timestamp":"2026-11-10T10:00:08.000Z","message":{"role":"user","content":"<system-reminder>ignore me</system-reminder>"}}
+{"type":"system","uuid":"s1","timestamp":"2026-11-10T10:00:09.000Z","subtype":"compact_boundary"}
+{"type":"assistant","uuid":"sc1","isSidechain":true,"timestamp":"2026-11-10T10:00:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"subagent noise"}]}}
+{"type":"assistant","uuid":"a2","timestamp":"2026-11-10T10:00:11.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Read","input":{"file_path":"/x/y/z.ts"}}]}}

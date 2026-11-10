@@ -1,6 +1,6 @@
 import { ref } from "vue";
 
-export const PAGES = ["agents", "usage", "scores", "trails", "search", "hooks", "routing", "personas"] as const;
+export const PAGES = ["agents", "usage", "scores", "trails", "search", "hooks", "routing", "personas", "settings"] as const;
 export type Page = (typeof PAGES)[number];
 export interface Route { page: Page; query: Record<string, string> }
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.5
+
+Talk to any agent as yourself, see its terminal live, and get the director back after `/exit`.
+
+**Chat tab: one live timeline**
+
+- The Chat tab of every agent, the director included, shows agentnet messages and the agent's terminal activity together: your prompts, its answers, and its tool steps as short rows ("Running tests", "Editing App.vue"). Filter by All, Messages or Terminal. Text passes through the same secret redaction as the rest of agentnet.
+- Message box with two modes. **You** types straight into the agent's terminal as you. **agentnet message** sends an info, task or question as root, as before. The director only has **You**.
+- An agent that runs outside agentnet's tmux windows shows why the box is off.
+- While Chat is open, the panel folds its action rows away so the timeline gets the room; on a phone the sheet opens almost full height.
+
+**Director: resume and reset**
+
+- After `/exit`, the director card says "Not running" with **Resume director**, which reopens the last conversation (`claude --resume`) in the same folder, and **Start fresh**. If the old conversation file is gone, it starts fresh and says so. The map node does the same.
+- New **Settings** page with **Reset director** (two-step confirm). It stops the director, writes a backup line to `<home>/data/director-resets.jsonl`, forgets it, and shows the first-run setup again. Agents, teams, tasks, scores and conversation files are kept.
+
 ## 0.4.4
 
 Open window on the director always works, and agents keep their task lists honest.

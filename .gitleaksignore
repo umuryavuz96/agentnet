@@ -1,3 +1,4 @@
 # Fake test fixtures: a redaction test and a secret-scan hook test.
 src/net/bgsum.test.ts:curl-auth-header:51
 src/net/hook-templates.test.ts:aws-access-token:160
+src/net/fixtures/feed-session.jsonl:generic-api-key:2
