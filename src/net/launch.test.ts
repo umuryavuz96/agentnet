@@ -125,3 +125,39 @@ describe("MCP multi-select dialog", () => {
   });
   test("another option id is refused without keys", () => { const t = term(["a"], [true]); expect(answerDialog("yes", t.d).ok).toBe(false); expect(t.sent).toEqual([]); });
 });
+
+describe("a director whose process exited", () => {
+  test("failed at once with the output, exit code and a hint", async () => {
+    const { hasSession, deathOf, clearDeath } = await import("./windows");
+    const { deathHint } = await import("./launch");
+    const out = "error: unknown option '--setting-sources'\n";
+    const calls: string[][] = [];
+    const t = { run: (a: string[]) => { calls.push(a);
+      if (a[0] === "has-session") return { code: calls.some((c) => c[0] === "kill-session") ? 1 : 0, out: "" };
+      if (a[0] === "display-message") return { code: 0, out: "1 2\n" };
+      if (a[0] === "capture-pane") return { code: 0, out: "\x1b[31m" + out + "\x1b[0m" };
+      return { code: 0, out: "" }; } };
+    clearDeath(S); clearLaunch(); markLaunch(S, T0);
+    expect(hasSession(S, t)).toBe(false); // dead pane = not running
+    expect(calls.some((c) => c[0] === "kill-session")).toBe(true);
+    expect(calls.find((c) => c[0] === "capture-pane")).toEqual(["capture-pane", "-p", "-S", "-40", "-t", `=${S}:`]);
+    expect(deathOf(S)).toMatchObject({ exitCode: 2, output: "error: unknown option '--setting-sources'" });
+    const v = launchView(deps({ at: 500, hasSession: () => false })); // inside the grace window: still failed
+    expect(v).toMatchObject({ state: "failed", stage: "claude", exitCode: 2, pane: "error: unknown option '--setting-sources'" });
+    expect(v.error).toContain("exit code 2");
+    expect(v.hint).toContain("Update");
+    clearDeath(S);
+  });
+  test("a live pane is untouched; output is capped at 3000 chars; hints", async () => {
+    const { hasSession, reapDead, cleanOutput } = await import("./windows");
+    const { deathHint } = await import("./launch");
+    const calls: string[][] = [];
+    const t = { run: (a: string[]) => { calls.push(a); return { code: 0, out: a[0] === "display-message" ? "0 \n" : "" }; } };
+    expect(hasSession(S, t)).toBe(true); expect(reapDead(S, t)).toBeNull();
+    expect(calls.some((c) => c[0] === "kill-session" || c[0] === "capture-pane")).toBe(false);
+    expect(cleanOutput("x".repeat(5000)).length).toBe(3000);
+    expect(cleanOutput("a\n\n\n\n\nb\nPane is dead (status 2, Tue)\n")).toBe("a\n\nb");
+    expect(deathHint("Please login first")).toContain("signed in");
+    expect(deathHint("segfault")).toBeUndefined();
+  });
+});

@@ -4,7 +4,7 @@
 // The request body carries one thing, the project folder: it must be an existing absolute directory and is quoted
 // for the shell. No command text from a request ever reaches a shell.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Hono } from "hono";
@@ -13,11 +13,11 @@ import { problem, type Env } from "../core/http";
 import { logEvent } from "../core/logger";
 import { all, flush, forgetByName, live } from "./store";
 import { byName, retireAgent } from "./routes";
-import { createdOf, findRootSession, hasSession as tmuxHas, healRootSession, killSession, realTmux, rootPid, rootSession, type Tmux } from "./windows";
+import { clearDeath, createdOf, findRootSession, hasSession as tmuxHas, healRootSession, killSession, realTmux, rootPid, rootSession, type Tmux } from "./windows";
 import { listHooks, readHookLog } from "./hooks";
 import { templates } from "./hook-templates";
 import { precheck } from "./adopt-scan";
-import { answerDialog, launchView, markLaunch } from "./launch";
+import { answerDialog, clearLaunch, launchView, markLaunch } from "./launch";
 
 export const REPO = join(import.meta.dir, "..", "..");
 /** The director runs in the root agent's tmux session, so Open window on root finds it. */
@@ -73,11 +73,12 @@ export function writeDirectorPrompt(i: PromptInput, root = ROOT): string {
   return p;
 }
 /** The clean director's home: a folder holding only a short CLAUDE.md. Never overwrites a CLAUDE.md the user edited. */
+const HOME_NOTE = "This folder is the agentnet Director's home. Projects are attached with --add-dir.\n";
 export function ensureDirectorHome(root = ROOT): string {
   const h = join(root, "director");
   mkdirSync(h, { recursive: true });
   const f = join(h, "CLAUDE.md");
-  if (!existsSync(f)) writeFileSync(f, "This folder is the agentnet Director's home. Projects are attached with --add-dir.\n");
+  if (!existsSync(f)) writeFileSync(f, HOME_NOTE);
   return h;
 }
 
@@ -115,7 +116,8 @@ export function checkDir(raw: unknown): { dir: string } | { error: string } {
   return { dir: d };
 }
 
-export const hasSession = (): boolean => spawnSync("tmux", ["has-session", "-t", SESSION], { stdio: "ignore" }).status === 0;
+/** A running director session. A session whose process exited (kept by remain-on-exit) is read, killed and counts as gone. */
+export const hasSession = (): boolean => tmuxHas(SESSION);
 export type TriageState = "off" | "ok" | "nologin" | "switched-off" | "unknown";
 const TRIAGE_WORD = /(?<![a-z0-9])triage(?![a-z0-9])/i;
 const DAY = 24 * 3600_000, LAST_N = 5;
@@ -159,7 +161,9 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
     cmd = directorCommand(d.dir, { mode, resume, promptFile, roots: opts.roots, ...(home ? { home } : {}) });
   }
   if (process.env.AGENTNET_NO_DIRECTOR_START) return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}` }; // scratch and screenshot runs: validate, write the prompt, never spawn
-  const r = run("tmux", ["new-session", "-d", "-s", SESSION, "-c", cwd, "sh", "-c", cmd]);
+  clearDeath(SESSION);
+  // remain-on-exit for this session only (never -g): when claude exits the pane stays, so the server can read why (windows.ts reapDead)
+  const r = run("tmux", ["new-session", "-d", "-s", SESSION, "-c", cwd, "sh", "-c", cmd, ";", "set-option", "-t", `=${SESSION}:`, "remain-on-exit", "on"]);
   if (r.status !== 0) { const detail = (r.stderr ?? "").trim() || "tmux could not start the session."; markLaunch(SESSION, Date.now(), detail); return { ok: false, code: "failed", detail }; }
   markLaunch(SESSION);
   logEvent("info", "director started", { session: SESSION, dir: d.dir, mode: mode ?? "plain", resumed: !!resume });
@@ -210,6 +214,17 @@ export interface ResetDeps {
   pid: () => number | null; session: (pid: number | null) => string | null;
   killSession: (s: string) => boolean; signal: (pid: number) => void; gone: (pid: number) => Promise<boolean>;
   backup: (line: string) => void; forget: () => unknown[];
+  /** First-run state: forget everything setup left behind (adopt state, launch mark, prompt files). Returns what it cleared, for the log. */
+  clean?: () => string[] | Promise<string[]>;
+}
+/** Remove what a director setup wrote under the agentnet home, so the next setup is a first run. Never touches a project folder, ~/.claude, or a CLAUDE.md the user edited. */
+export function cleanDirectorFiles(root = ROOT): string[] {
+  const out: string[] = [];
+  clearLaunch(); clearDeath(SESSION);
+  for (const f of [promptPath("adopt", root), promptPath("scan", root), scanMarkerPath(root)]) { try { if (existsSync(f)) { unlinkSync(f); out.push(f); } } catch { /* gone */ } }
+  const note = join(root, "director", "CLAUDE.md");
+  try { if (readFileSync(note, "utf8") === HOME_NOTE) { unlinkSync(note); out.push(note); } rmdirSync(join(root, "director")); } catch { /* edited, missing or not empty: leave it */ }
+  return out;
 }
 const realReset: ResetDeps = {
   pid: rootPid, session: (pid) => { const s = findRootSession(realTmux, pid && alive(pid) ? pid : null); return s && tmuxHas(s) ? s : null; },
@@ -217,10 +232,11 @@ const realReset: ResetDeps = {
   gone: async (pid) => { for (let i = 0; i < 30; i++) { if (!alive(pid)) return true; await Bun.sleep(100); } return false; },
   backup: (line) => { const dir = join(ROOT, "data"); mkdirSync(dir, { recursive: true }); appendFileSync(join(dir, "director-resets.jsonl"), line + "\n"); },
   forget: () => { const a = byName("root"); if (a) retireAgent(a, "reset"); flush(); return forgetByName("root"); },
+  clean: async () => [...(await import("./adopt")).resetAdopt(), ...cleanDirectorFiles()], // adopt.ts imports this file: load it lazily
 };
 /** Reset the director: stop it if it runs, back up root's row, forget root so the first-run setup shows again.
  *  Never touches other agents, teams, tasks, transcripts or ~/.claude. */
-export async function resetDirector(d: ResetDeps = realReset, now = Date.now()): Promise<{ ok: boolean; stopped: boolean; detail?: string }> {
+export async function resetDirector(d: ResetDeps = realReset, now = Date.now()): Promise<{ ok: boolean; stopped: boolean; detail?: string; cleaned?: string[] }> {
   const pid = d.pid(); let stopped = false;
   if (pid) {
     const s = d.session(pid);
@@ -230,8 +246,9 @@ export async function resetDirector(d: ResetDeps = realReset, now = Date.now()):
   }
   const rows = d.forget();
   d.backup(JSON.stringify({ at: new Date(now).toISOString(), rows }));
-  logEvent("info", "director reset", { stopped, rows: rows.length });
-  return { ok: true, stopped };
+  const cleaned = (await d.clean?.()) ?? [];
+  logEvent("info", "director reset", { stopped, rows: rows.length, cleaned });
+  return { ok: true, stopped, ...(cleaned.length ? { cleaned } : {}) };
 }
 
 export function directorRoutes(api: Hono<Env>): void {

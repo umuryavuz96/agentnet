@@ -387,7 +387,9 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
                     <button type="button" class="ds-b" :disabled="busy" @click="start(true)"><Icon name="rotate-ccw" :size="15" /> {{ busy ? "Starting…" : "Retry" }}</button>
                     <button v-if="info?.session" type="button" class="ds-cp" :aria-label="attachCopied ? 'Copied' : 'Copy attach command'" @click="copy(attach, 'attach')"><Icon :name="attachCopied ? 'check' : 'copy'" :size="14" /> {{ attachCopied ? "Copied" : "Copy attach command" }}</button>
                   </div>
+                  <p v-if="launch?.hint" class="ds-warn" role="status"><Icon name="triangle-alert" :size="15" /> {{ launch.hint }}</p>
                   <pre v-if="launch?.pane" class="ds-pane" tabindex="0" aria-label="Last lines of the director terminal">{{ launch.pane }}</pre>
+                  <p v-if="launch?.exitCode != null" class="ds-t sm">exit code {{ launch.exitCode }}</p>
                   <p v-if="err" class="ds-err" role="alert">{{ err }}</p>
                 </div>
               </template>
@@ -433,7 +435,7 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
 .ds-fail{display:grid;gap:8px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--bad) 50%,var(--line));border-radius:12px;background:var(--bad-bg)}
 .ds-fail .ds-err{display:flex;gap:6px;align-items:flex-start;line-height:1.45}
 .ds-prog li.bad{color:var(--bad)}.ds-prog li.bad i{border-color:var(--bad);color:var(--bad)}
-.ds-pane{margin:0;max-height:140px;overflow:auto;padding:8px 10px;border-radius:10px;background:var(--track);font:11.5px/1.4 var(--mono);white-space:pre-wrap;word-break:break-word}
+.ds-pane{margin:0;max-height:178px;overflow:auto;padding:8px 10px;border-radius:10px;background:var(--track);font:11.5px/1.4 var(--mono);white-space:pre-wrap;word-break:break-word}
 .ds-dlg{display:grid;gap:8px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--warn) 50%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--warn) 9%,transparent)}
 .ds-opts{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:12.5px}
 .ds-opts li{padding:5px 10px;border-radius:8px;background:var(--track);color:var(--muted)}.ds-opts li.pick{color:var(--ink);outline:1px solid var(--on)}

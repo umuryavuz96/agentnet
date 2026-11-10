@@ -27,7 +27,36 @@ export interface Tmux { run: (args: string[]) => { code: number; out: string } }
 const tmuxBin = () => Bun.which("tmux");
 export const realTmux: Tmux = { run: (args) => { const t = tmuxBin(); if (!t) return { code: 127, out: "" }; const p = Bun.spawnSync([t, ...args]); return { code: p.exitCode, out: new TextDecoder().decode(p.stdout) }; } };
 
-export const hasSession = (s: string, t: Tmux = realTmux) => t.run(["has-session", "-t", `=${s}`]).code === 0;
+const sessionExists = (s: string, t: Tmux) => t.run(["has-session", "-t", `=${s}`]).code === 0;
+
+/** What a director session printed before its process exited (the session is kept by remain-on-exit, see director.ts). */
+export interface Death { output: string; exitCode: number | null; at: number }
+const deaths = new Map<string, Death>();
+export const deathOf = (s: string): Death | null => deaths.get(s) ?? null;
+export const clearDeath = (s: string): void => { deaths.delete(s); };
+const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+/** Strip escape codes and blank edges, keep the tail: at most `max` characters. */
+export const cleanOutput = (raw: string, max = 3000): string => { const t = raw.replace(ANSI, "").split("\n").map((l) => l.trimEnd()).filter((l) => !/^Pane is dead \(/.test(l)).join("\n").replace(/\n{3,}/g, "\n\n").trim(); return t.length > max ? t.slice(-max) : t; };
+/** The pane of a remain-on-exit session whose process exited: read its output, then kill the session. Null when the pane is alive (or there is no such session). */
+export function reapDead(s: string, t: Tmux = realTmux): Death | null {
+  const r = t.run(["display-message", "-p", "-t", `=${s}:`, "#{pane_dead} #{pane_dead_status}"]);
+  if (r.code !== 0) return null;
+  const [dead, status] = r.out.trim().split(/\s+/);
+  if (dead !== "1") return null;
+  const cap = t.run(["capture-pane", "-p", "-S", "-40", "-t", `=${s}:`]);
+  const code = status !== undefined && /^\d+$/.test(status) ? Number(status) : null;
+  const d: Death = { output: cleanOutput(cap.code === 0 ? cap.out : ""), exitCode: code, at: Date.now() };
+  deaths.set(s, d);
+  t.run(["kill-session", "-t", `=${s}`]);
+  logEvent("warn", "agentnet: director session ended", { session: s, exitCode: code });
+  return d;
+}
+/** Is there a running session? A director session whose pane is dead is not running: its output is kept (deathOf) and it is killed. */
+export const hasSession = (s: string, t: Tmux = realTmux): boolean => {
+  if (!sessionExists(s, t)) return false;
+  if ((s === rootSession() || s === LEGACY_ROOT) && reapDead(s, t)) return false;
+  return true;
+};
 /** Sessions that have at least one attached client (one `tmux list-clients`, so a 1 s sweep is cheap). */
 export const attachedSessions = (t: Tmux = realTmux): Set<string> => new Set(t.run(["list-clients", "-F", "#{session_name}"]).out.split("\n").map((l) => l.trim()).filter(Boolean));
 export const detach = (s: string, t: Tmux = realTmux) => t.run(["detach-client", "-s", `=${s}`]).code === 0;

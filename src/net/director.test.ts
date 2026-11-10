@@ -37,6 +37,8 @@ describe("director setup", () => {
     const r = startDirector(d, run, all, () => false);
     expect(r).toMatchObject({ ok: true, session: SESSION });
     expect(calls[0].slice(0, 6)).toEqual(["tmux", "new-session", "-d", "-s", SESSION, "-c"]);
+    expect(calls[0].slice(-6)).toEqual([";", "set-option", "-t", `=${SESSION}:`, "remain-on-exit", "on"]); // this session only, never -g
+    expect(calls[0]).not.toContain("-g");
     expect(startDirector(d, () => ({ status: 1, stderr: "boom" }), all, () => false)).toMatchObject({ code: "failed", detail: "boom" });
   });
   test("AGENTNET_NO_DIRECTOR_START validates but never runs tmux", () => {

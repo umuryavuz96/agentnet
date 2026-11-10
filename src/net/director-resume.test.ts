@@ -56,11 +56,11 @@ describe("B: resume the last session", () => {
     const calls: string[][] = [];
     const r = dr.startDirector(dir, run(calls), all, () => false, { resume: ID, hasTranscript: () => true });
     expect(r).toMatchObject({ ok: true, resumed: true });
-    expect(calls[0]!.at(-1)).toContain(`--resume '${ID}'`);
+    expect(calls[0]!.at(calls[0]!.indexOf("sh") + 2)).toContain(`--resume '${ID}'`);
     const calls2: string[][] = [];
     const r2 = dr.startDirector(dir, run(calls2), all, () => false, { resume: ID, hasTranscript: () => false });
     expect(r2).toMatchObject({ ok: true, resumed: false }); expect(r2.why).toBeTruthy();
-    expect(calls2[0]!.at(-1)).not.toContain("--resume");
+    expect(calls2[0]!.at(calls2[0]!.indexOf("sh") + 2)).not.toContain("--resume");
     const r3 = dr.startDirector(dir, run([]), all, () => false, { resume: "x'; rm -rf /", hasTranscript: () => true });
     expect(r3).toMatchObject({ resumed: false });
     expect(dr.startDirector(dir, run([]), all, () => false).resumed).toBeUndefined(); // no resume asked

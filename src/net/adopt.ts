@@ -1,7 +1,7 @@
 // Adopt an existing workspace: the state machine and the routes (panel + the two root-only agent tools).
 // idle -> scanning -> reported -> planned -> applying -> applied (-> rolledback). One adopt operation at a time.
 // The heavy parts live in adopt-scan / -report / -plan / -apply; this file only orders them and keeps state in $AGENTNET_HOME/adopt.
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Context, Hono } from "hono";
@@ -207,6 +207,16 @@ export async function applyCurrent(planId: unknown, confirmGlobal: boolean): Pro
   return { ok: true, runId: plan.runId, director: { ok: sd.ok, ...(sd.detail ? { detail: sd.detail } : {}) } };
 }
 
+/** Reset director: undo an applied adopt run (backed-up files restored, files adopt created removed, files you changed since kept), then forget the whole adopt state. The workspace itself is never deleted. */
+export function resetAdopt(): string[] {
+  const out: string[] = [], st = loadState();
+  if (st.mode === "adopt" && st.phase === "applied" && st.runId) {
+    try { const r = rollbackRun(st.runId, { root: ROOT }); out.push(`adopt run ${st.runId} rolled back: ${r.restored.length} restored, ${r.removed.length} removed, ${r.kept.length} kept`); } catch (e) { out.push(`adopt rollback failed: ${(e as Error).message}`); }
+  }
+  try { killScanSession(); } catch { /* no tmux */ }
+  for (const f of [join(dirOf(), "state.json"), join(dirOf(), "current")]) { if (existsSync(f)) { rmSync(f, { recursive: true, force: true }); out.push(f); } }
+  return out;
+}
 export function doRollback(runId: unknown, force: boolean) {
   const r = rollbackRun(typeof runId === "string" && runId ? runId : undefined, { root: ROOT, force });
   if (r.ok && !r.nothingToDo) { const s = loadState(); if (!s.runId || s.runId === r.runId) setState({ phase: "rolledback" }); }

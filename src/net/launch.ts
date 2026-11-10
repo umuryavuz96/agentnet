@@ -2,13 +2,13 @@
 // Memory only. A claude that waits at a dialog (trust folder, approve MCP server, login) inside the hidden tmux session never
 // says hello; without this the page waits forever with no reason. connected = a root hello that arrived after startedAt.
 import { all } from "./store";
-import { hasSession as tmuxHas, realTmux, type Tmux } from "./windows";
+import { deathOf, hasSession as tmuxHas, realTmux, type Tmux } from "./windows";
 
 export type LaunchState = "idle" | "starting" | "waiting" | "connected" | "failed";
 export type LaunchStage = "session" | "claude" | "trust" | "hello";
 export interface DialogOption { id: string; label: string; selected: boolean }
 export interface Dialog { kind: "trust" | "mcp" | "mcp-multi"; title: string; options: DialogOption[]; /** mcp-multi: the servers on screen and whether the answer will enable them (adopt parked ones stay off) */ servers?: { name: string; checked: boolean; enable: boolean }[] }
-export interface Launch { state: LaunchState; dialog?: Dialog | null; startedAt: number | null; deadlineAt: number | null; stage: LaunchStage | null; error?: string; sessionName: string | null; attach: string | null; pane?: string }
+export interface Launch { state: LaunchState; dialog?: Dialog | null; startedAt: number | null; deadlineAt: number | null; stage: LaunchStage | null; error?: string; sessionName: string | null; attach: string | null; pane?: string; /** the director process exited: its exit status (null = unknown) */ exitCode?: number | null; hint?: string }
 
 export const LAUNCH_TIMEOUT_MS = 300_000, SESSION_GRACE_MS = 5_000;
 let cur: { startedAt: number; deadlineAt: number; session: string; failed?: string } | null = null;
@@ -130,6 +130,13 @@ const capturePane = (s: string, t: Tmux = realTmux): string => { const r = t.run
 const rootHelloAt = (): number | null => { const r = all().filter((a) => a.name === "root" && a.life === "live").map((a) => a.connectedAt ?? 0); return r.length ? Math.max(...r) : null; };
 const real: LaunchDeps = { now: Date.now, hasSession: (s) => tmuxHas(s), capture: (s) => capturePane(s), helloAt: rootHelloAt };
 
+/** What to do about the output of a director that died. */
+export function deathHint(out: string): string | undefined {
+  if (/unknown option|unrecognized option|unknown argument/i.test(out)) return "This Claude Code is too old for the options agentnet uses. Update it (npm i -g @anthropic-ai/claude-code, or claude update), then Retry.";
+  if (/log ?in|auth|not signed in|api key/i.test(out)) return "Claude Code is not signed in. Run claude once in a terminal, sign in, then Retry.";
+  return undefined;
+}
+
 const tail = (t: string) => t.split("\n").map((l) => l.trimEnd()).filter(Boolean).slice(-12).join("\n").slice(-1200);
 
 export function launchView(d: LaunchDeps = real): Launch {
@@ -141,6 +148,8 @@ export function launchView(d: LaunchDeps = real): Launch {
   if (cur.failed) return { ...base, state: "failed", stage: "session", error: cur.failed };
   const age = d.now() - startedAt;
   if (!d.hasSession(session)) {
+    const dead = deathOf(session); // set when the pane had exited (director.ts keeps it with remain-on-exit)
+    if (dead) return { ...base, state: "failed", stage: "claude", error: `Claude Code exited${dead.exitCode === null ? "" : ` with exit code ${dead.exitCode}`} before the director connected.`, pane: dead.output, exitCode: dead.exitCode, ...(deathHint(dead.output) ? { hint: deathHint(dead.output) } : {}) };
     return age < SESSION_GRACE_MS ? { ...base, state: "starting", stage: "session" } : { ...base, state: "failed", stage: "session", error: "The director's terminal session ended before it connected. Start it again." };
   }
   const text = d.capture(session), p = readPane(text, session);

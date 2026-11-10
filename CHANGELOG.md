@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.2
+
+When the director cannot start, the setup window now shows why. Reset director now really starts you over.
+
+**Director start failures**
+
+- If Claude Code exits right after it starts (an old version, not signed in), the Director ready step shows what it printed, its exit code and a hint: update Claude Code, or run `claude` once and sign in. The tmux session step stays green and "Claude Code is starting" shows the failure.
+- A director whose process has exited is no longer counted as running. Retry and Reset work on it as on a missing one.
+
+**Reset director**
+
+- Fixed: after Reset director, opening setup jumped to "Director ready" with nothing started and reported "The tmux session ended before the director connected".
+- Reset now returns to a first-run state. It undoes an applied adopt run (files you changed since are kept), clears the adopt state, the start record and the director's prompt files, and removes the director home note if you did not edit it. Your projects, backups, Claude transcripts and Claude login are never touched.
+
 ## 0.5.1
 
 Adopt setup is one guided flow, explains what it changes, and no longer hangs on "waiting for director".
