@@ -17,6 +17,8 @@ export interface Finding {
   agents: string[]; evidence: Evidence[]; suggestion: Suggestion; actions: Action[];
   /** Set by the server when an action targets ~/.claude (the card shows the red badge). */
   global?: boolean;
+  /** ids of findings whose actions switch this one off (the "system" card: nothing left to do by hand once those are applied) */
+  parkedBy?: string[];
 }
 export interface AdoptReport { version: 1; scanId: string; workspace: string; scanner: "director" | "static"; summary: string; findings: Finding[]; more?: number }
 
@@ -45,13 +47,35 @@ const ORDER: Record<Kind, number> = { "coordination-system": 0, "identity-claim"
 export function sortFindings(fs: Finding[]): Finding[] {
   return [...fs].sort((a, b) => ORDER[a.kind] - ORDER[b.kind] || a.id.localeCompare(b.id, "en", { numeric: true }));
 }
+/** A card with nothing to click: its parts are switched off by other cards (`parkedBy`), or it simply keeps running. */
+const isSystem = (f: Finding) => (f.suggestion === "keep-as-is" || f.suggestion === "manual") && !!f.parkedBy?.length && !f.actions.some((a) => a.op === "manual");
 export function groupFindings(fs: Finding[]) {
   const s = sortFindings(fs);
   return {
     cards: s.filter((f) => f.suggestion !== "keep-as-is" && f.suggestion !== "manual"),
-    manual: s.filter((f) => f.suggestion === "manual"),
-    fine: s.filter((f) => f.suggestion === "keep-as-is"),
+    system: s.filter(isSystem),
+    manual: s.filter((f) => f.suggestion === "manual" && !isSystem(f)),
+    fine: s.filter((f) => f.suggestion === "keep-as-is" && !isSystem(f)),
   };
+}
+/** True when every finding that parks this one is applied (and has an action left on). */
+export const parkedNow = (f: Finding, fs: Finding[], p: Picks) =>
+  !!f.parkedBy?.length && f.parkedBy.every((id) => { const g = fs.find((x) => x.id === id); return !!g && p.findings[id] === "apply" && (() => { const as = g.actions.filter((a) => a.op !== "manual"); return as.length > 0 && as.every((a) => !p.skipActions.includes(a.id)); })(); });
+
+export interface ParkGroup { key: string; label: string; global: boolean; actions: (Action & { op: "park-hook" | "park-mcp" })[] }
+/** The hooks and MCP servers of a switch-off card, grouped by where they live: one group per repo, one for the user's own files. Actions keep their own ids, so a group checkbox is just a set of per-action opt-outs. */
+export function parkGroups(f: Finding, base = ""): ParkGroup[] {
+  const m = new Map<string, ParkGroup>();
+  for (const a of f.actions) {
+    if (a.op !== "park-hook" && a.op !== "park-mcp") continue;
+    const repo = /^(.*)\/\.claude\/settings(?:\.local)?\.json$/.exec(a.file)?.[1] ?? (/^(.*)\/\.mcp\.json$/.exec(a.file)?.[1] ?? null);
+    const global = repo === null || /^\/(?:Users|home)\/[^/]+$/.test(repo) || repo === "/root";
+    const key = global ? "~" : repo!;
+    const label = global ? "Your own Claude Code settings" : repo === base ? baseName(repo) + " (this folder)" : baseName(repo!);
+    const g = m.get(key) ?? { key, label, global, actions: [] };
+    g.actions.push(a as ParkGroup["actions"][number]); m.set(key, g);
+  }
+  return [...m.values()].sort((a, b) => Number(a.global) - Number(b.global) || a.label.localeCompare(b.label));
 }
 /** Section 4.2 defaults: switch-off only for high confidence, souls on, neutralise off, low confidence starts on Skip. */
 export function defaultPicks(fs: Finding[]): Picks {
@@ -170,7 +194,69 @@ export function afterAdopt(r: AdoptReport & { after?: AfterServer }, picks: Pick
   const coordLeft = r.findings.some((f) => f.kind === "coordination-system" && !applied(f) && f.suggestion !== "keep-as-is");
   return {
     director: s.director ?? { name: "root" }, agents, stay, off: offAll,
-    messaging: s.messaging ?? (coordLeft ? "agentnet messages, but another message system still runs next to it. Two systems on the same agents can clash." : coord ? "agentnet messages only. Your old message system is switched off." : "agentnet messages. Nothing else coordinates your agents."),
+    messaging: (s.messaging && s.messaging.includes(" ") ? s.messaging : "") || (coordLeft ? "agentnet messages, but another message system still runs next to it. Two systems on the same agents can clash." : coord ? "agentnet messages only. Your old message system is switched off." : "agentnet messages. Nothing else coordinates your agents."),
     instructions: ["Your CLAUDE.md and rules still load.", "agentnet adds one block on top: the director is root, coordination goes through agentnet, repo rules win on project matters."],
+  };
+}
+
+// ---------- the After adopt panel: sections of plain rows, hooks grouped by repo ----------
+export interface AfterRow { name: string; where?: string; full?: string; note?: string }
+export interface AfterGroup { key: string; label: string; global: boolean; rows: AfterRow[] }
+export interface AfterPlan { director: { name: string; model?: string }; agents: AfterAgent[]; off: AfterGroup[]; offCount: number; stay: AfterGroup[]; stayCount: number; messaging: string; notes: string[] }
+
+/** "check-inbox.sh" out of "$CLAUDE_PROJECT_DIR/bin/check-inbox.sh --quiet". Empty when the command was hidden by the redaction. */
+export function scriptName(cmd: string): string {
+  const t = cmd.split(/\s+/).filter(Boolean).find((x) => /[\w.-]\.[a-z0-9]{1,4}$/i.test(x) && !x.includes("***")) ?? cmd.split(/\s+/).filter(Boolean).pop() ?? "";
+  const b = baseName(t);
+  return /\*\*\*/.test(b) ? "" : b;
+}
+/** Plain name of a hook: "Stop hook: runs check-inbox.sh". A command hidden by the secret redaction gets a readable label instead of "***". */
+export function hookRow(event: string, cmd: string): Pick<AfterRow, "name" | "note"> {
+  const s = scriptName(cmd);
+  return s ? { name: `${event} hook: runs ${s}` } : { name: `${event} hook`, note: "Command hidden: it contains a secret" };
+}
+const tilde = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+\//, "~/");
+/** Shorten the middle of a long path, keep the start and the file name: "~/projects/…/bin/check-inbox.sh". */
+export function midEllipsis(p: string, max = 40): string {
+  if (p.length <= max) return p;
+  const parts = p.split("/"), last = parts[parts.length - 1], first = parts.slice(0, 2).join("/");
+  const tail = last.length > max - 8 ? last.slice(0, max - 9) + "…" : last;
+  return `${first}/…/${tail}`.length <= max + 2 ? `${first}/…/${tail}` : "…/" + tail;
+}
+
+export function afterPlan(r: AdoptReport & { after?: AfterServer }, picks: Picks, base?: string): AfterPlan {
+  const s = r.after ?? {}, applied = (f: Finding) => picks.findings[f.id] === "apply";
+  const off = new Map<string, AfterGroup>(), stay = new Map<string, AfterGroup>();
+  const put = (m: Map<string, AfterGroup>, key: string, label: string, global: boolean, row: AfterRow) => { const g = m.get(key) ?? { key, label, global, rows: [] }; g.rows.push(row); m.set(key, g); };
+  const agents: AfterAgent[] = [...(s.agents ?? [])];
+  for (const f of r.findings) {
+    if (f.suggestion === "adopt-as-souls") {
+      if (!s.agents && applied(f)) for (const a of f.actions) if (a.op === "register-souls" && !picks.skipActions.includes(a.id)) agents.push({ name: a.name, role: "workspace soul", source: a.defFile ? shortPath(a.defFile, base) : "CLAUDE.md" });
+      continue;
+    }
+    for (const g of parkGroups(f, base)) for (const a of g.actions) {
+      const rel = g.global ? tilde(a.file) : a.file.slice(g.key.length + 1);
+      const row: AfterRow = a.op === "park-hook" ? { ...hookRow(a.event, a.commandIncludes), where: rel, full: tilde(a.file) } : { name: `MCP server: ${a.server}`, where: rel, full: tilde(a.file) };
+      const on = applied(f) && !picks.skipActions.includes(a.id);
+      put(on ? off : stay, g.key, g.label, g.global, row);
+    }
+    for (const a of f.actions) if (a.op === "disable-lines") {
+      const row: AfterRow = { name: `${baseName(a.file)} ${a.fromLine === a.toLine ? "line " + a.fromLine : "lines " + a.fromLine + "-" + a.toLine}`, where: shortPath(a.file, base), full: tilde(a.file) };
+      const on = applied(f) && !picks.skipActions.includes(a.id);
+      put(on ? off : stay, "instr", "Instruction lines", false, row);
+    }
+    if (f.parkedBy?.length && !f.actions.some((x) => x.op === "manual")) put(parkedNow(f, r.findings, picks) ? off : stay, "system", "Old message system", false, { name: f.title, note: parkedNow(f, r.findings, picks) ? "Nothing left that loads" : "Keeps running beside agentnet" });
+  }
+  // things the scan saw but proposed no action for, as the server lists them (hooks and MCP servers that stay; CLAUDE.md files that still load)
+  const loads = (s.stay ?? []).filter((x) => x.kind === "instructions").length;
+  for (const x of s.stay ?? []) if (x.kind !== "instructions") put(stay, "seen", "Seen, not touched", false, { name: x.label, where: x.file, full: x.file });
+  const count = (m: Map<string, AfterGroup>) => [...m.values()].filter((g) => g.key !== "system").reduce((n, g) => n + g.rows.length, 0); // the message-system line is a status, not a file
+  const order = (m: Map<string, AfterGroup>) => [...m.values()].sort((a, b) => Number(a.global) - Number(b.global) || a.label.localeCompare(b.label));
+  const coordLeft = r.findings.some((f) => f.kind === "coordination-system" && !applied(f) && f.suggestion !== "keep-as-is") || [...stay.values()].some((g) => g.key !== "system" && g.key !== "instr");
+  const anyOff = count(off) > 0;
+  return {
+    director: s.director ?? { name: "root" }, agents, off: order(off), offCount: count(off), stay: order(stay), stayCount: count(stay),
+    messaging: (s.messaging && s.messaging.includes(" ") ? s.messaging : "") || (coordLeft ? "agentnet messages, but another message system still runs next to it. Two systems on the same agents can clash." : anyOff ? "agentnet messages only. Your old message system is switched off." : "agentnet messages. Nothing else coordinates your agents."),
+    notes: [loads ? `Your CLAUDE.md files still load (${loads}).` : "Your CLAUDE.md and rules still load.", "agentnet adds one block on top: the director is root, repo rules win on project matters."],
   };
 }

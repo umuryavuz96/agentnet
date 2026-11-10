@@ -5,13 +5,16 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSy
 import { dirname, join } from "node:path";
 import { ROOT } from "../core/config";
 import { sha256File, writeAtomic } from "./adopt-safe";
+import { putMember } from "./adopt-json";
 import { computeChanges, planIdFor, type OpDesc, type Parked, type Plan } from "./adopt-plan";
 import { registerSouls, removeSouls, wsDir } from "./workspace";
 
 export const KEEP_RUNS = 5;
 export interface FsOps { /** write a file atomically; tests make the Nth call fail */ write(path: string, text: string, mode: number): void }
 export interface ApplyOpts { root?: string; /** repos named in the director prompt; default: the repos of the souls */ repos?: string[]; workspaceDir?: string; confirmGlobal?: boolean; builtinRoles?: string[]; fsOps?: Partial<FsOps>; now?: () => number }
-export interface ManifestFile { file: string; /** null = the file did not exist before (created by the run) */ beforeSha: string | null; afterSha: string; backup: string | null; mode: number; opIds: string[] }
+export interface ManifestFile { file: string; /** null = the file did not exist before (created by the run) */ beforeSha: string | null; afterSha: string; backup: string | null; mode: number; opIds: string[];
+  /** entries cut out of a file we do not own (~/.claude.json): undo puts only these back. `rawFile` is a 0600 file in the run dir holding the exact text. */
+  members?: { path: string[]; server: string; rawFile: string }[] }
 export interface Manifest {
   runId: string; createdAt: string; workspace: string; planId: string; state: "applying" | "applied" | "rolledback" | "failed";
   files: ManifestFile[]; ops: { id: string; op: string; file?: string; findingId: string | null; fromActions: string[] }[];
@@ -72,7 +75,12 @@ export async function applyPlan(plan: Plan, opts: ApplyOpts = {}): Promise<Apply
         const backup = join(backupRoot, c.file);
         mkdir700(dirname(backup)); copyFileSync(c.file, backup); chmodSync(backup, 0o600);
         if (sha256File(backup) !== c.beforeSha) throw new Error(`backup of ${c.file} does not match the original`);
-        files.push({ file: c.file, beforeSha: c.beforeSha, afterSha: c.afterSha, backup, mode: statSync(c.file).mode & 0o777, opIds: c.steps.map((s) => plan.ops[s.opIndex].id) });
+        const members = c.steps.flatMap((s) => (s.member ? [s.member] : [])).map((mb, k) => {
+          const rawFile = join(runDir, "parked", `${files.length}-${k}.json`);
+          mkdir700(dirname(rawFile)); writeAtomic(rawFile, mb.raw, 0o600);
+          return { path: mb.path, server: mb.server, rawFile };
+        });
+        files.push({ file: c.file, beforeSha: c.beforeSha, afterSha: c.afterSha, backup, mode: statSync(c.file).mode & 0o777, opIds: c.steps.map((s) => plan.ops[s.opIndex].id), ...(members.length ? { members } : {}) });
       }
       if (promptOp && "file" in promptOp) {
         const pf = promptOp.file;
@@ -165,6 +173,16 @@ function restore(m: Manifest, root: string, wsd: string, force: boolean): { rest
     const cur = shaOrNull(f.file);
     if (cur === f.beforeSha) continue; // already original (or never written)
     const mine = cur === f.afterSha;
+    if (f.members?.length && !mine && cur !== null) {
+      // the file moved on since apply (Claude Code rewrites ~/.claude.json all the time): put back only our entries, touch nothing else
+      let text = readFileSync(f.file, "utf8"); const why: string[] = [];
+      for (const mb of f.members) {
+        try { text = putMember(text, mb.path, mb.server, readFileSync(mb.rawFile, "utf8")); } catch (e) { why.push(`${mb.server}: ${(e as Error).message}`); }
+      }
+      if (why.length) kept.push({ file: f.file, backup: f.backup, why: `could not put back ${why.join("; ")}` });
+      else { try { JSON.parse(text); } catch { kept.push({ file: f.file, backup: f.backup, why: "result would not be valid JSON" }); continue; } writeAtomic(f.file, text, f.mode); restored.push(f.file); }
+      continue;
+    }
     // afterSha "" = the prompt file when the run failed before writing it: any current content other than the backup is ours
     const unknownAfter = f.afterSha === "";
     if (cur !== null && !mine && !unknownAfter && !force) { kept.push({ file: f.file, backup: f.backup, why: "edited after the run" }); continue; }

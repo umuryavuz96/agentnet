@@ -6,14 +6,14 @@ import { computed, ref } from "vue";
 import Icon from "../ui/Icon.vue";
 import { toast } from "../ui/api";
 import AgentnetAdoptAfter from "./AgentnetAdoptAfter.vue";
-import { changeOf, groupFindings, hasPicks, isGlobal, pickedFiles, shortPath, soulName, type AdoptReport, type Finding, type Picks } from "../adopt";
+import { changeOf, groupFindings, hasPicks, isGlobal, parkedNow, parkGroups, pickedFiles, shortPath, soulName, type AdoptReport, type Finding, type Picks } from "../adopt";
 
 const props = defineProps<{ report: AdoptReport; picks: Picks; busy?: boolean; base?: string }>();
 const emit = defineEmits<{ preview: []; back: []; rescan: [] }>();
 
 const groups = computed(() => groupFindings(props.report.findings));
 const files = computed(() => pickedFiles(props.report.findings, props.picks));
-const empty = computed(() => !groups.value.cards.length && !groups.value.manual.length);
+const empty = computed(() => !groups.value.cards.length && !groups.value.manual.length && !groups.value.system.length);
 const open = ref<Record<string, boolean>>({});
 const fineOpen = ref(false);
 const toggle = (id: string) => (open.value[id] = !open.value[id]);
@@ -33,6 +33,14 @@ function toggleAllSouls(f: Finding) {
   for (const id of ids) { const i = s.indexOf(id); if (all && i < 0) s.push(id); else if (!all && i >= 0) s.splice(i, 1); }
   props.picks.findings[f.id] = all ? "skip" : "apply";
 }
+const parks = (f: Finding) => (f.suggestion === "switch-off" ? parkGroups(f, props.base) : []);
+const groupOn = (g: { actions: { id: string }[] }) => g.actions.some((a) => soulOn(a.id));
+function toggleGroup(f: Finding, g: { actions: { id: string }[] }) {
+  const s = props.picks.skipActions, turnOff = groupOn(g);
+  for (const a of g.actions) { const i = s.indexOf(a.id); if (turnOff && i < 0) s.push(a.id); else if (!turnOff && i >= 0) s.splice(i, 1); }
+  if (!turnOff) props.picks.findings[f.id] = "apply";
+}
+const kindCount = (g: { actions: { op: string }[] }) => { const h = g.actions.filter((a) => a.op === "park-hook").length, m = g.actions.length - h; return [h ? `${h} ${h === 1 ? "hook" : "hooks"}` : "", m ? `${m} MCP ${m === 1 ? "server" : "servers"}` : ""].filter(Boolean).join(" + "); };
 const sourceNote = (a: Finding["actions"][number]) => (a.op === "register-souls" ? (a.source === "agent-def" && a.defFile ? a.defFile.split("/").slice(-3).join("/") : "CLAUDE.md only") : "");
 const sp = (p: string) => shortPath(p, props.base);
 const loc = (e: Finding["evidence"][number]) => sp(e.path) + (e.line ? ":" + e.line : "");
@@ -84,6 +92,14 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
           </ul></div>
         </template>
 
+        <ul v-if="parks(f).length > 1" class="af-souls af-park" aria-label="Where to switch off">
+          <li v-for="g in parks(f)" :key="g.key">
+            <button type="button" role="checkbox" class="af-ck" :aria-checked="groupOn(g) && on(f)" @click="toggleGroup(f, g)">
+              <i class="box"><Icon v-if="groupOn(g) && on(f)" name="check" :size="13" /></i><b>{{ g.label }}</b><span>{{ kindCount(g) }}</span>
+            </button>
+          </li>
+        </ul>
+
         <template v-if="f.suggestion === 'adopt-as-souls'">
           <button type="button" role="checkbox" class="af-ck all" :aria-checked="souls(f).every((a) => soulOn(a.id)) && on(f)" @click="toggleAllSouls(f)">
             <i class="box"><Icon v-if="souls(f).every((a) => soulOn(a.id)) && on(f)" name="check" :size="13" /></i> Add all as workspace souls
@@ -102,6 +118,14 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
             <button v-for="c in choices(f)" :key="c.label" type="button" role="radio" class="af-opt" :class="{ sel: isSel(f, c), prime: c.v === 'apply' }" :aria-checked="isSel(f, c)" :tabindex="isSel(f, c) ? 0 : -1" @click="pick(f, c.v, c.expand)">{{ c.label }}</button>
           </div>
         </template>
+      </li>
+    </ul>
+
+    <ul v-if="groups.system.length" class="af-list">
+      <li v-for="f in groups.system" :key="f.id" class="af-card sys">
+        <div class="af-top"><h3>{{ f.title }}</h3><span class="af-pill" :class="parkedNow(f, report.findings, picks) ? 'high' : 'medium'">{{ parkedNow(f, report.findings, picks) ? "Parked" : "Keeps running" }}</span></div>
+        <p class="af-about">{{ f.about }}</p>
+        <p class="af-sys"><Icon :name="parkedNow(f, report.findings, picks) ? 'check' : 'circle'" :size="14" /> {{ parkedNow(f, report.findings, picks) ? "Parked by the actions above. Nothing is left to do by hand." : "Keeps running beside agentnet. Switch off the cards above to park it." }}</p>
       </li>
     </ul>
 
@@ -186,6 +210,8 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
 .box{flex:none;display:grid;place-items:center;width:20px;height:20px;border:1.5px solid var(--muted);border-radius:6px;font-style:normal;transition:background .15s,border-color .15s}
 .af-ck[aria-checked="true"] .box{background:var(--on);border-color:var(--on);color:#06210f}
 .af-souls{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:2px 8px}
+.af-park{grid-template-columns:1fr}
+.af-sys{display:flex;gap:6px;align-items:center;margin:0;font:600 12.5px var(--body);color:var(--muted)}
 .af-cmds{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .af-ct{font:600 12.5px var(--body);color:var(--muted)}
 .af-cmd{display:flex;align-items:center;gap:8px;margin-top:4px;padding:6px 6px 6px 10px;border:1px solid var(--line);border-radius:12px;background:var(--track)}

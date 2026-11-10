@@ -7,6 +7,10 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { redact } from "../core/redact";
 
 export const MAX_READ_BYTES = 200 * 1024;
+/** ~/.claude.json grows with every project and chat. It is read only for its MCP server entries, so it gets a bigger cap than other files. */
+export const MAX_CLAUDE_JSON_BYTES = 16 * 1024 * 1024;
+export const userClaudeJson = () => join(process.env.HOME ?? homedir(), ".claude.json");
+export const capFor = (path: string) => (resolve(path) === userClaudeJson() ? MAX_CLAUDE_JSON_BYTES : MAX_READ_BYTES);
 
 /** File names that are never read, whatever the folder. Compared against the base name, case-insensitive. */
 export const DENY_NAMES: RegExp[] = [
@@ -42,12 +46,12 @@ export function denyReason(path: string, roots: string[]): string | null {
 }
 
 /** True when `path` may be read for a scan: inside a root, not on the deny list, <= 200 KB, not binary. Directories pass the policy (size/binary only apply to files). */
-export function allowedRead(path: string, roots: string[]): boolean {
+export function allowedRead(path: string, roots: string[], maxBytes = MAX_READ_BYTES): boolean {
   if (denyReason(path, roots)) return false;
   try {
     const st = statSync(path);
     if (st.isDirectory()) return true;
-    if (!st.isFile() || st.size > MAX_READ_BYTES) return false;
+    if (!st.isFile() || st.size > maxBytes) return false;
     const fd = openSync(path, "r");
     try { const b = Buffer.alloc(Math.min(4096, st.size)); readSync(fd, b, 0, b.length, 0); if (b.includes(0)) return false; } finally { closeSync(fd); }
     return true;

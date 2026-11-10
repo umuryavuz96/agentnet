@@ -45,3 +45,62 @@ describe("adopt helpers", () => {
     expect(planSummary(p)).toBe("1 file changes, 2 files are created, 1 file is backed up first.");
   });
 });
+
+// ---------- Park for me: hooks per repo, global MCP, system card, After panel ----------
+import { afterPlan, groupFindings as gf, hookRow, midEllipsis, parkGroups, parkedNow, scriptName } from "./adopt";
+import type { Finding as F2, Picks as P2 } from "./adopt";
+const hookF = (): F2 => ({
+  id: "f1", kind: "coordination-system", title: "Inbox hooks", about: "a", confidence: "high", risk: "medium", agents: [], evidence: [], suggestion: "switch-off",
+  actions: [
+    { id: "a1", op: "park-hook", file: "/w/repoA/.claude/settings.json", event: "Stop", commandIncludes: "$CLAUDE_PROJECT_DIR/bin/check-inbox.sh" },
+    { id: "a2", op: "park-hook", file: "/w/repoA/.claude/settings.local.json", event: "Stop", commandIncludes: "poll.sh" },
+    { id: "a3", op: "park-hook", file: "/w/repoB/.claude/settings.json", event: "UserPromptSubmit", commandIncludes: "***" },
+    { id: "a4", op: "park-mcp", file: "/Users/me/.claude.json", server: "msg-bus" },
+  ],
+});
+const sysF = (): F2 => ({ id: "f2", kind: "coordination-system", title: "The message system", about: "a", confidence: "high", risk: "low", agents: [], evidence: [], suggestion: "keep-as-is", actions: [], parkedBy: ["f1"] });
+const rep = () => ({ version: 1 as const, scanId: "s", workspace: "/w", scanner: "director" as const, summary: "x", findings: [hookF(), sysF()] });
+
+test("parkGroups: one group per repo, the user's own files last", () => {
+  const g = parkGroups(hookF(), "/w");
+  expect(g.map((x) => x.label)).toEqual(["repoA", "repoB", "Your own Claude Code settings"]);
+  expect(g[0].actions.length).toBe(2);
+  expect(g[2].global).toBe(true);
+});
+test("hook names are plain and a hidden command gets a readable label", () => {
+  expect(scriptName("$CLAUDE_PROJECT_DIR/bin/check-inbox.sh --quiet")).toBe("check-inbox.sh");
+  expect(hookRow("Stop", "$CLAUDE_PROJECT_DIR/bin/check-inbox.sh").name).toBe("Stop hook: runs check-inbox.sh");
+  const h = hookRow("Stop", "***");
+  expect(h.name).toBe("Stop hook");
+  expect(h.note).toMatch(/hidden/i);
+});
+test("midEllipsis keeps the start and the file name", () => {
+  expect(midEllipsis("short/file.json")).toBe("short/file.json");
+  const m = midEllipsis("~/projects/some/very/deep/folder/.claude/settings.local.json", 36);
+  expect(m.length).toBeLessThanOrEqual(38);
+  expect(m.startsWith("~/projects/")).toBe(true);
+  expect(m.endsWith("settings.local.json") || m.endsWith("…")).toBe(true);
+});
+test("system card: not a manual card, parked once the finding that parks it is applied", () => {
+  const r = rep(), g = gf(r.findings);
+  expect(g.system.map((f) => f.id)).toEqual(["f2"]);
+  expect(g.manual).toEqual([]);
+  const on: P2 = { findings: { f1: "apply" }, skipActions: [] }, off: P2 = { findings: { f1: "skip" }, skipActions: [] };
+  expect(parkedNow(r.findings[1], r.findings, on)).toBe(true);
+  expect(parkedNow(r.findings[1], r.findings, off)).toBe(false);
+  expect(parkedNow(r.findings[1], r.findings, { findings: { f1: "apply" }, skipActions: ["a1", "a2", "a3", "a4"] })).toBe(false);
+});
+test("After panel follows the picks: a repo left on moves to Keeps running", () => {
+  const all = afterPlan(rep(), { findings: { f1: "apply" }, skipActions: [] }, "/w");
+  expect(all.offCount).toBe(4); // 4 actions; the system card is a status line
+  expect(all.stayCount).toBe(0);
+  expect(all.off.map((g) => g.label)).toEqual(["Old message system", "repoA", "repoB", "Your own Claude Code settings"].sort((a, b) => (a === "Your own Claude Code settings" ? 1 : b === "Your own Claude Code settings" ? -1 : a.localeCompare(b))));
+  const part = afterPlan(rep(), { findings: { f1: "apply" }, skipActions: ["a1", "a2"] }, "/w");
+  expect(part.offCount).toBe(2);
+  expect(part.stay.find((g) => g.label === "repoA")?.rows.length).toBe(2);
+  expect(part.messaging).toMatch(/still runs next to it/);
+  expect(part.stay.find((g) => g.key === "system")?.rows[0].note).toMatch(/beside agentnet/); // repoA left on: the old system keeps running
+  const none = afterPlan(rep(), { findings: { f1: "skip" }, skipActions: [] }, "/w");
+  expect(none.offCount).toBe(0);
+  expect(none.stay.find((g) => g.key === "system")?.rows[0].note).toMatch(/beside agentnet/);
+});

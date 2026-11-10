@@ -25,6 +25,8 @@ export type Action =
 export interface Finding {
   id: string; kind: Kind; title: string; about: string; confidence: (typeof LEVELS)[number]; risk: (typeof RISKS)[number];
   agents: string[]; evidence: Evidence[]; suggestion: Suggestion; actions: Action[];
+  /** ids of other findings whose actions switch this one off: when they are applied the card reads "Parked by the actions above" instead of "do by hand" */
+  parkedBy?: string[];
   /** set by the server: an action targets a file under ~/.claude, which affects every Claude Code session */
   global?: boolean;
 }
@@ -33,6 +35,8 @@ export interface AdoptReport { version: 1; scanId: string; workspace: string; sc
 export const MAX_REPORT_BYTES = 64 * 1024;
 export const MAX_FINDINGS = 40;
 export const MAX_LINE_RANGE = 60;
+/** Hooks in 7 repos are 14 settings files: one finding may carry this many actions. */
+export const MAX_ACTIONS = 40;
 const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,30}$/;
 
 export interface ValidateOpts { scanId?: string; scanner?: "director" | "static"; builtinRoles?: Iterable<string> }
@@ -121,7 +125,7 @@ export function validateReport(raw: unknown, facts: Facts, opts: ValidateOpts = 
     });
 
     const actions: Action[] = [];
-    if (!Array.isArray(rf.actions) || rf.actions.length > 12) err(`${fp}.actions`, "must be an array of at most 12 actions");
+    if (!Array.isArray(rf.actions) || rf.actions.length > MAX_ACTIONS) err(`${fp}.actions`, `must be an array of at most ${MAX_ACTIONS} actions`);
     else rf.actions.forEach((a, j) => {
       const ap = `${fp}.actions[${j}]`;
       if (!isObj(a)) { err(ap, "must be an object"); return; }
@@ -184,12 +188,18 @@ export function validateReport(raw: unknown, facts: Facts, opts: ValidateOpts = 
     });
     if (suggestion && Array.isArray(rf.actions) && !rf.actions.length && suggestion !== "keep-as-is" && suggestion !== "manual") err(`${fp}.actions`, "empty only for keep-as-is and manual");
 
+    let parkedBy: string[] | undefined;
+    if (rf.parkedBy !== undefined) {
+      if (Array.isArray(rf.parkedBy) && rf.parkedBy.length <= 6 && rf.parkedBy.every((x) => typeof x === "string" && /^f[0-9]{1,3}$/.test(x))) parkedBy = [...new Set(rf.parkedBy as string[])];
+      else err(`${fp}.parkedBy`, "must be an array of up to 6 finding ids");
+    }
     if (errors.length > before || !id || !kind || !title || !about || !confidence || !risk || !suggestion) return;
     const global = actions.some((a) => ("file" in a && isGlobal(a.file)));
     if (global && risk === "low") risk = "medium";
-    findings.push({ id, kind, title, about, confidence, risk, agents, evidence, suggestion, actions, ...(global ? { global: true } : {}) });
+    findings.push({ id, kind, title, about, confidence, risk, agents, evidence, suggestion, actions, ...(parkedBy?.length ? { parkedBy } : {}), ...(global ? { global: true } : {}) });
   });
 
+  for (const f of findings) if (f.parkedBy) { f.parkedBy = f.parkedBy.filter((x) => x !== f.id && seenF.has(x)); if (!f.parkedBy.length) delete f.parkedBy; }
   if (errors.length || summary === null) return { ok: false, errors: errors.length ? errors : ["summary: invalid"] };
   // keep the strongest findings when there are more than the UI shows
   const rank = (f: Finding) => (RISKS.length - 1 - RISKS.indexOf(f.risk)) * 3 + LEVELS.indexOf(f.confidence);

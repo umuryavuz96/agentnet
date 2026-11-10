@@ -4,7 +4,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { allowedRead, sha256Text } from "./adopt-safe";
+import { allowedRead, capFor, sha256Text, userClaudeJson } from "./adopt-safe";
+import { cutMember, mcpHolders } from "./adopt-json";
 import { ROOT } from "../core/config";
 import { soulBody, wsCatalog, wsDir } from "./workspace";
 import type { Action, AdoptReport, Finding } from "./adopt-report";
@@ -33,7 +34,8 @@ export interface Plan {
   needsConfirmGlobal: boolean; warnings: string[];
 }
 /** What a change of one file looks like before it is written. `parked` holds the removed hook / MCP entry (env and header values blanked). */
-export interface FileChange { file: string; beforeText: string; afterText: string; beforeSha: string; afterSha: string; steps: { opIndex: number; beforeSha: string; afterSha: string; diff: string; parked?: Parked }[] }
+export interface FileChange { file: string; beforeText: string; afterText: string; beforeSha: string; afterSha: string; steps: { opIndex: number; beforeSha: string; afterSha: string; diff: string; parked?: Parked; /** the exact removed member text of ~/.claude.json (may hold secrets: goes to a 0600 file in the run, never into the manifest or the plan) */ member?: Member }[] }
+export interface Member { path: string[]; server: string; raw: string }
 export interface Parked { file: string; kind: "hook" | "mcp"; event?: string; matcher?: string | null; server?: string; entry: unknown }
 /** The plan id: a hash over the ops (without the diff text), the file shas and the run id. apply recomputes it to prove the plan object was not edited. */
 export const planIdFor = (p: Pick<Plan, "workspace" | "scanId" | "runId" | "ops" | "files">): string =>
@@ -83,6 +85,9 @@ export function unifiedDiff(a: string, b: string, labelA = "a", labelB = "b"): s
 }
 
 // ---------- ops on text ----------
+/** The diff shown for a change. For ~/.claude.json it names the entry only: the file holds history and secrets we do not print. */
+const d_diff = (before: string, after: string, file: string, member?: Member) =>
+  member ? `--- a${file}\n+++ b${file}\n@@ ${member.path.join(".")} @@\n-  "${member.server}": { ... }  (entry moved to the agentnet backup; env and headers hidden)\n` : unifiedDiff(before, after, `a${file}`, `b${file}`);
 const blank = (v: unknown, key = ""): unknown => {
   if (Array.isArray(v)) return v.map((x) => blank(x));
   if (isObj(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, /^(env|headers)$/i.test(k) && isObj(x) ? Object.fromEntries(Object.keys(x).map((e) => [e, "***"])) : blank(x, k)]));
@@ -94,7 +99,7 @@ const without = (o: Obj, k: string) => { const c = { ...o }; delete c[k]; return
 export const stub = (from: number, to: number, runId: string) => `<!-- agentnet: lines ${from}-${to} switched off by run ${runId}; original in backup -->`;
 
 /** Apply one file op to text. Throws Error with a readable message when the target is missing, ambiguous or the change would touch more than intended. */
-export function applyOpText(text: string, d: OpDesc, runId: string): { text: string; parked?: Parked } {
+export function applyOpText(text: string, d: OpDesc, runId: string): { text: string; parked?: Parked; member?: Member } {
   if (d.op === "disable-lines") {
     const lines = text.split("\n");
     if (d.fromLine < 1 || d.toLine < d.fromLine || d.toLine > lines.length) throw new Error(`${d.file}: lines ${d.fromLine}-${d.toLine} are outside the file`);
@@ -115,6 +120,14 @@ export function applyOpText(text: string, d: OpDesc, runId: string): { text: str
     const hk = hooks as Obj;
     if (!(g.hooks as unknown[]).length) { const gi = (groups as unknown[]).indexOf(g); (groups as unknown[]).splice(gi, 1); if (!(groups as unknown[]).length) delete hk[d.event]; }
     return { text: dumpJson(j), parked: { file: d.file, kind: "hook", event: d.event, matcher: d.matcher, entry } };
+  }
+  if (d.op === "park-mcp" && d.file === userClaudeJson()) {
+    // the user's ~/.claude.json: cut one member by text so every other byte stays as it was
+    const h = mcpHolders(text, d.server);
+    if (h.length !== 1) throw new Error(`${d.file}: ${h.length} MCP servers named "${d.server}", expected exactly 1`);
+    const cut = cutMember(text, h[0], d.server);
+    const entry = blank((JSON.parse(`{${cut.raw}}`) as Obj)[d.server]);
+    return { text: cut.text, parked: { file: d.file, kind: "mcp", server: d.server, entry }, member: { path: h[0], server: d.server, raw: cut.raw } };
   }
   if (d.op === "park-mcp") {
     const j = JSON.parse(text) as Obj;
@@ -152,7 +165,7 @@ export function computeChanges(descs: OpDesc[], runId: string): FileChange[] {
         if (!key) { const strip = (o: Obj) => { const c = JSON.parse(JSON.stringify(o)) as Obj; delete c.mcpServers; if (isObj(c.projects)) for (const p of Object.values(c.projects)) if (isObj(p)) delete p.mcpServers; return JSON.stringify(c); }; if (strip(a) !== strip(b)) throw new Error(`${file}: change would touch more than mcpServers`); }
       }
       cur = r.text;
-      steps.push({ opIndex: i, beforeSha: sha256Text(before), afterSha: sha256Text(cur), diff: unifiedDiff(before, cur, `a${file}`, `b${file}`), parked: r.parked });
+      steps.push({ opIndex: i, beforeSha: sha256Text(before), afterSha: sha256Text(cur), diff: d_diff(before, cur, file, r.member), parked: r.parked, member: r.member });
     }
     out.push({ file, beforeText: original, afterText: cur, beforeSha: sha256Text(original), afterSha: sha256Text(cur), steps });
   }
@@ -189,7 +202,7 @@ export function buildPlan(report: AdoptReport, picks: Picks, ctx: PlanCtx): Plan
     else if (a.op === "disable-lines") add({ op: a.op, file: a.file, fromLine: a.fromLine, toLine: a.toLine }, a.id, f.id);
     else if (a.op === "register-souls") add({ op: a.op, repo: a.repo, name: a.name, source: a.source, ...(a.defFile ? { defFile: a.defFile } : {}), ...(a.roleClash ? { roleClash: true } : {}) }, a.id, f.id);
   }
-  for (const d of descs) if ("file" in d && !allowedRead(d.file, readRoots)) errors.push(`${d.file}: not a file the plan may change`);
+  for (const d of descs) if ("file" in d && !allowedRead(d.file, readRoots, capFor(d.file))) errors.push(`${d.file}: not a file the plan may change`);
   const dirPrompt = directorPromptFile(root);
   add({ op: "write-director-prompt", file: dirPrompt }, null, null);
   if (errors.length) return { ok: false, errors };

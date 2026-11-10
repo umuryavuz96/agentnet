@@ -10,7 +10,7 @@ import { problem, type Env } from "../core/http";
 import { audit, logEvent } from "../core/logger";
 import { writeAtomic } from "./adopt-safe";
 import { collectFacts, type Facts } from "./adopt-scan";
-import { validateReport, type Action, type AdoptReport, type Evidence, type Finding } from "./adopt-report";
+import { MAX_ACTIONS, validateReport, type Action, type AdoptReport, type Evidence, type Finding } from "./adopt-report";
 import { buildPlan, type Picks, type Plan } from "./adopt-plan";
 import { applyPlan, listRuns, noteLateFile, rollbackRun } from "./adopt-apply";
 import { explainReport } from "./adopt-explain";
@@ -82,7 +82,7 @@ export function staticReport(facts: Facts): { summary: string; findings: Finding
     if (c) coord.a.push({ id: A(), op: "park-hook", file: String(s.file), event: String(s.event), matcher: (s.matcher as string | null) ?? null, commandIncludes: c });
   }
   for (const s of sig("S-MCP")) { coord.f.push(ev(s, `${s.server}: ${s.command}`)); coord.a.push({ id: A(), op: "park-mcp", file: String(s.file), server: String(s.server) }); }
-  if (coord.f.length) findings.push({ id: `f${++fid}`, kind: "coordination-system", title: "Something here moves messages between agents", about: "Hooks or tool servers in this workspace mention inboxes, messages or teams. They may be a second coordination system that clashes with agentnet. This basic scan cannot tell for sure.", confidence: "low", risk: "medium", agents: [], evidence: coord.f.slice(0, 8), suggestion: "switch-off", actions: coord.a.slice(0, 12) });
+  if (coord.f.length) findings.push({ id: `f${++fid}`, kind: "coordination-system", title: "Something here moves messages between agents", about: "Hooks or tool servers in this workspace mention inboxes, messages or teams. They may be a second coordination system that clashes with agentnet. This basic scan cannot tell for sure.", confidence: "low", risk: "medium", agents: [], evidence: coord.f.slice(0, 8), suggestion: "switch-off", actions: coord.a.slice(0, MAX_ACTIONS) });
   // 2. identity claims
   const ids = sig("S-INSTR-IDENTITY");
   if (ids.length) findings.push({ id: `f${++fid}`, kind: "identity-claim", title: "Instructions say who the main agent is", about: "A rules file tells the agent it is a named coordinator. The agentnet director would take that name. agentnet rules win either way; you can also switch those lines off.", confidence: "low", risk: "low", agents: [], evidence: ids.slice(0, 8).map((s) => ({ ...ev(s, String(s.text)), line: Number(s.line) })), suggestion: "neutralise-lines", actions: ids.slice(0, 12).map((s) => ({ id: A(), op: "disable-lines" as const, file: String(s.file), fromLine: Number(s.line), toLine: Number(s.line), why: "names the main agent" })) });

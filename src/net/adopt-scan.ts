@@ -4,7 +4,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { allowedRead, denyReason, redactText, sha256Text } from "./adopt-safe";
+import { allowedRead, denyReason, MAX_CLAUDE_JSON_BYTES, redactText, sha256Text } from "./adopt-safe";
 import { scriptOf } from "./hooks";
 
 /** Behaviour lexicon: plain words, no product names. Whole-word, case-insensitive; `_ - / .` count as separators. */
@@ -84,17 +84,17 @@ export function collectFacts(workspaceIn: string, opts: CollectOpts = {}): Facts
   const allRoots = [...roots, ...scriptRoots];
 
   /** The one door for reading text: policy, budget, clock. Returns null when refused. */
-  const read = (path: string, readRoots = allRoots): string | null => {
+  const read = (path: string, readRoots = allRoots, cap?: number): string | null => {
     if (now() - t0 > LIMITS.ms) { skip("limits", "5 s wall clock reached"); over = true; return null; }
     if (files >= LIMITS.files) { skip("limits", "200 file limit reached"); over = true; return null; }
-    if (!allowedRead(path, readRoots)) return null;
+    if (!allowedRead(path, readRoots, cap)) return null;
     let st; try { st = statSync(path); } catch { return null; }
     if (!st.isFile()) return null;
-    if (bytes + st.size > LIMITS.bytes) { skip("limits", "2 MB limit reached"); over = true; return null; }
-    try { opts.onRead?.(path); const t = readFileSync(path, "utf8"); files++; bytes += st.size; return t; } catch { return null; }
+    if (!cap && bytes + st.size > LIMITS.bytes) { skip("limits", "2 MB limit reached"); over = true; return null; }
+    try { opts.onRead?.(path); const t = readFileSync(path, "utf8"); files++; if (!cap) bytes += st.size; return t; } catch { return null; }
   };
-  const readJson = (path: string, readRoots?: string[]): Record<string, unknown> | null => {
-    const t = read(path, readRoots); if (t === null) return null;
+  const readJson = (path: string, readRoots?: string[], cap?: number): Record<string, unknown> | null => {
+    const t = read(path, readRoots, cap); if (t === null) return null;
     try { const j = JSON.parse(t) as unknown; return j && typeof j === "object" && !Array.isArray(j) ? (j as Record<string, unknown>) : null; } catch { skip(path, "not valid JSON"); return null; }
   };
   const push = (id: string, s: Record<string, unknown>) => signals.push({ ref: "", id, ...s } as Signal);
@@ -151,7 +151,7 @@ export function collectFacts(workspaceIn: string, opts: CollectOpts = {}): Facts
   for (const p of projects) { const j = readJson(join(p, ".mcp.json")); if (j) mcpFiles.push({ file: join(p, ".mcp.json"), servers: j.mcpServers, allow: [] }); }
   for (const s of settingsFiles) mcpFiles.push({ file: s.file, servers: s.json.mcpServers, allow: allowOf(s.json) });
   const allAllow = settingsFiles.flatMap((s) => allowOf(s.json));
-  const cj = readJson(join(home(), ".claude.json"), [home()]);
+  const cj = readJson(join(home(), ".claude.json"), [home()], MAX_CLAUDE_JSON_BYTES);
   if (cj) {
     mcpFiles.push({ file: join(home(), ".claude.json"), servers: cj.mcpServers, allow: allAllow });
     const proj = cj.projects as Record<string, { mcpServers?: unknown }> | undefined;
