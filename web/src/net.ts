@@ -200,14 +200,14 @@ export const teamsKey = computed(() => teams.list.filter((t) => t.state === "act
 export const jobFocus = reactive({ id: "", n: 0, at: 0 });
 export const windows = reactive({ available: true as boolean, busy: "" as string });
 /** POST an open/close call. A 404 with no problem body = the route is not there yet (pre-M8); a problem body = a real answer. */
-export async function windowCall(path: string): Promise<{ ok: boolean; detail?: string }> {
+export async function windowCall(path: string): Promise<{ ok: boolean; detail?: string; code?: string }> {
   windows.busy = path;
   try {
     const r = await fetch(url(`v1/panel${path}`), { method: "POST" });
     if (r.ok) return { ok: true };
-    const body = await r.json().catch(() => null) as { detail?: string; title?: string } | null;
+    const body = await r.json().catch(() => null) as { detail?: string; title?: string; code?: string } | null;
     if (r.status === 404 && !body?.detail) { windows.available = false; return { ok: false, detail: "Terminal windows arrive with M8" }; }
-    return { ok: false, detail: body?.detail ?? body?.title ?? `HTTP ${r.status}` };
+    return { ok: false, detail: body?.detail ?? body?.title ?? `HTTP ${r.status}`, code: body?.code };
   } catch (e) { return { ok: false, detail: (e as Error).message }; }
   finally { windows.busy = ""; }
 }
@@ -272,11 +272,14 @@ export function useUsage() {
 // ---------- scorecard (GET /agentnet/scores, /agentnet/agents/:name/score): docs/agent-score.md ----------
 export interface SubScores { quality: number | null; firstTimeRight: number | null; efficiency: number | null; reliability: number | null; rework: number | null }
 export interface ScoreBase { tasks: number; graded: number; score: number | null; band: string | null; sub: SubScores; costPerTask: number | null; avgGrade: number | null; avgRounds: number | null }
-export interface AgentScoreRow extends ScoreBase { agent: string; role: string; model: string | null; soul: string | null; project: string | null }
+/** Task discipline (docs/task-discipline.md): 0-100 plus the share of finished tasks that kept each habit. */
+export interface Discipline { tasks: number; open: number; score: number | null; checks: Record<"listedFirst" | "started" | "onTime" | "notBatch" | "oneAtATime", number | null> }
+export interface DisciplineDay { day: string; score: number | null; tasks: number; open: number; checks: Discipline["checks"]; agents: Record<string, { score: number | null; tasks: number }> }
+export interface AgentScoreRow extends ScoreBase { discipline: Discipline; agent: string; role: string; model: string | null; soul: string | null; project: string | null }
 export interface GroupScoreRow extends ScoreBase { key: string }
-export interface ScoresData { at: number; minGraded: number; weights: Record<keyof SubScores, number>; agents: AgentScoreRow[]; byRole: GroupScoreRow[]; byModel: GroupScoreRow[]; bySoul: GroupScoreRow[] }
-export interface ScoreGrade { id: number; task_id: number; text: string; grade: number | null; note: string | null; rework: boolean; owner_rounds: number | null; done_at: number; graded_at: number | null; cost_usd: number | null }
-export interface AgentScore extends ScoreBase { agent: string; role: string; minGraded: number; weights: Record<keyof SubScores, number>; last: ScoreGrade[]; lastAvgRounds: number | null }
+export interface ScoresData { discipline: { days: DisciplineDay[]; today: DisciplineDay | null; all: number | null }; at: number; minGraded: number; weights: Record<keyof SubScores, number>; agents: AgentScoreRow[]; byRole: GroupScoreRow[]; byModel: GroupScoreRow[]; bySoul: GroupScoreRow[] }
+export interface ScoreGrade { id: number; task_id: number; text: string; grade: number | null; grade_raw: number | null; penalty: number; note: string | null; rework: boolean; owner_rounds: number | null; done_at: number; graded_at: number | null; cost_usd: number | null }
+export interface AgentScore extends ScoreBase { discipline: Discipline; agent: string; role: string; minGraded: number; weights: Record<keyof SubScores, number>; last: ScoreGrade[]; lastAvgRounds: number | null }
 export const scores = reactive({ data: null as ScoresData | null, err: "" });
 let sTimer: ReturnType<typeof setInterval> | undefined;
 let sUsers = 0;

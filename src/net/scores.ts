@@ -11,6 +11,7 @@ import { logEvent } from "../core/logger";
 import { problem, type Env } from "../core/http";
 import { costUsd, loadPrices, priceFor, type Tok } from "../core/prices";
 import { all, ensureSchema, get } from "./store";
+import { adjustGrade, dailyRows, dayOf, disciplineConfig, disciplineOf, flagCount, flagRecords, readSnapshots as readSnaps, type DayRow, writeSnapshot } from "./discipline";
 import { computeScore, roleMedians, roleOf, scoreConfig, type Score, type TaskRecord } from "./score";
 
 let handle: Database | null = null;
@@ -22,6 +23,7 @@ function init(d: Database) {
     listed_first INTEGER NOT NULL DEFAULT 0, prompt_start INTEGER NOT NULL DEFAULT 0, prompt_done INTEGER NOT NULL DEFAULT 0, note_filled INTEGER NOT NULL DEFAULT 0,
     grade INTEGER, note TEXT, rework INTEGER NOT NULL DEFAULT 0, rework_at INTEGER, owner_rounds INTEGER, graded_at INTEGER, UNIQUE (agent_id, task_id))`);
   d.run("CREATE INDEX IF NOT EXISTS agent_scores_agent ON agent_scores (agent, done_at)");
+  for (const col of ["grade_raw REAL", "penalty REAL"]) try { d.run(`ALTER TABLE agent_scores ADD COLUMN ${col}`); } catch { /* there already */ }
 }
 function sdb(): Database {
   if (handle) return handle;
@@ -50,9 +52,9 @@ export function windowCost(agentId: string, from: number, to: number): { tokens:
   return { tokens, costUsd: priced ? usd : null };
 }
 
-interface Row { id: number; agent: string; agent_id: string; role: string; model: string | null; soul: string | null; project: string | null; task_id: number; text: string; started_at: number | null; done_at: number; tokens: number | null; cost_usd: number | null; cost_settled: number; listed_first: number; prompt_start: number; prompt_done: number; note_filled: number; grade: number | null; note: string | null; rework: number; rework_at: number | null; owner_rounds: number | null; graded_at: number | null }
+interface Row { id: number; agent: string; agent_id: string; role: string; model: string | null; soul: string | null; project: string | null; task_id: number; text: string; started_at: number | null; done_at: number; tokens: number | null; cost_usd: number | null; cost_settled: number; listed_first: number; prompt_start: number; prompt_done: number; note_filled: number; grade: number | null; grade_raw: number | null; penalty: number | null; note: string | null; rework: number; rework_at: number | null; owner_rounds: number | null; graded_at: number | null }
 const rec = (r: Row): TaskRecord => ({ id: r.id, agent: r.agent, role: r.role, model: r.model, soul: r.soul, project: r.project, taskId: r.task_id, text: r.text, startedAt: r.started_at, doneAt: r.done_at, tokens: r.tokens, costUsd: r.cost_usd,
-  listedFirst: !!r.listed_first, promptStart: !!r.prompt_start, promptDone: !!r.prompt_done, noteFilled: !!r.note_filled, grade: r.grade, note: r.note, rework: !!r.rework, reworkAt: r.rework_at, ownerRounds: r.owner_rounds, gradedAt: r.graded_at });
+  listedFirst: !!r.listed_first, promptStart: !!r.prompt_start, promptDone: !!r.prompt_done, noteFilled: !!r.note_filled, grade: r.grade, gradeRaw: r.grade_raw, penalty: r.penalty, note: r.note, rework: !!r.rework, reworkAt: r.rework_at, ownerRounds: r.owner_rounds, gradedAt: r.graded_at });
 
 // ---------- writing ----------
 export interface Who { id: string; name: string; model?: string | null; soul?: string | null; project?: string | null }
@@ -99,8 +101,10 @@ export function gradeTask(agent: string, i: GradeInput, now = Date.now()): TaskR
   if (!row) return null;
   const note = typeof i.note === "string" && i.note.trim() ? i.note.trim().slice(0, 500) : null;
   const rework = i.rework === true || (note != null && /^rework:/i.test(note));
-  sdb().run("UPDATE agent_scores SET grade = ?, note = ?, rework = ?, rework_at = ?, owner_rounds = COALESCE(?, owner_rounds), graded_at = ? WHERE id = ?",
-    [grade, note, +rework, rework ? now : null, rounds == null ? null : Number(rounds), now, row.id]);
+  // B5: each discipline flag of the task takes points off the stored grade; grade_raw keeps what root gave
+  const dc = disciplineConfig(), flags = flagRecords(records("WHERE agent = ?", agent), dc).get(row.id), adj = adjustGrade(grade, flags ? flagCount(flags) : 0, dc);
+  sdb().run("UPDATE agent_scores SET grade = ?, grade_raw = ?, penalty = ?, note = ?, rework = ?, rework_at = ?, owner_rounds = COALESCE(?, owner_rounds), graded_at = ? WHERE id = ?",
+    [adj.grade, grade, adj.penalty, note, +rework, rework ? now : null, rounds == null ? null : Number(rounds), now, row.id]);
   return rec(sdb().query("SELECT * FROM agent_scores WHERE id = ?").get(row.id) as Row);
 }
 
@@ -112,14 +116,46 @@ function staleOpen(name: string, now: number): number {
   for (const s of all()) if (s.name === name && s.life !== "gone" && s.life !== "failed") for (const t of s.tasks) if (t.status === "in_progress") { const at = evTs(s.id, "TaskStarted", t.id, "DESC"); if (at != null && now - at > cfg.staleMs) n++; }
   return n;
 }
-const slim = (r: TaskRecord) => ({ id: r.id, task_id: r.taskId, text: r.text, grade: r.grade, note: r.note, rework: r.rework, owner_rounds: r.ownerRounds, done_at: r.doneAt, graded_at: r.gradedAt, cost_usd: r.costUsd });
+const slim = (r: TaskRecord) => ({ id: r.id, task_id: r.taskId, text: r.text, grade: r.grade, grade_raw: r.gradeRaw ?? r.grade, penalty: r.penalty ?? 0, note: r.note, rework: r.rework, owner_rounds: r.ownerRounds, done_at: r.doneAt, graded_at: r.gradedAt, cost_usd: r.costUsd });
+
+/** Open tasks of agents that were despawned (never finished), per agent name and the local day they left. */
+function openAtDespawn(): Map<string, Map<string, number>> {
+  const out = new Map<string, Map<string, number>>();
+  for (const s of all()) if (s.life === "gone" && s.goneReason === "despawn") {
+    const n = s.tasks.filter((t) => t.status !== "done").length; if (!n) continue;
+    const day = dayOf(s.lifeSince), m = out.get(day) ?? out.set(day, new Map()).get(day)!; m.set(s.name, (m.get(s.name) ?? 0) + n);
+  }
+  return out;
+}
+/** Discipline of one agent name (A1): the score over its finished tasks, per-check percentages, open tasks left at despawn. */
+export function agentDiscipline(name: string, mine = records("WHERE agent = ?", name)) {
+  const fl = flagRecords(mine, disciplineConfig()), open = [...openAtDespawn().values()].reduce((a, m) => a + (m.get(name) ?? 0), 0);
+  return disciplineOf(mine.map((r) => fl.get(r.id ?? r.taskId)!), open);
+}
+/** Per-day trend over every agent (A2/A3). */
+export function disciplineDays(): DayRow[] {
+  const by = new Map<string, TaskRecord[]>();
+  for (const r of records()) (by.get(r.agent) ?? by.set(r.agent, []).get(r.agent)!).push(r);
+  return dailyRows(by, openAtDespawn(), disciplineConfig());
+}
+export function disciplineSummary(now = Date.now()) {
+  const days = disciplineDays(), today = days.find((d) => d.day === dayOf(now)) ?? null;
+  return { days: days.slice(-30), today, all: days.length ? disciplineOf([...flagAll()]).score : null };
+}
+function flagAll() { const by = new Map<string, TaskRecord[]>(); for (const r of records()) (by.get(r.agent) ?? by.set(r.agent, []).get(r.agent)!).push(r); return [...by.values()].flatMap((v) => { const f = flagRecords(v, disciplineConfig()); return v.map((r) => f.get(r.id ?? r.taskId)!); }); }
+/** Write today's (or `day`'s) line of <home>/data/discipline.jsonl, plus any earlier day that has no line yet. Returns the rows written. */
+export function snapshotDiscipline(day?: string, now = Date.now()): DayRow[] {
+  const have = new Set(readSnaps().map((r) => r.day)), rows = disciplineDays().filter((r) => (day ? r.day === day : !have.has(r.day) || r.day === dayOf(now)));
+  for (const r of rows) writeSnapshot(r, now);
+  return rows;
+}
 
 export function agentScore(name: string, now = Date.now()) {
   settle(now);
   const cfg = scoreConfig(), mine = records("WHERE agent = ?", name), meds = roleMedians(records());
   const last = mine.filter((r) => r.grade != null).sort((a, b) => (b.gradedAt ?? 0) - (a.gradedAt ?? 0) || (b.id ?? 0) - (a.id ?? 0)).slice(0, 5);
   const lastRounds = last.filter((r) => r.ownerRounds != null).map((r) => r.ownerRounds!);
-  return { agent: name, role: roleOf(name), ...computeScore(mine, meds, cfg, staleOpen(name, now)), minGraded: cfg.minGraded, weights: cfg.weights, last: last.map(slim), lastAvgRounds: lastRounds.length ? lastRounds.reduce((a, b) => a + b, 0) / lastRounds.length : null };
+  return { agent: name, role: roleOf(name), ...computeScore(mine, meds, cfg, staleOpen(name, now)), minGraded: cfg.minGraded, weights: cfg.weights, last: last.map(slim), lastAvgRounds: lastRounds.length ? lastRounds.reduce((a, b) => a + b, 0) / lastRounds.length : null, discipline: agentDiscipline(name, mine) };
 }
 
 export function allScores(now = Date.now()) {
@@ -131,14 +167,15 @@ export function allScores(now = Date.now()) {
     return [...by].map(([k, v]) => ({ key: k, ...computeScore(v, meds, cfg) })).sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || b.tasks - a.tasks);
   };
   const names = [...new Set(recs.map((r) => r.agent))];
-  const agents = names.map((n) => { const mine = recs.filter((r) => r.agent === n), l = mine[mine.length - 1]!; return { agent: n, role: l.role, model: l.model, soul: l.soul, project: l.project, ...computeScore(mine, meds, cfg, staleOpen(n, now)) }; })
+  const agents = names.map((n) => { const mine = recs.filter((r) => r.agent === n), l = mine[mine.length - 1]!; return { agent: n, role: l.role, model: l.model, soul: l.soul, project: l.project, ...computeScore(mine, meds, cfg, staleOpen(n, now)), discipline: agentDiscipline(n, mine) }; })
     .sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || b.tasks - a.tasks);
-  return { at: now, minGraded: cfg.minGraded, weights: cfg.weights, agents, byRole: group((r) => r.role), byModel: group((r) => r.model ?? "unknown"), bySoul: group((r) => r.soul ?? "none") };
+  return { at: now, minGraded: cfg.minGraded, weights: cfg.weights, agents, byRole: group((r) => r.role), byModel: group((r) => r.model ?? "unknown"), bySoul: group((r) => r.soul ?? "none"), discipline: disciplineSummary(now) };
 }
 
 /** Panel-auth reads (same auth as /agentnet/usage). The grade POST is root-only and lives in routes.ts with the other admin routes. */
 export function agentnetScoreRoutes(api: Hono<Env>) {
   api.get("/agentnet/scores", (c) => c.json(allScores()));
+  api.get("/agentnet/discipline", (c) => c.json({ ...disciplineSummary(), snapshots: readSnaps() }));
   api.get("/agentnet/agents/:name/score", (c) => {
     const name = String(c.req.param("name"));
     if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(name)) return problem(c, 422, "Can't do that", "bad agent name");

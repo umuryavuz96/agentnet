@@ -6,19 +6,21 @@ import { computed } from "vue";
 import Icon from "../ui/Icon.vue";
 import { net, windows, humanDoing, ctxView, bgVisible, bgShown, type AgentRow } from "../net";
 
-const props = defineProps<{ row: AgentRow | null; name: string; selected?: boolean }>();
+const props = defineProps<{ row: AgentRow | null; name: string; selected?: boolean; hadRoot?: boolean }>();
 const emit = defineEmits<{ select: []; open: []; close: [] }>();
 
 const TIP = "Opens a Terminal window on the server Mac";
 const gone = computed(() => !!props.row && (props.row.life === "gone" || props.row.life === "failed"));
+const isRoot = computed(() => props.row?.name === "root");
 const dot = computed(() => {
   const r = props.row;
   if (!r) return "root";
+  if (isRoot.value && gone.value) return "notrunning";
   if (r.life === "starting") return "starting";
   if (r.life === "stopping" || gone.value) return "stopping";
   return r.state; // working | idle | waiting | blocked
 });
-const DOT_LABEL: Record<string, string> = { root: "root", starting: "starting", stopping: "stopping", working: "working", idle: "idle", waiting: "waiting for input", blocked: "blocked" };
+const DOT_LABEL: Record<string, string> = { root: "root", starting: "starting", stopping: "stopping", working: "working", idle: "idle", notrunning: "not running", waiting: "waiting for input", blocked: "blocked" };
 const tasks = computed(() => props.row?.tasks ?? []);
 const done = computed(() => tasks.value.filter((t) => t.status === "done").length);
 const progress = computed(() => (typeof props.row?.progressPct === "number" ? props.row.progressPct : null)); // task-derived (server progressPct), never the self-reported %
@@ -30,14 +32,14 @@ const KIND: Record<string, string> = { subagent: "subagent", shell: "shell", mon
 const bg = computed(() => bgVisible(props.row?.bg, net.now || Date.now()));
 const dur = (b: { startedAt: number; endedAt: number | null; state: string }) => { const s = Math.max(0, Math.round(((b.state === "running" ? net.now || Date.now() : b.endedAt ?? Date.now()) - b.startedAt) / 1000)); return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s"; };
 const blocked = computed(() => props.row?.reported?.blockedOn ?? null);
-const doingText = computed(() => (blocked.value ? "Blocked: " + blocked.value : props.row ? (humanDoing(props.row.doing) ?? DOT_LABEL[dot.value]) : "Director of every agent"));
+const doingText = computed(() => (dot.value === "notrunning" ? "Not running" : blocked.value ? "Blocked: " + blocked.value : props.row ? (humanDoing(props.row.doing) ?? DOT_LABEL[dot.value]) : "Director of every agent"));
 const cost = computed(() => (props.row?.cost != null ? "$" + props.row.cost.toFixed(2) : null));
 const weekly = computed(() => (props.row?.weekly ? Math.round(props.row.weekly.pct) : null));
 const last = computed(() => props.row?.lastMsg ?? null);
 // M8: the row carries `window: {open}` (truth = tmux clients, 1 s sweep). Absent before M8: show nothing.
 const winOpen = computed(() => (props.row?.window as { open?: boolean } | undefined)?.open === true);
-const btnOff =computed(() => gone.value || !windows.available || !!windows.busy);
-const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available ? `${TIP} (arrives with M8)` : TIP));
+const btnOff =computed(() => (gone.value && !isRoot.value) || !windows.available || !!windows.busy);
+const btnTip = computed(() => (isRoot.value && gone.value ? "Start director" : gone.value ? "Agent is gone" : !windows.available ? `${TIP} (arrives with M8)` : TIP));
 </script>
 
 <template>
@@ -45,12 +47,12 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
     @click="emit('select')" @keydown.enter.prevent="emit('select')" @keydown.space.prevent="emit('select')">
     <header class="anc-h">
       <span class="dot" :title="DOT_LABEL[dot]" :aria-label="DOT_LABEL[dot]" role="img" />
-      <b class="nm" :title="name">{{ row ? name : "Set up your director" }}</b>
+      <b class="nm" :title="name">{{ row ? name : hadRoot ? "Director" : "Set up your director" }}</b>
       <span v-if="winOpen" class="chip win" title="Its Terminal window is open on the server Mac"><Icon name="square-terminal" :size="12" /> open</span>
       <span v-if="row?.model" class="chip" :class="{ nm2: winOpen }" :title="row.model">{{ row.model.replace(/^claude-/, "").replace(/-\d+(-\d+)*$/, "") }}</span>
     </header>
-    <p class="job" :title="row?.job ?? undefined">{{ row ? (row.job ?? "no job") : "No director connected yet" }}</p>
-    <p v-if="!row" class="cta">Set up now <Icon name="arrow-up-right" :size="14" /></p>
+    <p class="job" :title="row?.job ?? undefined">{{ row ? (row.job ?? "no job") : hadRoot ? "Not running" : "No director connected yet" }}</p>
+    <p v-if="!row" class="cta">{{ hadRoot ? "Start director" : "Set up now" }} <Icon name="arrow-up-right" :size="14" /></p>
     <p v-if="row" class="boss"><Icon name="users" :size="13" /> {{ row.boss ?? "no boss" }}</p>
 
     <p v-if="row" class="doing" :class="{ warn: blocked }" :title="doingText">{{ doingText }}</p>
@@ -65,6 +67,7 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
       </div>
       <span class="n" title="tasks done / total">{{ done }}/{{ tasks.length }}</span>
       <span class="n" :title="ctxv ? `${tok(ctxv.tokens)} of ${tok(ctxv.window)}${ctxv.compact ? ` (auto-compact window; model window ${tok(ctxv.model)})` : ''}` : 'context window used'">{{ ctx == null ? "–" : ctx + "%" }} ctx</span>
+      <span v-if="gone && done < tasks.length" class="n warn" :title="`${tasks.length - done} tasks were still open when this agent closed`">{{ tasks.length - done }} open at close</span>
       <span v-if="cost" class="n" title="cost of this session">{{ cost }}</span>
       <span v-if="weekly !== null" class="n" title="share of the weekly limit">{{ weekly }}% wk</span>
     </div>
@@ -103,6 +106,7 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
 .chip.win{display:inline-flex;align-items:center;gap:4px;background:var(--on-bg);color:var(--on)}
 .chip.nm2{margin-left:0}
 .dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--off)}
+.s-notrunning .dot{background:var(--off);opacity:.6}
 .s-working .dot{background:var(--on);box-shadow:0 0 0 0 var(--on);animation:pulse 1.6s var(--ease) infinite}
 .s-waiting .dot{background:var(--warn)}
 .s-blocked .dot{background:var(--bad)}
@@ -122,6 +126,7 @@ const btnTip = computed(() => (gone.value ? "Agent is gone" : !windows.available
 .meta{display:flex;align-items:center;gap:10px}
 .bar{flex:1;height:6px;border-radius:3px;background:var(--track);overflow:hidden}
 .bar i{display:block;height:100%;background:var(--on);transform-origin:left;transition:transform .4s var(--ease)}
+.n.warn{color:var(--warn)}
 .n{color:var(--muted);font:500 12px/1 var(--mono);white-space:nowrap}
 .last{display:flex;align-items:center;gap:5px;color:var(--muted);font:500 12px/1.3 var(--body)}
 .last span{overflow:hidden;text-overflow:ellipsis}

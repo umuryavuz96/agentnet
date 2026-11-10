@@ -19,11 +19,12 @@ import { routingRoutes } from "./net/routing";
 import { compactRoutes } from "./net/compact";
 import { hooksRoutes } from "./net/hooks";
 import { webRoutes } from "./net/web";
-import { agentnetWindowRoutes, startSessionReaper } from "./net/windows";
+import { agentnetWindowRoutes, healRootSession, startSessionReaper } from "./net/windows";
 import { agentControlRoutes } from "./net/controls";
 import { startUpdateTimers, updateRoutes } from "./net/update";
 import { checksPanelRoutes } from "./net/checksPanel";
 import { directorRoutes } from "./net/director";
+import { snapshotDiscipline } from "./net/scores";
 
 export function buildApp(): Hono<Env> {
   const app = new Hono<Env>();
@@ -62,7 +63,10 @@ if (import.meta.main) {
   const app = buildApp();
   Bun.serve({ hostname: HOST, port: PORT, fetch: makeFetch(app), idleTimeout: 0 }); // idleTimeout 0: SSE and 25 s long-polls
   try { recordLaunch(ROOT, { version: VERSION }); } catch (e) { logEvent("warn", "server-launch.json not written", { error: String(e) }); }
-  startLiveness(); startSessionReaper(); startUpdateTimers();
+  startLiveness(); startSessionReaper(); try { healRootSession(); } catch { /* no tmux */ } startUpdateTimers();
+  // Daily discipline snapshot (docs/task-discipline.md A3): now, then hourly; the line of today is replaced, earlier days are filled once.
+  const snap = () => { try { snapshotDiscipline(); } catch (e) { logEvent("warn", "discipline snapshot failed", { error: String(e) }); } };
+  setTimeout(snap, 15_000); setInterval(snap, 3600_000);
   logEvent("info", "agentnet listening", { host: HOST, port: PORT, version: VERSION });
   console.log(`agentnet ${VERSION} on http://${HOST}:${PORT}`);
 }

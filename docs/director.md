@@ -88,3 +88,7 @@ For `route=team` the director follows [rules/council-teams.md](rules/council-tea
 5. Despawn: `agentnet despawn <name>` for each member. Agents are short-lived. A fresh agent continues from the handover note.
 
 Rules for model choice are in [rules/model-routing.md](rules/model-routing.md). Point `AGENTNET_RULES_DIR` at your own copy to change them.
+
+## Requirements
+
+Claude Code 2.1.293 or later (2.1.318+ recommended). The plugin uses `$.tool.register` with `isDeferred` and `$.session.append` (added in 2.1.293); from 2.1.318 the `prompt.submit` attachments stay in the user turn. `agentnet doctor` and `agentnet init` check `claude --version`; the plugin logs one warning if the session is older.

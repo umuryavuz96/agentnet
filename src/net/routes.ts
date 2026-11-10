@@ -18,6 +18,7 @@ import { trailSearch, trailInject, cassReady } from "./trailSearch";
 import { RouteBlocked } from "./autoroute";
 import { planSpawn, type PlanInput } from "./placement";
 import { gradeTask, recordDone } from "./scores";
+import { disciplineConfig, gateReason } from "./discipline";
 import { createCheck, listChecks } from "./checks";
 import { hasNoteFields, logTrail, trailConfig, writeNote, type NoteFields } from "./trails";
 
@@ -58,7 +59,7 @@ export const byName = (n: string) => (ensureSchema(), db().query("SELECT * FROM 
 
 /** The agent endpoints, listed explicitly: the panel's requireAuth lets only these through to this module's own bearer
  *  check (unknown token = 401 here). snapshot and stream are not listed: they stay behind panel auth. */
-export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
+export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|gate|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
 
 // ---------- the one hierarchy check: boss, own reports, teammates under the same boss; root outbound exempt ----------
 export const isRoot = (a: { name: string }) => a.name === "root";
@@ -312,6 +313,10 @@ export function agentnetRoutes(api: Hono<Env>) {
     const to = resolveTo(toName);
     if (!to) return problem(c, 404, "Not Found", `no live agent named ${toName}`);
     if (!canSend(a, to)) return problem(c, 403, "Forbidden", gateDenied(a, to) ?? VIA_BOSS);
+    if (kind === "report" && b.state === "done" && !isRoot(a) && a.id !== ADMIN.id && disciplineConfig().blockDoneReport) { // B4: no "done" report while tasks are open
+      const open = (get(a.id)?.tasks ?? []).filter((t) => t.status !== "done");
+      if (open.length) return problem(c, 409, "Can't do that", `agentnet: you cannot report done while ${open.length} task${open.length > 1 ? "s are" : " is"} open (${open.slice(0, 5).map((t) => t.id).join(", ")}). Finish them with mcp__agentnet__task_done first.`);
+    }
     const k: Kind = kind === "report" ? "report" : kindOf(b.kind);
     const out = enqueueMessage(a, to, text, k, Number(b.reply_to) || null, subjectOf(b.subject, text));
     if (kind === "report" && b.state === "done" && hasNoteFields(b)) noteFor(a, text.split("\n")[0]!.slice(0, 160), b);
@@ -338,7 +343,13 @@ export function agentnetRoutes(api: Hono<Env>) {
   r.post("/tasks/:id/:op", async (c: Ctx) => {
     const a = c.get("agent"), id = Number(c.req.param("id")), op = String(c.req.param("op"));
     if (!["start", "done"].includes(op)) return bad(c, "op must be start or done");
-    if (!get(a.id)?.tasks.some((t) => t.id === id)) return problem(c, 404, "Not Found", `no task ${id}`);
+    const mine = get(a.id)?.tasks ?? [], task = mine.find((t) => t.id === id), dc = disciplineConfig();
+    if (!task) return problem(c, 404, "Not Found", `no task ${id}`);
+    if (op === "done" && dc.strictDone && task.status === "pending" && !isRoot(a) && a.id !== ADMIN.id) return problem(c, 409, "Can't do that", `agentnet: task ${id} was never started. Start it first with mcp__agentnet__task_start, then mark it done.`); // B1
+    if (op === "start" && dc.maxInProgress > 0 && task.status === "pending" && !isRoot(a) && a.id !== ADMIN.id) { // B3: one at a time
+      const busy = mine.filter((t) => t.status === "in_progress");
+      if (busy.length >= dc.maxInProgress) return problem(c, 409, "Can't do that", `agentnet: finish or done task ${busy[0]!.id} first (${dc.maxInProgress === 1 ? "one task at a time" : `at most ${dc.maxInProgress} tasks at a time`}).`);
+    }
     emit({ agent: a.id, type: op === "start" ? "TaskStarted" : "TaskDone", data: { id }, source: "mcp" }); flush();
     const b = op === "done" ? await body(c) : {};
     const note = op === "done" && hasNoteFields(b) ? noteFor(a, get(a.id)!.tasks.find((t) => t.id === id)?.text ?? `task ${id}`, b) : null;
@@ -361,6 +372,12 @@ export function agentnetRoutes(api: Hono<Env>) {
     if (!NAME.test(name) || !text.trim()) return bad(c, "agent and text are required");
     const out = await trailInject(name, "spawn", text, typeof b.repo === "string" && b.repo ? b.repo : undefined);
     return c.json({ text: out.text, skipped: out.skipped ?? null });
+  });
+  /** B2: the mod asks before every work tool. Allowed (200 {allow:true}) or a reason the agent reads. Root, the loopback admin and team members are exempt. */
+  r.get("/gate", (c: Ctx) => {
+    const a = c.get("agent"), exempt = isRoot(a) || a.id === ADMIN.id || a.kind === "member";
+    const why = gateReason({ exempt, spawnedAt: a.spawned_at, tasks: get(a.id)?.tasks ?? [], now: Date.now() });
+    return c.json(why ? { allow: false, reason: why } : { allow: true });
   });
   r.post("/status", async (c: Ctx) => { // set_status
     const a = c.get("agent"), b = await body(c);
@@ -478,9 +495,10 @@ export function agentnetRoutes(api: Hono<Env>) {
     const b = await body(c), t = typeof b.agent === "string" ? byName(b.agent) : null;
     if (!t) return problem(c, 404, "Not Found", "no such live agent");
     if (t.name === "root") return problem(c, 403, "Forbidden", "root cannot be despawned"); // its pid is the main bot's claude
+    const open = (get(t.id)?.tasks ?? []).filter((x) => x.status !== "done"); // B4: warn root, do not block
     retireAgent(t, "despawn");
-    audit(`agent:${a.name}`, "agentnet.despawn", t.id, "ok", c.get("trace"), { reason: String(b.reason ?? "") });
-    return c.json({ agent: t.id, state: "gone" });
+    audit(`agent:${a.name}`, "agentnet.despawn", t.id, "ok", c.get("trace"), { reason: String(b.reason ?? ""), open_tasks: open.length });
+    return c.json({ agent: t.id, state: "gone", ...(open.length ? { warning: `${t.name} was despawned with ${open.length} open task${open.length > 1 ? "s" : ""}: ${open.map((x) => `${x.id} ${x.text.slice(0, 40)}`).join("; ")}`, open_tasks: open.map((x) => x.id) } : {}) });
   });
   logEvent("info", "agentnet routes mounted", { flag: "AGENTNET=1" });
 }

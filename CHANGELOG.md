@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.4
+
+Open window on the director always works, and agents keep their task lists honest.
+
+**Director window**
+
+- Open window finds the director wherever it runs: the `agentnet-root` tmux session, the old `agentnet-director` session from 0.4.1 (renamed to `agentnet-root` on its own), or any tmux pane that holds the director's process.
+- A director you started in a terminal agentnet cannot open (and no terminal app found): Open window offers "Move the director into an agentnet window". It stops the director and starts it again in the same folder, inside its own window. Resume the old conversation with `/resume`.
+- A director that is gone shows "Not running" with a Start director button. It starts the director where it last ran and opens the window. Terminals inside Cursor, VS Code, iTerm2, Ghostty, Warp and WezTerm are recognised.
+
+**Task discipline**
+
+- Five strict task rules, all on by default: done needs a started task, work needs a task in progress, one task in progress at a time, no "done" report with open tasks, and a grade penalty for skipped steps (the raw grade is kept). Each rule has a switch in `<home>/config/task-discipline.json`; `AGENTNET_TASK_STRICT=0` turns them all off. See `docs/task-discipline.md`.
+- A discipline score per agent and per day, on the agent panel and a new Scores page with a daily trend. `agentnet discipline` prints it.
+
+**Requirements**
+
+- Claude Code 2.1.293 or later (2.1.318+ recommended). `agentnet doctor`, `agentnet init` and the plugin warn on an older version.
+
 ## 0.4.3
 
 Update now works when agentnet runs in the foreground.

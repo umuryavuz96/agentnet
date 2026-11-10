@@ -6,7 +6,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import Icon from "../ui/Icon.vue";
 import BentoCard from "../ui/BentoCard.vue";
-import { fetchAgentScore, scores, useScores, type AgentScore, type AgentScoreRow, type ScoreBase, type SubScores } from "../net";
+import { fetchAgentScore, scores, useScores, type AgentScore, type AgentScoreRow, type Discipline, type ScoreBase, type SubScores } from "../net";
 
 const props = defineProps<{ only?: string }>();
 
@@ -17,6 +17,7 @@ const SUBS: [keyof SubScores, string, string][] = [
   ["reliability", "Reliability", "Task list kept first, started and finished promptly, decision notes filled"],
   ["rework", "No rework", "Share of graded tasks root did not have to send back"],
 ];
+const DCHECKS: [keyof Discipline["checks"], string][] = [["listedFirst", "Listed first"], ["started", "Started before done"], ["onTime", "Started on time"], ["notBatch", "Not batch-closed"], ["oneAtATime", "One at a time"]];
 const usd = (n: number | null) => (n == null ? "–" : n < 0.1 ? "$" + n.toFixed(3) : "$" + n.toFixed(2));
 const pt = (n: number | null) => (n == null ? "–" : String(Math.round(n)));
 const rounds = (n: number | null) => (n == null ? "–" : (Math.round(n * 10) / 10).toString());
@@ -34,18 +35,18 @@ const need = computed(() => (one.value ? Math.max(0, one.value.minGraded - one.v
 let stop: (() => void) | null = null;
 if (!props.only) stop = useScores();
 onBeforeUnmount(() => { stop?.(); clearInterval(timer); });
-type Key = "agent" | "role" | "score" | "quality" | "firstTimeRight" | "efficiency" | "reliability" | "rework" | "tasks" | "cost" | "rounds";
+type Key = "agent" | "role" | "score" | "discipline" | "quality" | "firstTimeRight" | "efficiency" | "reliability" | "rework" | "tasks" | "cost" | "rounds";
 const sort = ref<{ k: Key; dir: 1 | -1 }>({ k: "score", dir: -1 });
 const val = (r: ScoreBase & { agent?: string; role?: string }, k: Key): number | string | null =>
-  k === "agent" ? r.agent ?? "" : k === "role" ? r.role ?? "" : k === "score" ? r.score : k === "tasks" ? r.tasks : k === "cost" ? r.costPerTask : k === "rounds" ? r.avgRounds : r.sub[k];
+  k === "agent" ? r.agent ?? "" : k === "role" ? r.role ?? "" : k === "score" ? r.score : k === "discipline" ? (r as AgentScoreRow).discipline?.score ?? null : k === "tasks" ? r.tasks : k === "cost" ? r.costPerTask : k === "rounds" ? r.avgRounds : r.sub[k];
 const rows = computed(() => {
   const { k, dir } = sort.value, list = [...(scores.data?.agents ?? [])];
   return list.sort((a, b) => { const x = val(a, k), y = val(b, k); if (x == null && y == null) return a.agent.localeCompare(b.agent); if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(String(y)) : (x as number) - (y as number)) * dir || a.agent.localeCompare(b.agent); });
 });
 const setSort = (k: Key) => { sort.value = sort.value.k === k ? { k, dir: (sort.value.dir * -1) as 1 | -1 } : { k, dir: k === "agent" || k === "role" ? 1 : -1 }; };
 const aria = (k: Key) => (sort.value.k === k ? (sort.value.dir === 1 ? "ascending" : "descending") : "none");
-const COLS: [Key, string][] = [["score", "Score"], ["quality", "Quality"], ["firstTimeRight", "First-time"], ["efficiency", "Effic."], ["reliability", "Reliab."], ["rework", "No rework"], ["tasks", "Tasks"], ["cost", "$/task"], ["rounds", "Rounds"]];
-const cell = (r: ScoreBase, k: Key) => (k === "score" ? pt(r.score) : k === "tasks" ? `${r.graded}/${r.tasks}` : k === "cost" ? usd(r.costPerTask) : k === "rounds" ? rounds(r.avgRounds) : pt(r.sub[k as keyof SubScores]));
+const COLS: [Key, string][] = [["score", "Score"], ["discipline", "Discipline"], ["quality", "Quality"], ["firstTimeRight", "First-time"], ["efficiency", "Effic."], ["reliability", "Reliab."], ["rework", "No rework"], ["tasks", "Tasks"], ["cost", "$/task"], ["rounds", "Rounds"]];
+const cell = (r: ScoreBase, k: Key) => (k === "score" ? pt(r.score) : k === "discipline" ? pt((r as AgentScoreRow).discipline?.score ?? null) : k === "tasks" ? `${r.graded}/${r.tasks}` : k === "cost" ? usd(r.costPerTask) : k === "rounds" ? rounds(r.avgRounds) : pt(r.sub[k as keyof SubScores]));
 const scored = computed(() => rows.value.filter((r) => r.score != null));
 const fleet = computed(() => (scored.value.length ? Math.round(scored.value.reduce((t, r) => t + r.score!, 0) / scored.value.length) : null));
 const lowest = computed(() => scored.value.reduce<AgentScoreRow | null>((m, r) => (m == null || r.score! < m.score! ? r : m), null));
@@ -84,11 +85,17 @@ const grp = ref<(typeof GROUPS)[number][0]>("byRole");
           <span class="sc-v sc-num">{{ pt(one.sub[k]) }}</span>
         </li>
       </ul>
+      <div class="sc-disc" :title="`Task discipline ${one.discipline.score ?? 'n/a'} of 100: listed first, started before done, started on time, not batch-closed, one at a time`">
+        <p class="sc-lh">Task discipline<span v-if="one.discipline.open"> · {{ one.discipline.open }} left open at despawn</span></p>
+        <div class="sc-row"><span class="sc-bar" role="progressbar" aria-label="Task discipline" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="one.discipline.score ?? undefined"><i :class="'b-' + band(one.discipline.score)" :style="{ width: (one.discipline.score ?? 0) + '%' }" /></span><b class="sc-num sc-dn">{{ pt(one.discipline.score) }}</b></div>
+        <ul class="sc-chk"><li v-for="[k, label] in DCHECKS" :key="k"><span>{{ label }}</span><b class="sc-num">{{ pt(one.discipline.checks[k]) }}%</b></li></ul>
+      </div>
       <div v-if="one.last.length" class="sc-last">
         <p class="sc-lh">Last {{ one.last.length }} {{ one.last.length === 1 ? "grade" : "grades" }}<span v-if="one.lastAvgRounds != null"> · avg rounds {{ rounds(one.lastAvgRounds) }}</span></p>
         <ul>
           <li v-for="g in one.last" :key="g.id">
             <span :class="['sc-g', 'b-' + band(g.grade == null ? null : (g.grade - 1) * 25)]" :aria-label="`Grade ${g.grade} of 5`">{{ g.grade }}</span>
+            <span v-if="g.penalty > 0" class="sc-tag bad" :title="`Root gave ${g.grade_raw}; ${g.penalty} points off for task discipline`">{{ g.grade_raw }}→{{ g.grade }}</span>
             <span class="sc-t" :title="g.text">{{ g.text }}</span>
             <span v-if="g.owner_rounds != null" class="sc-tag" :title="`${g.owner_rounds} back-and-forth rounds with the owner`">{{ g.owner_rounds }}r</span>
             <span v-if="g.rework" class="sc-tag bad">rework</span>
@@ -124,6 +131,17 @@ const grp = ref<(typeof GROUPS)[number][0]>("byRole");
       <BentoCard size="S" title="Graded tasks">
         <div class="bv"><b class="num">{{ gradedSum }}</b><small>of {{ taskSum }} done</small></div>
         <template #foot>Root grades finished tasks</template>
+      </BentoCard>
+
+      <BentoCard size="F" title="Task discipline" class="dc">
+        <div v-if="scores.data.discipline.days.length" class="dc-top">
+          <div class="bv"><b :class="['num', 'b-' + band(scores.data.discipline.today?.score ?? scores.data.discipline.all)]">{{ pt(scores.data.discipline.today?.score ?? scores.data.discipline.all) }}</b><small>{{ scores.data.discipline.today ? "today" : "all time" }}</small></div>
+          <div class="dc-trend" role="img" :aria-label="`Discipline per day, last ${scores.data.discipline.days.length} days`">
+            <span v-for="d in scores.data.discipline.days" :key="d.day" class="dc-d" :title="`${d.day}: ${d.score ?? 'n/a'} over ${d.tasks} tasks`"><i :class="'b-' + band(d.score)" :style="{ height: Math.max(4, d.score ?? 0) + '%' }" /></span>
+          </div>
+        </div>
+        <p v-else class="sc-none">– No finished tasks yet.</p>
+        <template #foot>Share of finished tasks that kept the five habits: listed first, started before done, started on time, not batch-closed, one at a time. All time: {{ pt(scores.data.discipline.all) }}.</template>
       </BentoCard>
 
       <BentoCard size="F" title="Breakdown" class="sg">
@@ -211,6 +229,15 @@ const grp = ref<(typeof GROUPS)[number][0]>("byRole");
 .sc-v{text-align:right;font:600 12px/1 var(--mono)}
 .sc-lh{margin:0 0 6px;color:var(--muted);font-size:12px}
 .sc-last ul{list-style:none;margin:0;padding:0;display:grid;gap:7px}
+.sc-disc{display:grid;gap:6px}
+.sc-row{display:grid;grid-template-columns:minmax(0,1fr) 3ch;gap:8px;align-items:center}
+.sc-dn{text-align:right;font:700 13px/1 var(--mono)}
+.sc-chk{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 14px;font-size:12px;color:var(--muted)}
+.sc-chk li{display:flex;justify-content:space-between;gap:6px}.sc-chk b{color:var(--ink);font-weight:600}
+.dc-top{display:grid;grid-template-columns:auto minmax(0,1fr);gap:20px;align-items:end}
+.dc-trend{display:flex;align-items:flex-end;gap:3px;height:64px;min-width:0}
+.dc-d{flex:1 1 0;max-width:22px;height:100%;display:flex;align-items:flex-end;border-radius:3px;background:var(--track)}
+.dc-d i{display:block;width:100%;border-radius:3px;background:var(--c)}
 .sc-last li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:12.5px;line-height:1.35}
 .sc-g{flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:7px;background:color-mix(in srgb,var(--c) 18%,transparent);color:var(--c);font:700 12px/1 var(--mono)}
 .sc-t{flex:1 1 120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}

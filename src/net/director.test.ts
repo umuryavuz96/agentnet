@@ -94,3 +94,23 @@ test("pick-folder is a loopback-root panel write and rewritten", () => {
   expect(toLegacy("/v1/panel/director/pick-folder")).toBe("/api/v1/agent-director/pick-folder");
   expect(isPanelWrite("POST", "/api/v1/agent-director/pick-folder")).toBe(true);
 });
+
+describe("moveDirector (a hand-started director goes into agentnet-root)", () => {
+  const { moveDirector } = require("./director") as typeof import("./director");
+  const ok = { ok: true } as import("./director").StartResult;
+  test("stops the pid, waits, starts again in the folder it ran in", async () => {
+    const calls: string[] = [];
+    const r = await moveDirector({ pid: () => process.pid, cwd: () => "/work/x", stop: () => calls.push("stop"), gone: async () => true, start: (d) => (calls.push("start " + d), ok) });
+    expect(r).toBe(ok); expect(calls).toEqual(["stop", "start /work/x"]);
+  });
+  test("not running: nothing is stopped or started", async () => {
+    const calls: string[] = [];
+    const r = await moveDirector({ pid: () => null, cwd: () => null, stop: () => calls.push("stop"), gone: async () => true, start: () => (calls.push("start"), ok) });
+    expect(r.ok).toBe(false); expect(calls).toEqual([]);
+  });
+  test("it does not stop in time: no start", async () => {
+    const calls: string[] = [];
+    const r = await moveDirector({ pid: () => process.pid, cwd: () => "/w", stop: () => calls.push("stop"), gone: async () => false, start: () => (calls.push("start"), ok) });
+    expect(r.ok).toBe(false); expect(calls).toEqual(["stop"]);
+  });
+});

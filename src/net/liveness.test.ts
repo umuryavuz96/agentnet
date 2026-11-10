@@ -26,6 +26,23 @@ describe("decide", () => {
     expect(lv.decide(s, { polling: false, lastPoll: T0 + 50_000, pidAlive: false, recovering: false }, T0 + 60_000)).toEqual({ type: "AgentGone", reason: "killed" });
     expect(lv.decide(s, { polling: false, lastPoll: T0 + 50_000, pidAlive: false, recovering: true }, T0 + 60_000)).toBeNull(); // grace
   });
+  test("root with no pid on record: gone after 90 s without a poll (not Idle for hours); a normal agent is not", () => {
+    const o = { polling: false, lastPoll: T0, pidAlive: null, recovering: false };
+    const root = snap({ id: "root", name: "root", life: "live", connectedAt: T0 });
+    expect(lv.decide(root, o, T0 + 60_000)).toBeNull();
+    expect(lv.decide(root, o, T0 + 100_000)).toEqual({ type: "AgentGone", reason: "no_poll" });
+    expect(lv.decide(root, { ...o, polling: true }, T0 + 100_000)).toBeNull();
+    expect(lv.decide(snap({ life: "live", connectedAt: T0 }), o, T0 + 100_000)).toBeNull();
+  });
+});
+describe("root pid", () => {
+  test("a hand-started director's hello records its pid, so rootPid() (what Open window uses) is not null", async () => {
+    const { rootPid } = await import("./windows");
+    st.emit({ agent: "root", type: "AgentSpawned", data: { id: "root", name: "root" }, source: "spawn", ts: T0 }); st.flush();
+    expect(rootPid()).toBeNull();
+    st.emit({ agent: "root", type: "AgentConnected", data: { session: "s1", pid: 4242 }, source: "mod", ts: T0 + 1 }); st.flush();
+    expect(rootPid()).toBe(4242);
+  });
 });
 describe("sweep", () => {
   test("kill: gone within one sweep; restart grace: nothing for 10 s, then during_restart for a dead pid", () => {

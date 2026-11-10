@@ -31,13 +31,14 @@ const blocked = computed(() => isRoot.value ? "This is root (you)" : !r.value ? 
 const dot = computed(() => {
   const x = r.value; if (!x) return "root";
   if (x.life === "starting") return "starting";
+  if (x.name === "root" && gone.value) return "notrunning";
   if (x.life === "stopping" || gone.value) return "stopping";
   return x.state;
 });
-const DOT_LABEL: Record<string, string> = { root: "director", starting: "starting", stopping: "stopping", working: "working", idle: "idle", waiting: "waiting for input", blocked: "blocked" };
+const DOT_LABEL: Record<string, string> = { root: "director", starting: "starting", stopping: "stopping", working: "working", idle: "idle", notrunning: "not running", waiting: "waiting for input", blocked: "blocked" };
 const model = computed(() => r.value?.model?.replace(/^claude-/, "").replace(/-\d+(-\d+)*$/, "") ?? null);
 const modelChip = computed(() => (model.value ? model.value + (r.value?.effort ? " · " + r.value.effort : "") : null));
-const stateText = computed(() => (r.value ? (r.value.life === "live" ? r.value.state : r.value.life) : ""));
+const stateText = computed(() => (r.value?.name === "root" && gone.value ? "Not running" : r.value ? (r.value.life === "live" ? r.value.state : r.value.life) : ""));
 const stateFor = computed(() => (r.value ? since(r.value.life === "live" ? r.value.stateSince : r.value.lifeSince) : null));
 const ctx = computed(() => ctxView(r.value));
 const ctxPct = computed(() => (ctx.value ? Math.min(100, Math.round(ctx.value.pct)) : 0));

@@ -5,8 +5,8 @@ import { fromTraceparent, logEvent, traceparent, type Trace } from "./logger";
 export type Env = { Variables: { trace: Trace; actor: string } };
 
 /** RFC 9457 problem details. */
-export function problem(c: Context, status: number, title: string, detail?: string) {
-  return c.body(JSON.stringify({ type: "about:blank", title, status, detail, trace_id: c.get("trace")?.trace_id }), status as 400,
+export function problem(c: Context, status: number, title: string, detail?: string, extra?: Record<string, unknown>) {
+  return c.body(JSON.stringify({ type: "about:blank", title, status, detail, ...extra, trace_id: c.get("trace")?.trace_id }), status as 400,
     { "Content-Type": "application/problem+json" });
 }
 

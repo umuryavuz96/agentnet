@@ -5,6 +5,8 @@ import { logEvent } from "../core/logger";
 import { emit, flush, live, goneKey, type Snapshot } from "./store";
 import { attachedSessions, sessionOf, realTmux, type Tmux } from "./windows";
 
+/** A director with no pid on record (hello gave none) that has not polled for this long is not running: without it the card would say Idle for hours. */
+export const NO_PID_GONE_MS = 90_000;
 export const RECOVER_MS = 10_000, SWEEP_MS = 1_000, SILENT_MS = 1_000, HELLO_MS = 30_000; // measured: client killed → poll abort at once → gone on the next sweep (~2 s)
 const polls = new Map<string, number>();   // agent id -> open polls
 const lastPoll = new Map<string, number>(); // agent id -> when its last poll ended
@@ -27,6 +29,7 @@ export function decide(s: Snapshot, o: { polling: boolean; lastPoll: number | nu
   const silentFor = now - Math.max(o.lastPoll ?? 0, s.connectedAt ?? 0);
   if (silentFor < SILENT_MS) return null;
   if (o.pidAlive === false) return { type: "AgentGone", reason: s.connectedAt && listenedAt > s.connectedAt ? "during_restart" : "killed" };
+  if (o.pidAlive === null && s.name === "root" && silentFor > NO_PID_GONE_MS) return { type: "AgentGone", reason: "no_poll" }; // pid unknown, nothing polling for 90 s
   return null; // pid alive, mod silent: still live (it reconnects by itself); never `unreachable` for a mod agent
 }
 

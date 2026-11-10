@@ -19,6 +19,7 @@ const HELP = `agentnet: a local network for Claude Code agents
   despawn <name> [--reason R]
   status                    health and agent list of the running server
   init [dir] [--start]      first run: check the setup, print the command that starts the director; --start runs it in tmux
+  discipline [--day [YYYY-MM-DD]] [--json]   task discipline score per agent and per day; --day also writes the daily snapshot
   doctor                    check bun, tmux, claude, python3, data folder, service
   install-service [--dry-run]   write a launchd (macOS) or systemd user unit; never starts it
   migrate-from-server-os --source <var> [--to <home>] [--dry-run] [--members a,b]   copy a Server OS var folder into an agentnet home
@@ -96,6 +97,19 @@ async function status(): Promise<number> {
   console.log(`agentnet ${h.version} api ${h.api} at ${origin}`);
   const a = await getJson(`${url()}/agents`, 3000);
   for (const x of a?.agents ?? []) console.log(`${x.name}  ${x.life}  ${x.state}  ${x.doing ?? ""}`);
+  return 0;
+}
+
+/** Task discipline numbers from the data folder's own DB (docs/task-discipline.md). --day writes the daily snapshot line (today, or the given day). */
+async function discipline(args: string[]): Promise<number> {
+  const { ensureSchema } = await import("./net/store"), sc = await import("./net/scores");
+  ensureSchema();
+  const di = args.indexOf("--day"), day = di >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(args[di + 1] ?? "") ? args[di + 1] : undefined;
+  const written = di >= 0 ? sc.snapshotDiscipline(day) : [], d = sc.disciplineSummary();
+  if (args.includes("--json")) { console.log(JSON.stringify({ ...d, written: written.map((r) => r.day) }, null, 1)); return 0; }
+  console.log(`discipline ${d.all ?? "n/a"} over all finished tasks`);
+  for (const r of d.days) console.log(`${r.day}  ${String(r.score ?? "n/a").padStart(3)}  ${String(r.tasks).padStart(4)} tasks  listed ${r.checks.listedFirst ?? "-"}%  started ${r.checks.started ?? "-"}%  on time ${r.checks.onTime ?? "-"}%  no batch ${r.checks.notBatch ?? "-"}%  one at a time ${r.checks.oneAtATime ?? "-"}%`);
+  if (written.length) console.log(`snapshot written: ${written.map((r) => r.day).join(", ")}`);
   return 0;
 }
 
@@ -284,6 +298,7 @@ async function main(): Promise<number> {
     case "status": return status();
     case "init": return init(rest);
     case "doctor": return doctor();
+    case "discipline": return discipline(rest);
     case "install-service": return installService(rest);
     case "migrate-from-server-os": return migrateCmd(rest);
     case "export-legacy": return exportCmd(rest);

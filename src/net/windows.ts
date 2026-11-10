@@ -9,7 +9,7 @@ import type { Hono } from "hono";
 import { ROOT } from "../core/config";
 import { audit, logEvent } from "../core/logger";
 import { problem, type Env } from "../core/http";
-import { byName, NAME_RE } from "./routes";
+import { byName, inTree, NAME_RE } from "./routes";
 import { live, onPatch } from "./store";
 
 export const rootSession = () => process.env.AGENTNET_ROOT_SESSION ?? "agentnet-root";
@@ -38,31 +38,67 @@ export const interrupt = (s: string, t: Tmux = realTmux) => t.run(["send-keys", 
 export const killSession = (s: string, t: Tmux = realTmux) => t.run(["kill-session", "-t", `=${s}`]).code === 0;
 export const agentSessions = (t: Tmux = realTmux) => t.run(["list-sessions", "-F", "#{session_name}"]).out.split("\n").map((l) => l.trim()).filter(isAgentSession);
 
-export const DIR = () => join(ROOT, "run", "agentnet");
-/** The terminal app (macOS .app name) that hosts process `pid`: walk the parents, first command inside an .app bundle wins. */
-export function appOfPid(pid: number, ps: (p: number) => { ppid: number; comm: string } | null = psRow): string | null {
-  for (let p: number | null = pid, i = 0; p && p > 1 && i < 32; i++) {
-    const r = ps(p); if (!r) return null;
-    const m = /\/([^/]+)\.app\/Contents\//.exec(r.comm); if (m) return m[1]!;
-    p = r.ppid;
+/** Before 6ad7773 (0.4.1) the director session was named agentnet-director. */
+export const LEGACY_ROOT = "agentnet-director";
+/** Self-heal: a legacy director session and no root session -> rename it, so every later lookup finds it by the normal name. */
+export function healRootSession(t: Tmux = realTmux): boolean {
+  const r = rootSession();
+  if (r === LEGACY_ROOT || hasSession(r, t) || !hasSession(LEGACY_ROOT, t)) return false;
+  const ok = t.run(["rename-session", "-t", `=${LEGACY_ROOT}`, r]).code === 0;
+  logEvent("info", ok ? "agentnet: renamed the legacy director session" : "agentnet: could not rename the legacy director session", { from: LEGACY_ROOT, to: r });
+  return ok;
+}
+/** Where the director runs in tmux: the root session; else the legacy one; else any pane whose process tree holds the director's pid. Null = not in tmux. */
+export function findRootSession(t: Tmux = realTmux, pid: number | null = null, ppid: (p: number) => number | null = (p) => psRow(p)?.ppid ?? null): string | null {
+  healRootSession(t);
+  for (const s of [rootSession(), LEGACY_ROOT]) if (hasSession(s, t)) return s;
+  if (!pid || pid <= 1) return null;
+  for (const l of t.run(["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]).out.split("\n")) {
+    const i = l.lastIndexOf(" "), panePid = Number(l.slice(i + 1));
+    if (i > 0 && panePid > 1 && inTree(pid, [panePid], ppid)) return l.slice(0, i);
   }
   return null;
 }
+
+export const DIR = () => join(ROOT, "run", "agentnet");
+/** Terminals and editors whose process name is not inside an .app path in `ps` (or is cut short): command name -> app for `open -a`. */
+const APP_BY_COMM: Record<string, string> = { iterm2: "iTerm", iterm: "iTerm", ghostty: "Ghostty", "wezterm-gui": "WezTerm", wezterm: "WezTerm", warp: "Warp", stable: "Warp", alacritty: "Alacritty", kitty: "kitty", hyper: "Hyper", tabby: "Tabby", terminal: "Terminal", cursor: "Cursor", code: "Visual Studio Code", "code helper": "Visual Studio Code", "code helper (plugin)": "Visual Studio Code" };
+/** The terminal or editor app (macOS .app name) that hosts process `pid`, and the chain walked to find it ("pid:comm" per step, for the log).
+ *  Parents are walked up; the first command inside an .app bundle wins (the OUTER bundle: Cursor, not Cursor Helper), else a known terminal command name. */
+export function appChain(pid: number, ps: (p: number) => { ppid: number; comm: string } | null = psRow): { app: string | null; chain: string[] } {
+  const chain: string[] = [];
+  for (let p: number | null = pid, i = 0; p && p > 1 && i < 32; i++) {
+    const r = ps(p); if (!r) { chain.push(`${p}:?`); break; }
+    chain.push(`${p}:${r.comm}`);
+    const m = /\/([^/]+)\.app\/Contents\//.exec(r.comm); if (m) return { app: m[1]!, chain };
+    const known = APP_BY_COMM[(r.comm.split("/").pop() ?? "").replace(/^-/, "").toLowerCase()]; if (known) return { app: known, chain };
+    p = r.ppid;
+  }
+  return { app: null, chain };
+}
+export const appOfPid = (pid: number, ps: (p: number) => { ppid: number; comm: string } | null = psRow): string | null => appChain(pid, ps).app;
 function psRow(p: number): { ppid: number; comm: string } | null {
   const r = Bun.spawnSync(["/bin/ps", "-o", "ppid=,comm=", "-p", String(p)]); const m = /^\s*(\d+)\s+(.+)$/.exec(new TextDecoder().decode(r.stdout).trim());
   return m ? { ppid: Number(m[1]), comm: m[2]! } : null;
 }
+/** Is the process there? EPERM means it exists but belongs to someone else: still alive. */
+const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as { code?: string }).code === "EPERM"; } };
+/** The director's recorded pid (from its hello), or null when root is not connected. */
+export const rootPid = (): number | null => live().find((a) => a.name === "root")?.pid ?? null;
 export const NOT_IN_TMUX = "The director runs in your own terminal, not in tmux. Switch to that terminal window.";
+export const NOT_RUNNING = "The director is not running. Start it with Start director.";
 /** Open: raise Terminal when a client is already attached, else start one window on the session. No tmux session but a known
  *  pid (a director started by hand): bring the app that hosts that pid to the front, else say where it runs. */
-export function openWindow(name: string, t: Tmux = realTmux, open: (args: string[]) => void = (a) => { Bun.spawn(["/usr/bin/open", ...a], { stdout: "ignore", stderr: "ignore" }); }, pid: number | null = null, appOf: (pid: number) => string | null = appOfPid): { ok: true; opened: boolean; app?: string } | { ok: false; status: 404 | 422; detail: string } {
+export function openWindow(name: string, t: Tmux = realTmux, open: (args: string[]) => void = (a) => { Bun.spawn(["/usr/bin/open", ...a], { stdout: "ignore", stderr: "ignore" }); }, pid: number | null = null, appOf: (pid: number) => string | null = appOfPid, isAlive: (pid: number) => boolean = pidAlive, ppid?: (p: number) => number | null): { ok: true; opened: boolean; app?: string } | { ok: false; status: 404 | 422; detail: string; code?: "NOT_RUNNING" | "NOT_IN_TMUX" } {
   if (!NAME_RE.test(name)) return { ok: false, status: 422, detail: "bad agent name" };
-  const s = sessionOf(name);
-  if (!hasSession(s, t)) {
-    if (name !== "root") return { ok: false, status: 404, detail: `no tmux session ${s}` };
-    const app = process.platform === "darwin" && pid && pid > 1 ? appOf(pid) : null;
+  const s = name === "root" ? findRootSession(t, pid && isAlive(pid) ? pid : null, ppid) : sessionOf(name);
+  if (!s || !hasSession(s, t)) {
+    if (name !== "root") return { ok: false, status: 404, detail: `no tmux session ${sessionOf(name)}` };
+    if (!pid || pid <= 1 || !isAlive(pid)) return { ok: false, status: 404, detail: NOT_RUNNING, code: "NOT_RUNNING" }; // no pid on record, or it is dead: nothing to switch to
+    const app = process.platform === "darwin" ? appOf(pid) : null;
     if (app) { open(["-a", app]); return { ok: true, opened: false, app }; }
-    return { ok: false, status: 404, detail: NOT_IN_TMUX };
+    logEvent("info", "agentnet: open window found no terminal app", { pid, chain: appChain(pid).chain.join(" < ") }); // which processes were walked, to extend the list
+    return { ok: false, status: 404, detail: NOT_IN_TMUX, code: "NOT_IN_TMUX" };
   }
   if (attachedSessions(t).has(s)) { open(["-a", "Terminal"]); return { ok: true, opened: false }; }
   if (!existsSync(DIR())) mkdirSync(DIR(), { recursive: true, mode: 0o700 });
@@ -83,16 +119,16 @@ export function agentnetWindowRoutes(api: Hono<Env>) { // panel auth (not the ag
   api.post("/agentnet/agents/:name/open", (c) => {
     const name = String(c.req.param("name"));
     if (name !== "root" && !byName(name)) return problem(c, 404, "Not Found", "no live agent by that name");
-    const r = openWindow(name, realTmux, undefined, name === "root" ? live().find((a) => a.name === "root")?.pid ?? null : null);
-    if (!r.ok) return problem(c, r.status, r.status === 404 ? "Not Found" : "Can't do that", r.detail);
+    const r = openWindow(name, realTmux, undefined, name === "root" ? rootPid() : null);
+    if (!r.ok) return problem(c, r.status, r.status === 404 ? "Not Found" : "Can't do that", r.detail, r.code ? { code: r.code } : undefined);
     audit(c.get("actor"), "agentnet.open", name, "ok", c.get("trace"), { opened: r.opened });
-    return c.json({ agent: name, session: sessionOf(name), opened: r.opened, raised: !r.opened, ...(r.app ? { app: r.app } : {}) });
+    return c.json({ agent: name, session: name === "root" ? findRootSession(realTmux, rootPid()) ?? rootSession() : sessionOf(name), opened: r.opened, raised: !r.opened, ...(r.app ? { app: r.app } : {}) });
   });
   api.post("/agentnet/agents/:name/close", (c) => {
     const name = String(c.req.param("name"));
     if (!NAME_RE.test(name)) return problem(c, 422, "Can't do that", "bad agent name");
-    const s = sessionOf(name);
-    if (!hasSession(s)) return problem(c, 404, "Not Found", `no tmux session ${s}`);
+    const s = name === "root" ? findRootSession(realTmux, rootPid()) ?? rootSession() : sessionOf(name);
+    if (!hasSession(s) || (name === "root" && !s.startsWith("agentnet-"))) return problem(c, 404, "Not Found", `no tmux session ${s}`); // never detach the user's own tmux session
     detach(s);
     return c.json({ agent: name, closed: true });
   });

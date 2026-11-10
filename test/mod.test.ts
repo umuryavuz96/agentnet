@@ -8,19 +8,19 @@ const tokenFile = join(mkdtempSync(join(tmpdir(), "sd-mod-")), "a.token"); write
 type H = (...a: unknown[]) => Promise<unknown>;
 let n = 0;
 /** Load a fresh copy of the mod (its state is module-level) and a fake host. `route` answers each request. */
-async function host(route: (path: string, calls: string[]) => { ok: boolean; status: number; text: string } | Promise<{ ok: boolean; status: number; text: string }>) {
+async function host(route: (path: string, calls: string[]) => { ok: boolean; status: number; text: string } | Promise<{ ok: boolean; status: number; text: string }>, claude = "2.1.318") {
   const { register } = await import(`../plugin/hooks/register.ts?m=${++n}`);
-  const handlers: Record<string, H[]> = {}, calls: string[] = [], afters: (() => void)[] = [], tools: string[] = [];
+  const logs: string[] = [], handlers: Record<string, H[]> = {}, calls: string[] = [], afters: (() => void)[] = [], tools: string[] = [];
   register((name: string, ...rest: unknown[]) => { (handlers[name] ??= []).push(rest.at(-1) as H); });
   const $ = {
     env: { get: async (k: string) => (k === "AGENTNET_TOKEN_FILE" ? tokenFile : null) }, fs: { read: async () => "tok" },
-    session: { id: async () => "sid", model: async () => "m", version: async () => ({ version: "1" }), append: async () => {} },
-    process: { run: async () => ({ stdout: "4242\n" }) }, prompt: { submit: async () => {} }, ui: { status: () => {} }, tool: { register: async (t: { name: string }) => { tools.push(t.name); } },
+    session: { id: async () => "sid", model: async () => "m", version: async () => ({ version: claude }), append: async () => {} },
+    process: { run: async () => ({ stdout: "4242\n" }) }, prompt: { submit: async () => {} }, ui: { status: () => {}, log: (t: string) => { logs.push(t); } }, tool: { register: async (t: { name: string }) => { tools.push(t.name); } },
     clock: { after: (_ms: number, f: () => void) => { afters.push(f); }, sleep: async () => {} },
     http: { fetch: async (url: string) => { const path = url.replace(/^.*\/agentnet/, "").split("?")[0]!; calls.push(path); return route(path, calls); } },
   };
-  const fire = (name: string, e: Record<string, unknown> = {}) => handlers[name]![0]!($, e, async (x: unknown) => x);
-  return { fire, calls, afters, tools, count: (p: string) => calls.filter((c) => c === p).length };
+  const fire = (name: string, e: Record<string, unknown> = {}) => (name === "tool.call" ? handlers[name]!.at(-1)! : handlers[name]![0]!)($, e, async (x: unknown) => x); // tool.call: the general handler is registered last
+  return { fire, calls, afters, tools, logs, count: (p: string) => calls.filter((c) => c === p).length };
 }
 const ok = (o: unknown = {}) => ({ ok: true, status: 200, text: JSON.stringify(o) });
 const settle = () => Bun.sleep(30);
@@ -77,5 +77,39 @@ describe("owner check tools", () => {
     const src = await Bun.file(join(import.meta.dir, "../plugin/hooks/register.ts")).text();
     const d = src.slice(src.indexOf('name: "ask_owner_check"'), src.indexOf('name: "set_status"'));
     expect(d).toContain("plain question to the owner"); expect(d).toContain("Do you see a Voice button"); expect(d).toContain("2-4 short answer buttons"); expect(d).toContain("tone");
+  });
+});
+
+describe("C: Claude Code minimum version", () => {
+  test("older than 2.1.293 logs one warning, even after a second hello; 2.1.293 and newer log nothing", async () => {
+    const quiet = (p: string) => (p === "/poll" ? new Promise<never>(() => {}) : ok({ messages: [] }));
+    const old = await host(quiet, "2.1.292");
+    await old.fire("session.start"); await old.fire("session.end", { reason: "clear" }); old.afters.splice(0).forEach((f) => f()); await settle();
+    expect(old.logs).toHaveLength(1); expect(old.logs[0]).toContain("2.1.293 or later (2.1.318+ recommended)");
+    const edge = await host(quiet, "2.1.293 (Claude Code)");
+    await edge.fire("session.start"); await settle(); expect(edge.logs).toHaveLength(0);
+  });
+  test("the numbers match src/core/claudeMin.ts", async () => {
+    const { MIN_CLAUDE, RECOMMENDED_CLAUDE } = await import("../src/core/claudeMin");
+    const src = await Bun.file(join(import.meta.dir, "../plugin/hooks/register.ts")).text();
+    expect(src).toContain(`MIN_VERSION = "${MIN_CLAUDE}", RECOMMENDED_VERSION = "${RECOMMENDED_CLAUDE}"`);
+  });
+});
+
+describe("B2: the work gate in the mod", () => {
+  const gateHost = (allow: boolean | "down") => host((p) => p === "/gate" ? (allow === "down" ? { ok: false, status: 0, text: "" } : ok(allow ? { allow: true } : { allow: false, reason: "agentnet task gate: your task list is empty. Add your tasks first" })) : p === "/poll" ? new Promise<never>(() => {}) : ok({ messages: [] }));
+  const call = (h: Awaited<ReturnType<typeof host>>, tool: string, extra: Record<string, unknown> = {}) => h.fire("tool.call", { tool, tool_use_id: "u", ...extra }) as Promise<{ deny?: string }>;
+  test("work tools are denied with the service's reason; task tools, ToolSearch and the inbox are never asked", async () => {
+    const h = await gateHost(false); await h.fire("session.start"); await settle();
+    expect((await call(h, "Bash", { command: "ls" })).deny).toContain("Add your tasks first");
+    await call(h, "ToolSearch"); await call(h, "mcp__agentnet__inbox"); await call(h, "mcp__agentnet__task_add");
+    expect(h.count("/gate")).toBe(1);
+  });
+  test("an allow is cached briefly, a task tool call clears the cache, a sub-agent call is not asked, a service that is down lets the call through", async () => {
+    const h = await gateHost(true); await h.fire("session.start"); await settle();
+    await call(h, "Read"); await call(h, "Edit"); expect(h.count("/gate")).toBe(1);
+    await h.fire("tool.call", { tool: "Read", tool_use_id: "s", agentId: "sub" }); expect(h.count("/gate")).toBe(1);
+    const d = await gateHost("down"); await d.fire("session.start"); await settle();
+    expect((await call(d, "Bash")).deny).toBeUndefined();
   });
 });

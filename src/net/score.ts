@@ -41,7 +41,7 @@ export interface TaskRecord {
   tokens: number | null; costUsd: number | null;
   /** Hygiene facts taken when the task was done. */
   listedFirst: boolean; promptStart: boolean; promptDone: boolean; noteFilled: boolean;
-  grade: number | null; note: string | null; rework: boolean; reworkAt: number | null; ownerRounds: number | null; gradedAt: number | null;
+  grade: number | null; /** Root's grade before the discipline penalty, and the points taken off (B5). */ gradeRaw?: number | null; penalty?: number | null; note: string | null; rework: boolean; reworkAt: number | null; ownerRounds: number | null; gradedAt: number | null;
 }
 export interface SubScores { quality: number | null; firstTimeRight: number | null; efficiency: number | null; reliability: number | null; rework: number | null }
 export interface Score {

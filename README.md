@@ -18,7 +18,7 @@ and an inbox, and shows the whole team live on your own machine.
 
 ## Quick start
 
-You need Claude Code, tmux and Bun, on macOS or Linux.
+You need Claude Code 2.1.293 or later (2.1.318+ recommended), tmux and Bun, on macOS or Linux. `agentnet doctor` and `agentnet init` warn when `claude --version` is older.
 
 agentnet starts real Claude Code sessions, so every agent uses your Claude Code usage. The web app shows what each one
 used.

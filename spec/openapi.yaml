@@ -64,6 +64,12 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/agent/gate:
+    get:
+      summary: "agent work gate: {allow:true} or {allow:false, reason}. The mod asks before each work tool; refused while the agent has no task in progress (root, members and the first 2 minutes after spawn are exempt)"
+      responses:
+        "200":
+          description: OK
   /v1/agent/checks:
     post:
       summary: "agent checks: ask the owner to check something in the real world. Body {question, options?: 2-4 of {label, tone good|bad|neutral} (default Works/Not yet), detail?}; root may add agent. Same open question from the same agent returns the existing row (200), a new one is 201"
@@ -283,6 +289,12 @@ paths:
   /v1/panel/scores:
     get:
       summary: panel scores
+      responses:
+        "200":
+          description: OK
+  /v1/panel/discipline:
+    get:
+      summary: "panel discipline: score per day (last 30), today, the stored daily snapshots"
       responses:
         "200":
           description: OK
@@ -894,6 +906,7 @@ paths:
               type: object
               properties:
                 dir: {}
+                restart: {}
       responses:
         "200":
           description: OK
@@ -905,6 +918,16 @@ paths:
           description: A director session already exists
         "422":
           description: tmux or claude missing, or tmux failed
+  /v1/panel/director/move:
+    post:
+      summary: panel stop a hand-started director and start it again in the same folder in the agentnet-root tmux session; root only
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Forbidden (root only)
+        "422":
+          description: The director is not running, did not stop, or tmux or claude is missing
   /v1/panel/director/pick-folder:
     post:
       summary: panel open the server machine's native folder dialog (macOS osascript, Linux zenity); root only

@@ -12,7 +12,8 @@ import { HOST, PORT } from "../core/config";
 import { problem, type Env } from "../core/http";
 import { logEvent } from "../core/logger";
 import { live } from "./store";
-import { rootSession } from "./windows";
+import { healRootSession, rootPid, rootSession } from "./windows";
+import { all } from "./store";
 import { listHooks, readHookLog } from "./hooks";
 import { templates } from "./hook-templates";
 
@@ -94,12 +95,34 @@ export async function pickFolder(run: PickRun = realPick, platform: string = pro
   return { ok: false, code: "failed", detail: "The folder dialog failed. Type the path instead." };
 }
 
+/** The folder to start the director in when nobody picked one: where root last ran (its project), else the home folder. */
+export const defaultDirectorDir = (): string => { const p = all().find((a) => a.name === "root")?.project; return p && "dir" in checkDir(p) ? (checkDir(p) as { dir: string }).dir : homedir(); };
+/** A director running outside tmux: its working folder (lsof), or null. */
+const cwdOf = (pid: number): string | null => { const r = spawnSync("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }); const m = /^n(.+)$/m.exec(r.stdout ?? ""); return m ? m[1]! : null; };
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as { code?: string }).code === "EPERM"; } };
+export interface MoveDeps { pid: () => number | null; cwd: (pid: number) => string | null; stop: (pid: number) => void; gone: (pid: number) => Promise<boolean>; start: (dir: string) => StartResult }
+const realMove: MoveDeps = { pid: rootPid, cwd: cwdOf, stop: (pid) => { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } }, gone: async (pid) => { for (let i = 0; i < 30; i++) { if (!alive(pid)) return true; await Bun.sleep(100); } return false; }, start: (d) => startDirector(d) };
+/** Move a hand-started director into an agentnet tmux window: stop it, start it again in the same folder in agentnet-root. */
+export async function moveDirector(d: MoveDeps = realMove): Promise<StartResult> {
+  const pid = d.pid();
+  if (!pid || pid <= 1 || !alive(pid)) return { ok: false, code: "failed", detail: "The director is not running. Use Start director." };
+  const dir = d.cwd(pid) ?? defaultDirectorDir();
+  d.stop(pid);
+  if (!(await d.gone(pid))) return { ok: false, code: "failed", detail: "The director did not stop. Close it in its own terminal, then use Start director." };
+  logEvent("info", "director moved into tmux", { pid, dir });
+  return d.start(dir);
+}
+
 export function directorRoutes(api: Hono<Env>): void {
+  api.post("/agent-director/move", async (c) => {
+    const r = await moveDirector();
+    return r.ok ? c.json(r) : problem(c, 422, r.code ?? "failed", r.detail ?? "could not move");
+  });
   api.get("/agent-director", (c) => {
     const q = c.req.query("dir"), home = homedir();
     const d = checkDir(q ?? home);
     const dir = "dir" in d ? d.dir : home;
-    return c.json({ home, dir, dirError: "error" in d ? d.error : null, tools: tools(), root: hasRoot(), triage: triageNow(), session: hasSession(), sessionName: SESSION, command: directorCommand(dir) });
+    return c.json({ home, dir, dirError: "error" in d ? d.error : null, tools: tools(), root: hasRoot(), hadRoot: all().some((a) => a.name === "root"), triage: triageNow(), session: hasSession(), sessionName: SESSION, command: directorCommand(dir) });
   });
   api.post("/agent-director/pick-folder", async (c) => {
     const r = await pickFolder();
@@ -108,8 +131,10 @@ export function directorRoutes(api: Hono<Env>): void {
     return problem(c, r.code === "unsupported" ? 501 : 500, r.code, r.detail);
   });
   api.post("/agent-director/start", async (c) => {
-    const b = (await c.req.json().catch(() => ({}))) as { dir?: unknown };
-    const r = startDirector(b.dir);
+    const b = (await c.req.json().catch(() => ({}))) as { dir?: unknown; restart?: boolean };
+    healRootSession();
+    if (b.restart && !hasRoot() && hasSession()) spawnSync("tmux", ["kill-session", "-t", `=${SESSION}`], { stdio: "ignore" }); // Not running card: a leftover shell session of the dead director must not block the start
+    const r = startDirector(b.dir ?? defaultDirectorDir()); // no folder given (the Start director button on a Not running card): where root last ran
     if (r.ok) return c.json(r);
     const status = r.code === "running" ? 409 : r.code === "bad-dir" ? 400 : 422;
     return problem(c, status, r.code ?? "failed", r.detail ?? "could not start");

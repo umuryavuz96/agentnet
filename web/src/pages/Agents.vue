@@ -14,7 +14,7 @@ import CheckSheet from "../components/CheckSheet.vue";
 import TriageTip from "../components/TriageTip.vue";
 import HookAddSheet from "./HookAddSheet.vue";
 import { net, placing, useAgentnet, useAgentHooks, useTeams, staleSince, layoutKey, pendingChecks, checkUi, windows, windowCall } from "../net";
-import { toast } from "../ui/api";
+import { api, toast } from "../ui/api";
 import { route } from "../router";
 
 const SPAWN_CMD = 'bin/agentnet spawn hello-1 --job "say hello" --goal "hello task done and reported" --boot-prompt "Add one task, mark it done, report to your boss."';
@@ -59,7 +59,7 @@ watch(count, deepLink);
 watch(() => route.value, () => { applied = ""; deepLink(); });
 const setup = ref(false), triageSheet = ref(false), tipN = ref(0);
 const triageAdded = (_r: unknown, name: string) => { toast(`${name} added`); tipN.value++; };
-const pick = (id: string) => { if (id === ROOT && !rootRow.value) { setup.value = true; return; } sel.value = sel.value === id ? null : id; };
+const pick = (id: string) => { if (id === ROOT && !rootRow.value) { if (hadRoot.value) void startRoot(); else setup.value = true; return; } sel.value = sel.value === id ? null : id; };
 // Hook stream only while something draws hooks (the map lane, or the open panel's Hooks section): Chrome allows
 // 6 HTTP/1.1 connections per host, and this page already holds the main SSE plus the shared agentnet stream.
 let stopHooks: (() => void) | null = null;
@@ -104,7 +104,24 @@ const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit"
 // ---- Terminal windows (M8) ----
 async function win(path: string, what: string) {
   const r = await windowCall(path);
+  if (r.code === "NOT_RUNNING" && path.startsWith("/agents/root/")) return startRoot(); // the director is not running: Start director, then open it
+  if (r.code === "NOT_IN_TMUX") { moveAsk.value = true; return; } // runs outside tmux and no terminal app found: offer to move it into an agentnet window
   toast(r.ok ? what : r.detail ?? "Failed");
+}
+const moveAsk = ref(false), moving = ref(false), hadRoot = ref(false);
+// A director that ran before and is gone shows "Not running" + Start director; a first run shows the setup card.
+const loadHad = async () => { try { hadRoot.value = (await api<{ hadRoot?: boolean }>("v1/panel/director")).hadRoot === true; } catch { /* keep */ } };
+watch(() => !!rootRow.value, () => void loadHad(), { immediate: true });
+/** Not running card: start the director where it last ran (tmux session agentnet-root), then open its window. */
+async function startRoot() {
+  try { await api("v1/panel/director/start", { method: "POST", body: { restart: true } }); toast("Starting the director"); await win("/agents/root/open", "Opening the director in Terminal on the server Mac"); }
+  catch (e) { setup.value = true; toast((e as Error).message || "Could not start the director"); } // no tmux or claude: the setup sheet explains and gives the command
+}
+async function moveRoot() {
+  moving.value = true;
+  try { await api("v1/panel/director/move", { method: "POST" }); moveAsk.value = false; toast("Director moved into an agentnet window"); await win("/agents/root/open", "Opening the director in Terminal on the server Mac"); }
+  catch (e) { toast((e as Error).message || "Could not move the director"); }
+  finally { moving.value = false; }
 }
 const openWin = (name: string) => win(`/agents/${encodeURIComponent(name)}/open`, `Opening ${name} in Terminal on the server Mac`);
 const closeWin = (name: string) => win(`/agents/${encodeURIComponent(name)}/close`, `Closed ${name}'s window; the agent keeps running`);
@@ -142,7 +159,7 @@ const TIP = "Terminal windows on the server Mac";
         <div class="grp">
           <h2>Director</h2>
           <div class="an-grid">
-            <AgentnetCard :row="rootRow" :name="ROOT" :selected="sel === ROOT" @select="pick(ROOT)" @open="openWin(ROOT)" @close="closeWin(ROOT)" />
+            <AgentnetCard :row="rootRow" :had-root="hadRoot" :name="ROOT" :selected="sel === ROOT" @select="pick(ROOT)" @open="openWin(ROOT)" @close="closeWin(ROOT)" />
           </div>
         </div>
         <TransitionGroup name="anc">
@@ -163,6 +180,13 @@ const TIP = "Terminal windows on the server Mac";
       </section>
       </Transition>
 
+      <Teleport to="body"><div v-if="moveAsk" class="mv-scrim" @click.self="moveAsk = false" @keydown.esc="moveAsk = false">
+        <div class="mv" role="alertdialog" aria-label="Move the director into an agentnet window?">
+          <h3>Move the director into an agentnet window?</h3>
+          <p>The director runs in a terminal agentnet cannot open. Agentnet can stop it and start it again in the same folder, inside its own window. Its current conversation ends; you can resume it with /resume.</p>
+          <div class="mv-b"><button type="button" class="btn sm ghost" :disabled="moving" @click="moveAsk = false">Cancel</button>
+            <button type="button" class="btn sm" :disabled="moving" @click="moveRoot">{{ moving ? "Moving…" : "Move director" }}</button></div>
+        </div></div></Teleport>
       <Teleport to="body"><AgentnetDirectorSetup v-if="setup" @close="setup = false" /></Teleport>
       <Teleport to="body"><AgentnetTeamForm v-if="newTeam" @close="newTeam = false" @created="(id) => (sel = 'team:' + id)" /></Teleport>
       <Teleport to="body" :disabled="!phone">
@@ -178,6 +202,10 @@ const TIP = "Terminal windows on the server Mac";
 </template>
 
 <style scoped>
+.mv-scrim{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(0,0,0,.45);padding:16px}
+.mv{max-width:420px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px}
+.mv h3{margin:0 0 8px;font-size:16px}.mv p{margin:0 0 16px;font-size:14px;line-height:1.5;color:var(--muted)}
+.mv-b{display:flex;justify-content:flex-end;gap:8px}
 .anv{display:flex;flex-direction:column;height:100%;min-height:0}
 .anv-h{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .anv-pill{padding:4px 10px;background:var(--on-bg);color:var(--on);font:600 12px/1.2 var(--body)}
