@@ -5,7 +5,8 @@
 import { computed, ref } from "vue";
 import Icon from "../ui/Icon.vue";
 import { toast } from "../ui/api";
-import { groupFindings, hasPicks, isGlobal, pickedFiles, shortPath, soulName, type AdoptReport, type Finding, type Picks } from "../adopt";
+import AgentnetAdoptAfter from "./AgentnetAdoptAfter.vue";
+import { changeOf, groupFindings, hasPicks, isGlobal, pickedFiles, shortPath, soulName, type AdoptReport, type Finding, type Picks } from "../adopt";
 
 const props = defineProps<{ report: AdoptReport; picks: Picks; busy?: boolean; base?: string }>();
 const emit = defineEmits<{ preview: []; back: []; rescan: [] }>();
@@ -71,6 +72,10 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
         <p v-if="f.agents.length" class="af-agents"><span>Agents</span> {{ f.agents.join("  ") }}</p>
         <p v-if="isGlobal(f, report.workspace)" class="af-glob"><Icon name="triangle-alert" :size="14" /> Global: affects all your Claude Code sessions</p>
         <p class="af-about">{{ f.about }}</p>
+        <div class="af-ch" :class="{ kept: !on(f) }" aria-label="What changes">
+          <p class="b"><span>Now</span>{{ changeOf(f, base).before }}</p>
+          <p class="a"><span>{{ on(f) ? "After" : "If applied" }}</span>{{ changeOf(f, base).after }}<em v-if="!on(f)">You chose to keep it, so nothing changes.</em></p>
+        </div>
 
         <template v-if="f.evidence.length">
           <button type="button" class="af-ev" :aria-expanded="!!open[f.id]" @click="toggle(f.id)"><Icon name="chevron-down" :size="14" class="chev" /> Evidence ({{ f.evidence.length }})</button>
@@ -123,6 +128,8 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
       </ul></div>
     </template>
 
+    <AgentnetAdoptAfter v-if="!empty || report.findings.length" :report="report" :picks="picks" :base="base" />
+
     <div class="af-foot">
       <button type="button" class="af-b ghost" @click="emit('back')">Back</button>
       <button type="button" class="af-b" :disabled="busy" @click="emit('preview')">{{ busy ? "Preparing…" : empty ? "Continue" : hasPicks(report.findings, picks) ? `Preview changes (${files.length} ${files.length === 1 ? "file" : "files"})` : "Preview changes" }}</button>
@@ -148,6 +155,10 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
 .af-agents span{margin-right:6px;color:var(--muted);font:600 11px var(--body);letter-spacing:.06em;text-transform:uppercase;word-spacing:0}
 .af-glob{display:flex;gap:6px;align-items:center;margin:0;padding:6px 10px;border-radius:10px;background:var(--bad-bg);color:var(--bad);font:600 12.5px var(--body)}
 .af-about{margin:0;font-size:13.5px;line-height:1.45}
+.af-ch{display:grid;gap:4px;padding:8px 10px;border-radius:10px;background:var(--track);font-size:12.5px;line-height:1.45}
+.af-ch p{margin:0}
+.af-ch span{color:var(--muted);font:600 11px/1.6 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.af-ch .a{color:var(--ink);display:block}.af-ch .a span{display:inline-block;width:60px;margin-right:6px}.af-ch .b{display:block}.af-ch .b span{display:inline-block;width:60px;margin-right:6px}.af-ch em{display:block;margin-left:66px;font-style:normal;color:var(--muted)}.af-ch.kept .a{color:var(--muted)}
 .af-q2{margin:2px 0 0;font:600 13px var(--body)}
 .af-ev{justify-self:start;display:inline-flex;align-items:center;gap:6px;min-height:44px;margin:-6px 0;padding:0 4px;border:0;background:none;color:var(--muted);font:600 12.5px var(--body);cursor:pointer;border-radius:8px}
 .af-ev:hover{color:var(--ink)}

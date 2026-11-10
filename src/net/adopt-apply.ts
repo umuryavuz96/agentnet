@@ -139,6 +139,24 @@ export function listRuns(root: string = ROOT): RunInfo[] {
 }
 
 /** Put one run's files back. A file edited after apply is kept unless force. Created files are deleted when unchanged. */
+/** A file something else (Claude Code answering the director's MCP dialog) is about to write after Apply: back it up (or note it did not exist) into the run, so Rollback restores or removes it. Idempotent. Returns an error text, or null. */
+export function noteLateFile(runId: string, file: string, root: string = ROOT): string | null {
+  const m = readManifest(root, runId);
+  if (!m || m.state !== "applied") return "no applied run to record this in";
+  if (m.files.some((f) => f.file === file)) return null;
+  try {
+    const before = shaOrNull(file); let backup: string | null = null;
+    if (before !== null) {
+      backup = join(adoptDir(root), runId, "backup", file);
+      mkdir700(dirname(backup)); copyFileSync(file, backup); chmodSync(backup, 0o600);
+      if (sha256File(backup) !== before) return `backup of ${file} does not match the original`;
+    }
+    m.files.push({ file, beforeSha: before, afterSha: "", backup, mode: before !== null ? statSync(file).mode & 0o777 : 0o644, opIds: [] });
+    saveManifest(root, m);
+    return null;
+  } catch (e) { return (e as Error).message; }
+}
+
 function restore(m: Manifest, root: string, wsd: string, force: boolean): { restored: string[]; removed: string[]; kept: RollbackResult["kept"] } {
   const restored: string[] = [], removed: string[] = [], kept: RollbackResult["kept"] = [];
   const only = m.state === "rolledback" && m.kept?.length ? new Set(m.kept) : null; // a forced second pass handles only what was kept

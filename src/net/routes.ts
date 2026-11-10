@@ -87,9 +87,10 @@ export function onMessage(fn: (id: number) => void) { msgSubs.add(fn); return ()
 const wake = (agent: string) => { for (const w of waiters.get(agent) ?? []) w(); };
 const snippet = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 120);
 /** Queue one message; `state` tells the sender what happened. Gone by despawn/failed = refused; other gone = held 24 h (cap 100). */
-export function enqueueMessage(from: AgentRow, to: AgentRow, body: string, kind: Kind, replyTo: number | null, subject = subjectOf(undefined, body), now = Date.now()): { id: number | null; state: "queued" | "held" | "gone" } {
+export function enqueueMessage(from: AgentRow, to: AgentRow, body: string, kind: Kind, replyTo: number | null, subject = subjectOf(undefined, body), now = Date.now()): { id: number | null; state: "queued" | "held" | "gone"; lost?: true } {
   const s = to.id === ADMIN.id ? null : get(to.id);
   if (to.id !== ADMIN.id && (!s || s.life === "failed" || (s.life === "gone" && s.goneReason === "despawn"))) return { id: null, state: "gone" };
+  if (s?.life === "gone" && s.goneReason === "lost") return { id: null, state: "gone", lost: true }; // its tmux session ended: not stored, the caller falls back; unread messages from before are held for the respawn
   const held = s?.life === "gone";
   if (held && (db().query("SELECT COUNT(*) AS n FROM messages WHERE to_agent = ? AND state = 'held'").get(to.id) as { n: number }).n >= HOLD_CAP) return { id: null, state: "gone" };
   const r = db().run("INSERT INTO messages (from_agent, to_agent, body, kind, subject, reply_to, created_at, held_until, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -222,6 +223,7 @@ export function agentnetPanelSendRoute(api: Hono<Env>) {
     const out = enqueueMessage(ADMIN, to, text, kindOf(b.kind), null, subjectOf(b.subject, text));
     flush();
     audit(c.get("actor"), "agentnet.panel-send", to.name, out.state === "gone" ? "failed" : "ok", c.get("trace"), { msg_id: out.id });
+    if (out.lost) return problem(c, 409, "Conflict", `${to.name} is lost: its tmux session ended. Nothing stored. Respawn it.`, { state: "lost" });
     if (out.state === "gone") return problem(c, 410, "Gone", `${to.name} is gone; nothing stored`);
     return c.json({ id: out.id, to: to.name, state: out.state });
   });
@@ -323,6 +325,7 @@ export function agentnetRoutes(api: Hono<Env>) {
     if (kind === "report" && b.state === "done" && hasNoteFields(b)) noteFor(a, text.split("\n")[0]!.slice(0, 160), b);
     if (kind === "report") { emit({ agent: a.id, type: "Reported", data: { to: to.name, msg_id: out.id }, source: "mcp" }); if (b.state) emit({ agent: a.id, type: "StatusReported", data: { doing: text.slice(0, 120), phase: String(b.state), progress: null, blockedOn: b.state === "blocked" ? text.slice(0, 120) : null }, source: "mcp" }); }
     flush();
+    if (out.lost) return problem(c, 409, "Conflict", `${to.name} is lost: its tmux session ended. Nothing stored. Respawn it.`, { state: "lost" });
     if (out.state === "gone") return problem(c, 410, "Gone", `${to.name} is gone; nothing stored`);
     return c.json({ msg_id: out.id, to: to.name, state: out.state });
   };

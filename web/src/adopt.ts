@@ -26,13 +26,14 @@ export interface PlanOp {
 }
 export interface AdoptPlan { planId: string; workspace: string; ops: PlanOp[]; willBackup: string[]; backupDir: string; rollbackCommand: string; warnings: string[] }
 export type Phase = "idle" | "scanning" | "reported" | "planned" | "applying" | "applied" | "rolledback";
-export interface AdoptRun { runId: string; at: number; workspace: string; files: number; state: "applied" | "rolledback" }
+export interface AdoptRun { runId: string; createdAt: string; workspace: string; files: number; state: "applied" | "rolledback" }
 /** Scan progress shown in step 3: `facts` is set once the collector is done; `failed` carries the reason when the director did not report. */
 export interface AdoptState {
   phase: Phase; mode: "clean" | "adopt" | null; workspace: string | null; scanId: string | null; planId: string | null; runId: string | null;
   scanner?: "director" | "static" | null; facts?: { signals: number } | null; failed?: string | null;
   report: AdoptReport | null; plan: AdoptPlan | null; runs: AdoptRun[];
 }
+export interface Launch { state: "idle" | "starting" | "waiting" | "connected" | "failed"; startedAt?: number; deadlineAt?: number; stage?: "session" | "claude" | "trust" | "hello"; error?: string; sessionName?: string; attach?: string | null; pane?: string | null; dialog?: { kind: "trust" | "mcp" | "mcp-multi"; title: string; options: { id: string; label: string; selected: boolean }[]; servers?: { name: string; checked: boolean; enable: boolean }[] } | null }
 export interface Precheck { instructions: boolean; claudeDir: boolean; repos: number; agentDefs: number; tmuxAgents: number }
 
 /** What the owner chose on the cards: per finding apply/skip, plus per-action opt-outs inside a card (the soul checklist). */
@@ -117,4 +118,59 @@ export const planHasGlobal = (p: AdoptPlan) => p.ops.some((o) => o.global);
 /** A card whose action edits a file outside the workspace under a .claude folder (the user's global settings): red badge plus a confirm box. */
 export function isGlobal(f: Finding, workspace: string): boolean {
   return !!f.global || f.actions.some((a) => "file" in a && !a.file.startsWith(workspace + "/") && /\/\.claude\//.test(a.file));
+}
+
+// ---------- "what changes" and "after adopt" (derived from the report and the picks; a server `change` / `after` wins when present) ----------
+export interface AfterItem { kind: string; label: string; file?: string; findingId?: string }
+export interface AfterAgent { name: string; role: string; source: string }
+/** Optional server-built structure (report.after). Every field is optional: the page derives what is missing. */
+export interface AfterServer { director?: { name: string; model?: string }; agents?: AfterAgent[]; stay?: AfterItem[]; off?: AfterItem[]; messaging?: string }
+export interface Change { before: string; after: string }
+
+const act = (f: Finding, o: Action["op"]) => f.actions.filter((a) => a.op === o);
+/** Plain before/after for one card. Words come from the finding's own title and actions; nothing about the files is invented. */
+export function changeOf(f: Finding & { change?: Change }, base?: string): Change {
+  if (f.change?.before && f.change.after) return f.change;
+  const sp = (p: string) => shortPath(p, base);
+  if (f.suggestion === "adopt-as-souls") {
+    const n = act(f, "register-souls").length;
+    return { before: `${n} ${n === 1 ? "agent is" : "agents are"} defined in your repo files and only that repo's sessions know ${n === 1 ? "it" : "them"}.`, after: `${n === 1 ? "It becomes" : "They become"} workspace ${n === 1 ? "soul" : "souls"}: the director can start ${n === 1 ? "it" : "them"} as ${n === 1 ? "an agentnet agent" : "agentnet agents"}. Your files stay as they are.` };
+  }
+  if (f.suggestion === "switch-off") {
+    const hooks = act(f, "park-hook"), mcps = act(f, "park-mcp"), lines = act(f, "disable-lines");
+    const what = [hooks.length ? `${hooks.length} ${hooks.length === 1 ? "hook" : "hooks"}` : "", mcps.length ? `${mcps.length} MCP ${mcps.length === 1 ? "server" : "servers"}` : "", lines.length ? `${lines.length} ${lines.length === 1 ? "block" : "blocks"} of instructions` : ""].filter(Boolean).join(" and ") || "this setup";
+    const files = [...new Set(f.actions.flatMap((a) => ("file" in a ? [sp(a.file)] : [])))];
+    const one = !what.includes(" and ") && what.startsWith("1 ");
+    return { before: `${f.title}: ${what} run${one ? "s" : ""} next to agentnet${files.length ? ` (${files.join(", ")})` : ""}.`, after: `Switched off. ${what[0].toUpperCase() + what.slice(1)} ${one ? "is" : "are"} parked, not deleted, and the backup can bring ${one ? "it" : "them"} back. agentnet is the only way agents talk.` };
+  }
+  if (f.suggestion === "neutralise-lines") {
+    const l = act(f, "disable-lines");
+    return { before: `${l.length || "Some"} ${l.length === 1 ? "line tells" : "lines tell"} agents to use another name or another way to report.`, after: "Those lines are commented out. Agents use their agentnet name and agentnet messages. The rest of the file is untouched." };
+  }
+  if (f.suggestion === "keep-as-is") return { before: f.about, after: "Nothing changes." };
+  return { before: f.about, after: "agentnet changes nothing here. You do this step by hand." };
+}
+
+export interface AfterView { director: { name: string; model?: string }; agents: AfterAgent[]; stay: AfterItem[]; off: AfterItem[]; messaging: string; instructions: string[] }
+/** The picture after adopt, live from the picks: who the team is, what keeps running, what is parked. */
+export function afterAdopt(r: AdoptReport & { after?: AfterServer }, picks: Picks, base?: string): AfterView {
+  const s = r.after ?? {}, applied = (f: Finding) => picks.findings[f.id] === "apply";
+  const agents: AfterAgent[] = [...(s.agents ?? [])], off: AfterItem[] = [], stay: AfterItem[] = [...(s.stay ?? [])];
+  const item = (f: Finding, a?: Action): AfterItem => ({ kind: f.kind, label: f.title, file: a && "file" in a ? shortPath(a.file, base) : undefined, findingId: f.id });
+  for (const f of r.findings) {
+    if (f.suggestion === "adopt-as-souls") {
+      if (!s.agents && applied(f)) for (const a of act(f, "register-souls")) if (a.op === "register-souls" && !picks.skipActions.includes(a.id)) agents.push({ name: a.name, role: "workspace soul", source: a.defFile ? shortPath(a.defFile, base) : "CLAUDE.md" });
+    } else if (f.suggestion === "switch-off" || f.suggestion === "neutralise-lines") {
+      if (applied(f)) { if (!s.off) off.push(item(f, f.actions.find((x) => x.op !== "manual" && x.op !== "register-souls"))); }
+      else if (!r.after?.stay) stay.push(item(f, f.actions.find((a) => "file" in a)));
+    } else if (f.suggestion === "keep-as-is" && !r.after?.stay) stay.push(item(f));
+  }
+  const offAll = s.off ?? off;
+  const coord = r.findings.some((f) => f.kind === "coordination-system" && applied(f));
+  const coordLeft = r.findings.some((f) => f.kind === "coordination-system" && !applied(f) && f.suggestion !== "keep-as-is");
+  return {
+    director: s.director ?? { name: "root" }, agents, stay, off: offAll,
+    messaging: s.messaging ?? (coordLeft ? "agentnet messages, but another message system still runs next to it. Two systems on the same agents can clash." : coord ? "agentnet messages only. Your old message system is switched off." : "agentnet messages. Nothing else coordinates your agents."),
+    instructions: ["Your CLAUDE.md and rules still load.", "agentnet adds one block on top: the director is root, coordination goes through agentnet, repo rules win on project matters."],
+  };
 }

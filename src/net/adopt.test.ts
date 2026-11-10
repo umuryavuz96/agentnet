@@ -63,6 +63,47 @@ test("scan (static) -> plan -> apply -> rollback restores every byte", async () 
   expect(loadState().phase).toBe("rolledback");
 });
 
+test("the report the page gets explains each finding and the planned structure", async () => {
+  await Bun.sleep(1100);
+  await call("/v1/panel/adopt/scan", { dir: ws, mode: "static" });
+  const v = (await (await call("/v1/panel/adopt")).json()) as { report: { findings: { id: string; kind: string; change: { before: string; after: string } }[]; after: { director: { name: string }; messaging: string; agents: { name: string; soul: string }[]; stay: { kind: string }[]; off: { kind: string; findingId: string; actionId: string; optional: boolean }[] } } };
+  for (const x of v.report.findings) { expect(x.change.before.length).toBeGreaterThan(5); expect(x.change.after.length).toBeGreaterThan(5); }
+  const a = v.report.after;
+  expect(a.director.name).toBe("root"); expect(a.messaging).toBe("agentnet");
+  expect(a.agents.map((x) => x.name).sort()).toEqual(["bff", "chameleon", "e2e", "ios", "kmp"]);
+  expect(a.agents[0]!.soul).toBe(`ws/${a.agents[0]!.name}`);
+  expect(a.off.some((o) => o.kind === "mcp")).toBe(true);
+  expect(a.off.filter((o) => o.kind === "instructions").every((o) => o.optional)).toBe(true);
+  expect(a.stay.some((o) => o.kind === "hook")).toBe(false); // the only flagged hook is parked; "Stop" is not a finding
+  expect(a.stay.some((o) => o.kind === "instructions")).toBe(true);
+  expect(JSON.stringify(v)).not.toContain("sk-live");
+});
+
+test("answering the MCP dialog backs up settings.local.json first, Rollback undoes what Claude Code wrote (new and existing file)", async () => {
+  await Bun.sleep(1100);
+  const { markLaunch, answerDialog, clearLaunch } = await import("./launch");
+  const local = join(ws, ".claude", "settings.local.json");
+  for (const existing of [false, true]) {
+    await Bun.sleep(1100);
+    if (existing) writeFileSync(local, '{"mine":1}\n');
+    const before = snap(ws);
+    await call("/v1/panel/adopt/scan", { dir: ws, mode: "static" });
+    const st = (await (await call("/v1/panel/adopt")).json()) as { scanId: string; report: { findings: { id: string }[] } };
+    const p = await (await call("/v1/panel/adopt/plan", { scanId: st.scanId, picks: { findings: { [st.report.findings[0]!.id]: "apply" } } })).json() as { planId: string };
+    expect((await call("/v1/panel/adopt/apply", { planId: p.planId })).status).toBe(200);
+    // a fake pane: single MCP dialog; Enter makes "Claude Code" write the file
+    let cursor = 2;
+    const screen = () => ["New MCP server found in this project: lint", "  " + (cursor === 0 ? "❯" : " ") + " Use this MCP server", "  " + (cursor === 1 ? "❯" : " ") + " Use this and all future MCP servers in this project", "  " + (cursor === 2 ? "❯" : " ") + " Continue without using this MCP server"].join("\n");
+    clearLaunch(); markLaunch("agentnet-root");
+    const r = answerDialog("use", { capture: screen, pause: () => {}, keys: (_s, k) => { for (const x of k) { if (x === "Up") cursor--; if (x === "Enter") { mkdirSync(join(ws, ".claude"), { recursive: true }); writeFileSync(local, '{"enabledMcpjsonServers":["lint"]}\n'); } } } });
+    expect(r.ok).toBe(true);
+    expect(readFileSync(local, "utf8")).toContain("enabledMcpjsonServers");
+    expect((await call("/v1/panel/adopt/rollback", {})).status).toBe(200);
+    expect(snap(ws)).toEqual(before); // new file removed, existing one back byte for byte
+    if (existing) { expect(readFileSync(local, "utf8")).toBe('{"mine":1}\n'); await Bun.$`rm ${local}`; }
+  }
+});
+
 test("the CLI rollback path (doRollback) also moves the panel state to rolledback (D2)", async () => {
   const { doRollback } = await import("./adopt");
   await Bun.sleep(1100); // run ids are timestamped to the second

@@ -12,7 +12,9 @@ import { writeAtomic } from "./adopt-safe";
 import { collectFacts, type Facts } from "./adopt-scan";
 import { validateReport, type Action, type AdoptReport, type Evidence, type Finding } from "./adopt-report";
 import { buildPlan, type Picks, type Plan } from "./adopt-plan";
-import { applyPlan, listRuns, rollbackRun } from "./adopt-apply";
+import { applyPlan, listRuns, noteLateFile, rollbackRun } from "./adopt-apply";
+import { explainReport } from "./adopt-explain";
+import { launchView, setBeforeAnswer, setParkedMcp } from "./launch";
 import { checkDir, ensureDirectorHome, hasRoot, hasSession, killScanSession as realKill, SESSION, startDirector as realStart, writeScanMarker } from "./director";
 import { createdOf } from "./windows";
 import { loadRoles } from "./arsenal";
@@ -174,6 +176,17 @@ export function makePlan(scanId: unknown, picks: unknown): Ok<{ plan: Plan }> | 
   return { ok: true, plan: r.plan };
 }
 
+setParkedMcp(() => (loadPlan()?.ops ?? []).flatMap((o) => (o.op === "park-mcp" ? [o.server] : [])));
+
+/** Answering an MCP dialog makes Claude Code write <workspace>/.claude/settings.local.json: put it in the run first, so Rollback undoes it. */
+setBeforeAnswer((kind) => {
+  if (kind === "trust") return null;
+  const st = loadState();
+  if (st.mode !== "adopt" || st.phase !== "applied" || !st.runId || !st.workspace) return null; // clean mode and plain starts changed nothing in a workspace run
+  const e = noteLateFile(st.runId, join(st.workspace, ".claude", "settings.local.json"), ROOT);
+  return e ? `Could not back up settings.local.json first, so nothing was answered: ${e}` : null;
+});
+
 export async function applyCurrent(planId: unknown, confirmGlobal: boolean): Promise<Ok<{ runId: string; director: { ok: boolean; detail?: string } }> | Fail> {
   const st = loadState(), plan = loadPlan();
   if (st.phase === "applying") return { ok: false, status: 409, title: "Conflict", detail: "an apply is already running" };
@@ -223,7 +236,7 @@ export function view() {
     if (st.scanner === "director" && !process.env.AGENTNET_ADOPT_STUB && (age > SCAN_TIMEOUT_MS || (age > SESSION_GRACE_MS && !seams.hasSession()))) scan = { state: "failed", error: age > SCAN_TIMEOUT_MS ? "the director did not report in time" : "the scan session ended without a report" };
     else scan = { state: "reading", error: null };
   } else if (st.phase === "reported" || st.phase === "planned") scan = { state: "ready", error: null };
-  return { ...st, failed: scan.state === "failed" ? scan.error : null, scan, facts: st.phase === "idle" ? null : (() => { const f = loadFacts(); return f ? { signals: f.signals.length, repos: f.repos.length, skipped: f.skipped } : null; })(), report: loadReport(), plan: st.phase === "planned" || st.phase === "applying" ? loadPlan() : null, runs: listRuns(ROOT).slice(0, 5) };
+  return { ...st, launch: launchView(), failed: scan.state === "failed" ? scan.error : null, scan, facts: st.phase === "idle" ? null : (() => { const f = loadFacts(); return f ? { signals: f.signals.length, repos: f.repos.length, skipped: f.skipped } : null; })(), report: explainReport(loadReport(), loadFacts()), plan: st.phase === "planned" || st.phase === "applying" ? loadPlan() : null, runs: listRuns(ROOT).slice(0, 5) };
 }
 
 // ---------- routes ----------

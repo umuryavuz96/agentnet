@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.1
+
+Adopt setup is one guided flow, explains what it changes, and no longer hangs on "waiting for director".
+
+**Guided setup**
+
+- The first-run window walks you through the steps in order: folder, setup type, scan, review, preview, apply, director ready. Only the next step is active, and a step turns green only when it is really done. A director that was already running no longer turns steps green early.
+- Each finding says what it changes, as **Now** and **After** in plain words.
+- An **After adopt** panel in review and preview shows your team (director, workspace souls and roles), what keeps running, what gets switched off (backed up) and how messages flow.
+
+**Director start after Apply**
+
+- Fixed: after Apply the page could wait forever. The director starts in a hidden tmux window, and Claude Code was waiting there at its folder-trust or MCP-approval question.
+- The Director ready step now shows the real stages (tmux session, Claude Code starting, questions answered, director said hello) with a 5-minute limit, then the reason, the last terminal lines and **Retry**.
+- When Claude Code asks to trust the folder or approve MCP servers, the step shows the question with one button. agentnet sends the keys only when the terminal shows exactly that question. MCP servers that adopt switched off stay unchecked.
+- Rollback also undoes the `.claude/settings.local.json` that Claude Code writes when the MCP question is answered.
+
+**Agents**
+
+- An agent whose tmux session ended is shown as lost instead of idle. Messages sent to it are refused with state `lost` (HTTP 409), so callers can fall back, and its unread messages are delivered when it is spawned again.
+
 ## 0.5.0
 
 Adopt an existing Claude Code workspace: agentnet scans what you already have, shows every change as a diff, backs up what it touches and can undo it.

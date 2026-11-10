@@ -17,6 +17,7 @@ import { createdOf, findRootSession, hasSession as tmuxHas, healRootSession, kil
 import { listHooks, readHookLog } from "./hooks";
 import { templates } from "./hook-templates";
 import { precheck } from "./adopt-scan";
+import { answerDialog, launchView, markLaunch } from "./launch";
 
 export const REPO = join(import.meta.dir, "..", "..");
 /** The director runs in the root agent's tmux session, so Open window on root finds it. */
@@ -141,7 +142,7 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
   if (!t.claude) return { ok: false, code: "no-claude", detail: "Claude Code (claude) is not installed. Install it, then copy the command." };
   const d = checkDir(rawDir);
   if ("error" in d) return { ok: false, code: "bad-dir", detail: d.error };
-  if (exists()) return { ok: false, code: "running", detail: `A tmux session ${SESSION} already exists. Attach with: tmux attach -t ${SESSION}` };
+  if (exists()) { const detail = `A tmux session ${SESSION} already exists. Attach with: tmux attach -t ${SESSION}`; markLaunch(SESSION, Date.now(), detail); return { ok: false, code: "running", detail }; }
   let resume: string | undefined, why: string | undefined;
   if (opts.resume) {
     if (!SESSION_ID.test(opts.resume)) why = "The last session id is not valid.";
@@ -159,7 +160,8 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
   }
   if (process.env.AGENTNET_NO_DIRECTOR_START) return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}` }; // scratch and screenshot runs: validate, write the prompt, never spawn
   const r = run("tmux", ["new-session", "-d", "-s", SESSION, "-c", cwd, "sh", "-c", cmd]);
-  if (r.status !== 0) return { ok: false, code: "failed", detail: (r.stderr ?? "").trim() || "tmux could not start the session." };
+  if (r.status !== 0) { const detail = (r.stderr ?? "").trim() || "tmux could not start the session."; markLaunch(SESSION, Date.now(), detail); return { ok: false, code: "failed", detail }; }
+  markLaunch(SESSION);
   logEvent("info", "director started", { session: SESSION, dir: d.dir, mode: mode ?? "plain", resumed: !!resume });
   return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}`, ...(opts.resume ? { resumed: !!resume, ...(why ? { why } : {}) } : {}) };
 }
@@ -233,6 +235,12 @@ export async function resetDirector(d: ResetDeps = realReset, now = Date.now()):
 }
 
 export function directorRoutes(api: Hono<Env>): void {
+  api.post("/agent-director/answer", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { option?: unknown };
+    if (typeof b.option !== "string" || !/^[a-z]{1,8}$/.test(b.option)) return problem(c, 400, "Bad Request", "option is required");
+    const r = answerDialog(b.option);
+    return r.ok ? c.json({ ok: true, kind: r.kind }) : problem(c, 409, "Conflict", r.reason);
+  });
   api.post("/agent-director/reset", async (c) => {
     const r = await resetDirector();
     return r.ok ? c.json(r) : problem(c, 422, "failed", r.detail ?? "could not reset");
@@ -245,7 +253,7 @@ export function directorRoutes(api: Hono<Env>): void {
     const q = c.req.query("dir"), home = homedir();
     const d = checkDir(q ?? home);
     const dir = "dir" in d ? d.dir : home;
-    return c.json({ home, dir, dirError: "error" in d ? d.error : null, tools: tools(), root: hasRoot(), hadRoot: all().some((a) => a.name === "root"), last: lastDirector(), triage: triageNow(), session: hasSession(), sessionName: SESSION, command: directorCommand(dir), precheck: precheck(dir) });
+    return c.json({ home, dir, dirError: "error" in d ? d.error : null, tools: tools(), root: hasRoot(), hadRoot: all().some((a) => a.name === "root"), last: lastDirector(), triage: triageNow(), session: hasSession(), sessionName: SESSION, command: directorCommand(dir), precheck: precheck(dir), launch: launchView() });
   });
   api.post("/agent-director/pick-folder", async (c) => {
     const r = await pickFolder();

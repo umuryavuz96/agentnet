@@ -187,6 +187,24 @@ describe("F1: a gone row does not block the name", () => {
   });
 });
 
+describe("lost agent (tmux session ended)", () => {
+  test("send to it is 409 state lost and not stored; unread ones are held and reach the respawn on hello", async () => {
+    const { emit, flush } = await import("./store"); const { holdUnread } = await import("./liveness");
+    tok["lost-2"] = rt.createAgent({ name: "lost-2", boss: "root", by: "t" }).token;
+    await call("lost-2", "POST", "/hello", { session: "sid-l", pid: 31 });
+    const q = await j(await call("root", "POST", "/send", { to: "lost-2", body: "unread before death" }));
+    expect(q.body.state).toBe("queued");
+    holdUnread("lost-2#1");
+    emit({ agent: "lost-2#1", type: "AgentGone", data: { reason: "lost" }, source: "service" }); flush();
+    const r = await call("root", "POST", "/send", { to: "lost-2", body: "after death" });
+    expect(r.status).toBe(409); expect((await r.json()).state).toBe("lost");
+    const again = rt.createAgent({ name: "lost-2", boss: "root", by: "t" }); tok["lost-2"] = again.token;
+    await call("lost-2", "POST", "/hello", { session: "sid-l2", pid: 32 });
+    const p = await j(await call("lost-2", "GET", "/poll", undefined, "?wait=0"));
+    expect(p.body.messages.map((m: { body: string }) => m.body)).toEqual(["unread before death"]);
+  });
+});
+
 describe("panel send (Chat tab)", () => {
   test("sends as root to a live agent; unknown 404, empty 422", async () => {
     const p = new Hono<Env>(); p.use("*", tracing); const papi = new Hono<Env>(); rt.agentnetPanelSendRoute(papi); p.route("/api/v1", papi);

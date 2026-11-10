@@ -1036,6 +1036,18 @@ paths:
           description: Forbidden (root only)
         "422":
           description: The director did not stop
+  /v1/panel/director/answer:
+    post:
+      summary: panel answer the Claude Code dialog (trust folder, approve MCP server or servers) the director waits at; keys are sent only when the pane shows exactly that dialog; root only
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: option missing
+        "403":
+          description: Forbidden (root only)
+        "409":
+          description: The terminal shows no dialog this page can answer, or the choice is not in it
   /v1/panel/director/pick-folder:
     post:
       summary: panel open the server machine's native folder dialog (macOS osascript, Linux zenity); root only
