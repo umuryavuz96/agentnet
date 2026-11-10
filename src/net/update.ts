@@ -191,7 +191,7 @@ export function startUpdateTimers(d: UpdateDeps = {}): void {
   const safe = (fn: () => Promise<unknown>) => () => { fn().catch((e) => logEvent("warn", "update timer failed", { error: String(e) })); };
   if (checkEnabled()) {
     setTimeout(safe(() => doCheck(false)), 30_000).unref();
-    setInterval(safe(() => doCheck(false)), 6 * 3600_000).unref();
+    setInterval(safe(() => doCheck(false)), 10 * 60_000).unref();
   }
   if (autoOn()) setInterval(safe(() => autoTick(d)), 10 * 60_000).unref();
 }

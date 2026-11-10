@@ -17,7 +17,7 @@ afterEach(() => { servers.splice(0).forEach((s) => s.stop()); delete process.env
 const setup = () => { const f = makeFixture(); let t = 1_000_000_000_000; return { repo: f.work, home: mkdtempSync(join(tmpdir(), "an-chk-")), tick: (ms: number) => { t += ms; }, now: () => t }; };
 
 describe("check (T17)", () => {
-  test("two calls within 6 h make one request; the answer is parsed", async () => {
+  test("two calls within 10 min make one request; the answer is parsed", async () => {
     const s = setup(), f = gh(() => release());
     const a = await check({ ...s });
     const b = await check({ ...s });
@@ -28,10 +28,21 @@ describe("check (T17)", () => {
     expect(f.calls[0]!.headers.accept).toBe("application/vnd.github+json");
     expect(readCache(s.home)?.latest?.tag).toBe("v0.4.0");
   });
-  test("after 6 h it asks again", async () => {
+  test("after 10 min it asks again", async () => {
     const s = setup(), f = gh(() => release());
-    await check({ ...s }); s.tick(6 * 3600_000 + 1); await check({ ...s });
+    await check({ ...s }); s.tick(TTL() + 1); await check({ ...s });
     expect(f.calls).toHaveLength(2);
+  });
+  test("a 304 keeps the cached answer, sends If-None-Match and refreshes checkedAt", async () => {
+    const s = setup(); let n = 0;
+    const f = gh(() => (n++ === 0 ? new Response(JSON.stringify({ tag_name: "v0.4.0", html_url: "https://github.com/x/y/releases/tag/v0.4.0", body: "n", published_at: "p" }), { headers: { "content-type": "application/json", etag: 'W/"abc"' } }) : new Response(null, { status: 304 })));
+    const a = await check({ ...s });
+    expect(a.etag).toBe('W/"abc"'); expect(f.calls[0]!.headers["if-none-match"]).toBeUndefined();
+    s.tick(TTL() + 1);
+    const b = await check({ ...s });
+    expect(f.calls).toHaveLength(2); expect(f.calls[1]!.headers["if-none-match"]).toBe('W/"abc"');
+    expect(b.latest).toEqual(a.latest); expect(b.error).toBeUndefined(); expect(b.etag).toBe('W/"abc"'); expect(b.checkedAt).toBeGreaterThan(a.checkedAt);
+    expect(readCache(s.home)?.checkedAt).toBe(b.checkedAt);
   });
   test("force waits at least 60 s between real requests", async () => {
     const s = setup(), f = gh(() => release());
@@ -71,4 +82,4 @@ describe("check (T17)", () => {
     try { const r = await check({ ...s }); expect(r.error).toBeTruthy(); expect(f.calls).toHaveLength(0); } finally { delete process.env.AGENTNET_UPDATE_REPO; }
   });
 });
-const TTL = () => 6 * 3600_000;
+const TTL = () => 10 * 60_000;

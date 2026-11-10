@@ -177,3 +177,13 @@ test("fresh install (no catalogue): a shipped template hook still gets its log, 
   expect(h).toMatchObject({ script: "agentnet-triage", log: "triage.jsonl", runs: 1, enabled: true });
   expect(recentFires("root")).toMatchObject([{ script: "agentnet-triage", name: t.name, agent: "root", ok: true }]);
 });
+
+test("scriptOf: quoted, spaced and trailing-arg commands", async () => {
+  const { scriptOf } = await import("./hooks");
+  expect(scriptOf("node '/Users/x/.claude/hooks/native-hook-fast.js'")).toBe("/Users/x/.claude/hooks/native-hook-fast.js");
+  expect(scriptOf('bash "$HOME/.claude/hooks/caveman-shrink-guard.sh"')).toBe("$HOME/.claude/hooks/caveman-shrink-guard.sh");
+  expect(scriptOf('node "/Users/a b/hooks/x.js"')).toBe("/Users/a b/hooks/x.js");
+  expect(scriptOf("node x.js --fast")).toBe("x.js");
+  expect(scriptOf("python3 /a/b.py")).toBe("/a/b.py");
+  expect(scriptOf("/opt/homebrew/bin/python3 -u /a/b.py arg/1")).toBe("/a/b.py");
+});

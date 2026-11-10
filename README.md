@@ -161,7 +161,7 @@ agentnet has no login. It is safe because of where it listens.
 - The update button works only from the machine itself or the root agent, like other writes. If you set
   `AGENTNET_TRUST_PROXY=private`, anyone on your LAN or tailnet can press it. It can only move agentnet to the newest
   release tag from `origin` and runs no other command. Set `AGENTNET_WEB_UPDATE=0` to turn it off. The release check
-  calls api.github.com every 6 hours; `AGENTNET_UPDATE_CHECK=0` turns that off.
+  calls api.github.com every 10 minutes (answers to unchanged releases are free 304s); `AGENTNET_UPDATE_CHECK=0` turns that off.
 - Each agent's token says which agent is calling. It sits in a file only you can read (mode 0600). It is identity, not a
   login.
 

@@ -58,7 +58,14 @@ const EVENT_ABOUT: Record<string, string> = {
 };
 
 export const hookId = (event: string, matcher: string | null, command: string) => createHash("sha1").update(`${event}\0${matcher ?? ""}\0${command}`).digest("hex").slice(0, 10);
-const scriptOf = (cmd: string) => { const w = cmd.trim().split(/\s+/).filter((x) => !/^(node|python3?|bash|sh)$/.test(x) && !x.endsWith("/python") && !x.endsWith("/bin/python")); return w[w.length - 1] ?? cmd; };
+/** Split a shell-ish command on spaces, honouring single and double quotes (quotes are dropped). */
+const tokens = (cmd: string): string[] => [...cmd.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3] ?? "");
+const INTERP = /^(node|bun|python3?|bash|sh)$|\/(python3?|node|bun|bash|sh)$/;
+/** The script a hook command runs: the first token after the interpreter that looks like a path or a script file. Args after it never win. */
+export const scriptOf = (cmd: string): string => {
+  const w = tokens(cmd.trim()).filter((x) => x && !INTERP.test(x));
+  return w.find((x) => !x.startsWith("-") && (x.includes("/") || /\.(js|ts|py|sh|mjs|cjs)$/.test(x))) ?? w[w.length - 1] ?? cmd;
+};
 
 function readSettings(): { raw: string; json: Settings } {
   // A fresh machine may have no ~/.claude/settings.json yet: start it as "{}" so the backup and install path work.

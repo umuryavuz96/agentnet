@@ -4,7 +4,7 @@ import { onBeforeUnmount, ref } from "vue";
 import { api, url } from "./api";
 import { initial, reduce, type Action, type Model, type Status, type UpdateEvent } from "./update";
 
-const STATUS_MS = 30 * 60_000;
+const STATUS_MS = 10 * 60_000;
 const DISMISS_KEY = "agentnet.update.dismissed";
 const store = {
   get: () => { try { return localStorage.getItem(DISMISS_KEY); } catch { return null; } },

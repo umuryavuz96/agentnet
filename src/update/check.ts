@@ -1,18 +1,18 @@
-// Which release is newest? One GitHub request at most every 6 h, cached on disk. Page loads never call GitHub.
+// Which release is newest? One GitHub request at most every 10 min (a 304 on the cached ETag is free), cached on disk. Page loads never call GitHub.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expectedSlug } from "./preflight";
 import { parseTag } from "./version";
 
 export interface Latest { tag: string; version: string; url: string; notes: string; publishedAt: string }
-export interface CheckCache { checkedAt: number; latest: Latest | null; error?: string }
+export interface CheckCache { checkedAt: number; latest: Latest | null; error?: string; etag?: string }
 export interface CheckOpts {
   force?: boolean; home: string; repo: string;
   /** Tests: fake clock and fetch. */
   now?: () => number; fetchFn?: typeof fetch;
 }
 
-export const TTL_MS = 6 * 3600_000, FORCE_GAP_MS = 60_000, NOTES_MAX = 20_000;
+export const TTL_MS = 10 * 60_000, FORCE_GAP_MS = 60_000, NOTES_MAX = 20_000;
 const cacheFile = (home: string) => join(home, "data", "update-check.json");
 export const checkEnabled = () => process.env.AGENTNET_UPDATE_CHECK !== "0";
 
@@ -36,15 +36,18 @@ export async function check(o: CheckOpts): Promise<CheckCache> {
       const base = (process.env.AGENTNET_UPDATE_API || "https://api.github.com").replace(/\/+$/, "");
       const ver = JSON.parse(readFileSync(join(o.repo, "package.json"), "utf8")).version;
       const r = await (o.fetchFn ?? fetch)(`${base}/repos/${slug}/releases/latest`, {
-        headers: { Accept: "application/vnd.github+json", "User-Agent": `agentnet/${ver}` }, signal: AbortSignal.timeout(10_000),
+        headers: { Accept: "application/vnd.github+json", "User-Agent": `agentnet/${ver}`, ...(cached?.etag && cached.latest ? { "If-None-Match": cached.etag } : {}) }, signal: AbortSignal.timeout(10_000),
       });
-      if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
-      const j = (await r.json()) as { tag_name?: unknown; html_url?: unknown; body?: unknown; published_at?: unknown };
-      const v = typeof j.tag_name === "string" ? parseTag(j.tag_name) : null;
-      const url = typeof j.html_url === "string" && j.html_url.startsWith("https://") ? j.html_url : "";
-      fresh = { checkedAt: now, latest: v ? { tag: v.tag, version: v.tag.slice(1), url, notes: typeof j.body === "string" ? j.body.slice(0, NOTES_MAX) : "", publishedAt: typeof j.published_at === "string" ? j.published_at : "" } : null };
+      if (r.status === 304 && cached?.latest) { fresh = { checkedAt: now, latest: cached.latest, etag: cached.etag }; } // unchanged: costs no rate limit
+      else {
+        if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
+        const j = (await r.json()) as { tag_name?: unknown; html_url?: unknown; body?: unknown; published_at?: unknown };
+        const v = typeof j.tag_name === "string" ? parseTag(j.tag_name) : null;
+        const url = typeof j.html_url === "string" && j.html_url.startsWith("https://") ? j.html_url : "";
+        fresh = { checkedAt: now, latest: v ? { tag: v.tag, version: v.tag.slice(1), url, notes: typeof j.body === "string" ? j.body.slice(0, NOTES_MAX) : "", publishedAt: typeof j.published_at === "string" ? j.published_at : "" } : null, ...(r.headers.get("etag") ? { etag: r.headers.get("etag")! } : {}) };
+      }
     } catch (e) {
-      fresh = { checkedAt: now, latest: cached?.latest ?? null, error: (e as Error).message }; // errors are cached too: an outage must not mean a request per page load
+      fresh = { checkedAt: now, latest: cached?.latest ?? null, error: (e as Error).message, ...(cached?.etag ? { etag: cached.etag } : {}) }; // errors are cached too: an outage must not mean a request per page load
     }
   }
   try {
