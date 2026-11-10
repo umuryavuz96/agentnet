@@ -48,7 +48,7 @@ import { acquire, release } from "../src/update/lock";
 import { runUpdate, type Exec, type RunDeps } from "../src/update/run";
 import type { Mode, ServiceApi } from "../src/update/service";
 
-function harness(f: ReturnType<typeof makeFixture>, o: { failInstall?: boolean; failBuild?: boolean; health?: (v: string) => boolean; mode?: Mode; doctor?: string[][]; resetTo?: RunDeps["resetTo"]; installOnlyFirst?: boolean } = {}) {
+function harness(f: ReturnType<typeof makeFixture>, o: { failInstall?: boolean; failBuild?: boolean; health?: (v: string) => boolean; mode?: Mode; doctor?: string[][]; resetTo?: RunDeps["resetTo"]; installOnlyFirst?: boolean; fgRecord?: boolean } = {}) {
   const calls: string[] = [];
   let installs = 0, restarts = 0;
   const exec: Exec = async (cmd, { cwd }) => {
@@ -63,7 +63,8 @@ function harness(f: ReturnType<typeof makeFixture>, o: { failInstall?: boolean; 
   };
   const service: ServiceApi = {
     detectMode: async () => o.mode ?? "launchd",
-    restart: async () => { restarts++; calls.push("restart"); },
+    restart: async (m) => { restarts++; calls.push(`restart:${m}`); },
+    canRestartForeground: () => o.fgRecord ?? false,
     waitHealth: async (v) => (o.health ? o.health(v) : true),
   };
   const queue = [...(o.doctor ?? [[], []])];
@@ -101,6 +102,26 @@ describe("runUpdate", () => {
     expect(r.steps.find((s) => s.id === "restart")!.detail).toContain("Restart agentnet yourself");
     expect(r.steps.find((s) => s.id === "health")!.state).toBe("skipped");
     expect(h.restarts()).toBe(0);
+  });
+  test("foreground mode from the web with a launch record: restarts it and waits for health", async () => {
+    const f = makeFixture(), h = harness(f, { mode: "foreground", fgRecord: true });
+    const r = await runUpdate({ repo: f.work, home: f.home, source: "web", allowLocalOrigin: true, deps: h.deps });
+    expect(r.outcome).toBe("updated");
+    expect(h.calls).toContain("restart:foreground");
+    expect(r.steps.find((s) => s.id === "restart")!.state).toBe("ok");
+    expect(r.steps.find((s) => s.id === "health")!.state).toBe("ok");
+  });
+  test("foreground mode, new version never answers: rolled back and the old version is started again", async () => {
+    const f = makeFixture(), before = sh(f.work, "rev-parse", "HEAD"), h = harness(f, { mode: "foreground", fgRecord: true, health: (v) => v !== "0.4.0" });
+    const r = await runUpdate({ repo: f.work, home: f.home, source: "web", allowLocalOrigin: true, deps: h.deps });
+    expect(r.outcome).toBe("rolled-back"); expect(r.reason).toContain("did not report");
+    expect(h.calls.filter((c) => c === "restart:foreground")).toHaveLength(2);
+    expect(sh(f.work, "rev-parse", "HEAD")).toBe(before);
+  });
+  test("foreground mode from the web without a launch record: restart skipped", async () => {
+    const f = makeFixture(), h = harness(f, { mode: "foreground" });
+    const r = await runUpdate({ repo: f.work, home: f.home, source: "web", allowLocalOrigin: true, deps: h.deps });
+    expect(r.steps.find((s) => s.id === "restart")!.state).toBe("skipped"); expect(h.restarts()).toBe(0);
   });
   test("current: nothing runs", async () => {
     const f = makeFixture(); sh(f.work, "pull", "--ff-only", "origin", "main");

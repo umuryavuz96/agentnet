@@ -15,12 +15,12 @@ const { LAN, LOOP } = await import("../../test/helpers");
 import type { Mode } from "../update/service";
 
 const LATEST = { tag: "v0.5.0", version: "0.5.0", url: "https://github.com/umuryavuz96/agentnet/releases/tag/v0.5.0", notes: "## 0.5.0\n- x", publishedAt: "2026-11-09T00:00:00Z" };
-function setup(o: { mode?: Mode; latest?: typeof LATEST | null } = {}) {
+function setup(o: { mode?: Mode; latest?: typeof LATEST | null; launchOk?: boolean } = {}) {
   const f = makeFixture();
   mkdirSync(join(f.home, "data"), { recursive: true });
   writeFileSync(join(f.home, "data", "update-check.json"), JSON.stringify({ checkedAt: Date.now(), latest: o.latest === undefined ? LATEST : o.latest }));
   const spawned: { argv: string[]; mode: Mode; id: string }[] = [];
-  const deps = { repo: f.work, home: f.home, allowLocalOrigin: true, mode: async () => o.mode ?? ("launchd" as Mode), spawnUpdater: (argv: string[], mode: Mode, id: string) => { spawned.push({ argv, mode, id }); } };
+  const deps = { repo: f.work, home: f.home, allowLocalOrigin: true, launchOk: () => o.launchOk ?? true, mode: async () => o.mode ?? ("launchd" as Mode), spawnUpdater: (argv: string[], mode: Mode, id: string) => { spawned.push({ argv, mode, id }); } };
   const api = new Hono(); updateRoutes(api as never, deps);
   const app = new Hono(); app.route("/api/v1", api);
   const call = (method: string, path: string, body?: unknown, env: unknown = LOOP) =>
@@ -47,11 +47,16 @@ describe("status", () => {
     writeFileSync(file, JSON.stringify({ id: "upd-2", running: true, from: "v0.4.0", to: "v0.5.0", startedAt: Date.now() }));
     expect(((await (await s.call("GET", "")).json()) as any).job.endedAt).toBeUndefined();
   });
+  test("foreground: allowed with a launch record for this server, blocked without; unknown stays blocked", async () => {
+    const ok = (await (await setup({ mode: "foreground" }).call("GET", "")).json()) as any;
+    expect(ok.web.blocked).toBeNull(); expect(ok.mode).toBe("foreground");
+    expect(((await (await setup({ mode: "foreground", launchOk: false }).call("GET", "")).json()) as any).web.blocked.code).toBe("no-launch-record");
+  });
   test("blocked reasons: web-disabled, no-service, preflight code", async () => {
     process.env.AGENTNET_WEB_UPDATE = "0";
     expect(((await (await setup().call("GET", "")).json()) as any).web.blocked.code).toBe("web-disabled");
     delete process.env.AGENTNET_WEB_UPDATE;
-    expect(((await (await setup({ mode: "foreground" }).call("GET", "")).json()) as any).web.blocked.code).toBe("no-service");
+    expect(((await (await setup({ mode: "unknown" }).call("GET", "")).json()) as any).web.blocked.code).toBe("no-service");
     const s = setup(); writeFileSync(join(s.f.work, "CHANGELOG.md"), "edited");
     expect(((await (await s.call("GET", "")).json()) as any).web.blocked).toMatchObject({ code: "dirty", hint: "Commit or stash your changes first." });
   });
@@ -103,12 +108,17 @@ describe("POST run", () => {
     expect(JSON.parse(readFileSync(join(s.f.home, "run", "update-state.json"), "utf8"))).toMatchObject({ id, running: true, from: `v${CUR}`, to: "v0.5.0" });
   });
   test("blocked or locked: 409 and nothing spawns", async () => {
-    const a = setup({ mode: "foreground" });
+    const a = setup({ mode: "unknown" });
     expect(((await (await a.call("POST", "/run", { tag: "v0.5.0" })).json()) as any).code).toBe("no-service");
     const b = setup(); acquire(b.f.home, "upd-1");
     const r = await b.call("POST", "/run", { tag: "v0.5.0" });
     expect(r.status).toBe(409); expect(((await r.json()) as any).code).toBe("locked");
     expect(a.spawned.length + b.spawned.length).toBe(0);
+  });
+  test("foreground run: 202 and the updater gets mode foreground", async () => {
+    const s = setup({ mode: "foreground" });
+    expect((await s.call("POST", "/run", { tag: "v0.5.0" })).status).toBe(202);
+    expect(s.spawned[0]!.mode).toBe("foreground");
   });
   test("double click: second POST within a minute is 409 locked and keeps the first state", async () => {
     const s = setup();
@@ -130,6 +140,8 @@ describe("POST run", () => {
     expect(sd.args.slice(-3)).toEqual(argv);
     const named = spawnPlan("/r", "/h", argv, "systemd", "upd-1", { ...bare, AGENTNET_SERVICE_UNIT: "agentnet-x", AGENTNET_SERVICE_LABEL: "dev.x" });
     expect(named.args).toContain("--setenv=AGENTNET_SERVICE_UNIT=agentnet-x"); expect(named.args).toContain("--setenv=AGENTNET_SERVICE_LABEL=dev.x");
+    const fg = spawnPlan("/r", "/h", argv, "foreground", "upd-1", bare); // outside the server, own session, so stopping the server does not stop it
+    expect(fg.opts.detached).toBe(true); expect(fg.cmd).toBe("/bin/bun"); expect(fg.opts.env).toMatchObject({ AGENTNET_HOME: "/h" });
     expect(spawnPlan("/r", "/h", argv, "launchd", "upd-1", { ...bare, AGENTNET_SERVICE_LABEL: "dev.x" }).opts.env).toMatchObject({ AGENTNET_SERVICE_LABEL: "dev.x" });
   });
   test("updaterArgv never carries anything but the id and a tag", () => {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3
+
+Update now works when agentnet runs in the foreground.
+
+- If you started agentnet with `agentnet serve` (or an agent started it in a background shell), Update now on the update card is no longer greyed out. The updater installs the new version, stops the old server, and starts the new one on the same port with the same settings. If the new version does not come up, the old one is started again.
+- In foreground mode the card says so, and suggests `agentnet install-service` to keep agentnet running after a reboot.
+
+Coming from 0.4.2 in the foreground: run `agentnet update` in a terminal once. The server needs to start on 0.4.3 before the page can update it. A service install (launchd or systemd) updates from the header pill as before.
+
 ## 0.4.2
 
 Fixes from a fresh install.

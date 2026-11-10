@@ -1,9 +1,11 @@
 // How agentnet runs (launchd, systemd, foreground), how to restart it, how to wait for it.
 // A service manager counts only when its unit belongs to THIS checkout and THIS port: an update run from another
 // clone, or against another port, must never restart the live service.
-import { readFileSync, realpathSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readLaunch, startPlan } from "./launch";
 
 export type Mode = "launchd" | "systemd" | "foreground" | "unknown";
 /** Default names `agentnet install-service` writes. */
@@ -22,11 +24,13 @@ export const serviceLabel = (env: NodeJS.ProcessEnv = process.env): string => na
 /** The systemd user unit name (without .service): AGENTNET_SERVICE_UNIT, else the default. */
 export const serviceUnit = (env: NodeJS.ProcessEnv = process.env): string => named(env.AGENTNET_SERVICE_UNIT, SYSTEMD_UNIT, "AGENTNET_SERVICE_UNIT");
 
-export interface ServiceCtx { repo: string; host: string; port: number; /** user home, for unit files; tests only */ home?: string }
+export interface ServiceCtx { repo: string; host: string; port: number; /** user home, for unit files; tests only */ home?: string; /** agentnet data folder; lets a foreground server be restarted from its launch record */ data?: string }
 export interface ServiceApi {
   detectMode(serverPid?: number): Promise<Mode>;
   restart(mode: Mode): Promise<void>;
   waitHealth(version: string, ms: number): Promise<boolean>;
+  /** True when a foreground server can be stopped and started again from its launch record. */
+  canRestartForeground?(): boolean;
 }
 export type Sh = (cmd: string[]) => { code: number; out: string };
 
@@ -111,6 +115,32 @@ export async function waitHealth(c: ServiceCtx, version: string, ms: number, int
   return false;
 }
 
+const gone = async (port: number, ms: number): Promise<boolean> => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (listenerPid(port) === undefined) return true; await Bun.sleep(100); }
+  return listenerPid(port) === undefined;
+};
+
+/** Foreground server: stop the recorded pid (SIGTERM, SIGKILL after killMs), wait for the port, start it again detached.
+ *  Output goes to <data>/logs/server.log. Nothing is stopped unless the pid on the port is the recorded one. */
+export async function restartForeground(c: ServiceCtx, killMs = 10_000): Promise<void> {
+  const rec = c.data ? readLaunch(c.data) : null;
+  if (!c.data || !rec) throw new Error("no launch record, cannot restart a foreground server");
+  const pid = listenerPid(c.port);
+  if (pid !== undefined) {
+    if (pid !== rec.pid) throw new Error(`port ${c.port} is held by pid ${pid}, not the recorded server (pid ${rec.pid})`);
+    try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+    if (!(await gone(c.port, killMs))) {
+      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+      if (!(await gone(c.port, 5_000))) throw new Error(`port ${c.port} is still in use after stopping pid ${pid}`);
+    }
+  }
+  const plan = startPlan(rec);
+  mkdirSync(join(c.data, "logs"), { recursive: true });
+  const fd = openSync(join(c.data, "logs", "server.log"), "a");
+  try { spawn(plan.cmd, plan.args, { cwd: plan.cwd, env: plan.env, detached: true, stdio: ["ignore", fd, fd] }).unref(); } finally { closeSync(fd); }
+}
+
 export function manualRestart(mode: Mode): string {
   return mode === "launchd" ? `launchctl kickstart -k gui/${uid()}/${serviceLabel()}`
     : mode === "systemd" ? `systemctl --user restart ${serviceUnit()}` : "restart agentnet yourself (stop it and run agentnet serve)";
@@ -119,7 +149,8 @@ export function manualRestart(mode: Mode): string {
 export function makeService(c: ServiceCtx): ServiceApi {
   return {
     detectMode: (pid) => detectMode(c, pid ?? listenerPid(c.port)),
-    restart: (m) => restart(m),
+    restart: (m) => (m === "foreground" ? restartForeground(c) : restart(m)),
+    canRestartForeground: () => !!c.data && !!readLaunch(c.data),
     waitHealth: (v, ms) => waitHealth(c, v, ms),
   };
 }

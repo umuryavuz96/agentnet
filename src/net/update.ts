@@ -11,6 +11,7 @@ import { HOST, PORT, ROOT, VERSION } from "../core/config";
 import { problem, type Env } from "../core/http";
 import { logEvent } from "../core/logger";
 import { check, checkEnabled, readCache, type CheckCache } from "../update/check";
+import { readLaunch } from "../update/launch";
 import { readLock } from "../update/lock";
 import { preflight, type RefuseCode } from "../update/preflight";
 import type { JobResult } from "../update/run";
@@ -28,6 +29,8 @@ export interface UpdateDeps {
   checkFn?: (force: boolean) => Promise<CheckCache>;
   allowLocalOrigin?: boolean;
   now?: () => number;
+  /** Tests: does the launch record describe this server? */
+  launchOk?: () => boolean;
 }
 
 const refuse = (c: Context, status: 400 | 403 | 409 | 500, code: string, detail: string) =>
@@ -81,7 +84,9 @@ export function updateRoutes(api: Hono<Env>, d: UpdateDeps = {}): void {
   const blocked = async (): Promise<Blocked> => {
     if (!webEnabled()) return { code: "web-disabled", hint: "Web updates are off on this machine. Run agentnet update in a terminal." };
     const m = await mode();
-    if (m === "foreground" || m === "unknown") return { code: "no-service", hint: "agentnet is not running as a service, so the page cannot restart it. Run agentnet update in a terminal." };
+    if (m === "unknown") return { code: "no-service", hint: "agentnet is not running as a service, so the page cannot restart it. Run agentnet update in a terminal." };
+    // Foreground: the updater restarts it from the launch record this process wrote at start.
+    if (m === "foreground" && !(d.launchOk ? d.launchOk() : readLaunch(home)?.pid === process.pid)) return { code: "no-launch-record", hint: "agentnet does not know how it was started, so the page cannot restart it. Run agentnet update in a terminal." };
     const pre = preflight(repo, { home, fetch: false, allowLocalOrigin: d.allowLocalOrigin });
     if (!pre.ok && !SKIP_IN_STATUS.includes(pre.reason)) return { code: pre.reason, hint: pre.hint };
     return null;

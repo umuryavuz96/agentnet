@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { HOST, PORT, VERSION } from "./core/config";
+import { HOST, PORT, ROOT, VERSION } from "./core/config";
+import { recordLaunch } from "./update/launch";
 import { problem, requireAuth, tracing, type Env } from "./core/http";
 import { logEvent } from "./core/logger";
 import { bindOk, rootOnly } from "./core/access";
@@ -60,6 +61,7 @@ if (import.meta.main) {
   if (!bindOk(HOST)) { console.error(`agentnet: refusing to listen on ${HOST}. Use 127.0.0.1 or one LAN or tailnet address (AGENTNET_HOST).`); process.exit(2); }
   const app = buildApp();
   Bun.serve({ hostname: HOST, port: PORT, fetch: makeFetch(app), idleTimeout: 0 }); // idleTimeout 0: SSE and 25 s long-polls
+  try { recordLaunch(ROOT, { version: VERSION }); } catch (e) { logEvent("warn", "server-launch.json not written", { error: String(e) }); }
   startLiveness(); startSessionReaper(); startUpdateTimers();
   logEvent("info", "agentnet listening", { host: HOST, port: PORT, version: VERSION });
   console.log(`agentnet ${VERSION} on http://${HOST}:${PORT}`);

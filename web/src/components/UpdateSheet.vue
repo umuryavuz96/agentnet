@@ -97,11 +97,13 @@ onBeforeUnmount(() => { document.documentElement.style.overflow = ""; });
             </BentoCard>
 
             <BentoCard v-else-if="phase === 'confirm'" size="F" flat :title="`Update to ${to}?`">
+              <p v-if="st?.mode === 'foreground'" class="us-meta">Runs in the foreground. Update restarts it in the background; to keep it on after reboots run agentnet install-service.</p>
               <p class="us-p">agentnet restarts. Agents keep running; this page reconnects by itself. If the update fails, agentnet goes back to {{ from }} on its own.</p>
               <div class="us-act"><button type="button" class="us-btn pri" @click="emit('start')">Update</button><button type="button" class="us-btn" @click="emit('cancel')">Cancel</button></div>
             </BentoCard>
 
             <div v-else class="us-act">
+              <p v-if="st?.mode === 'foreground'" class="us-meta us-fg">Runs in the foreground. Update restarts it in the background; to keep it on after reboots run agentnet install-service.</p>
               <button type="button" class="us-btn pri" @click="emit('ask')">Update now</button>
               <button v-if="canCheck && st?.checkEnabled" type="button" class="us-btn" :disabled="checking" @click="emit('check')">{{ checking ? "Checking…" : "Check now" }}</button>
             </div>
@@ -190,7 +192,7 @@ onBeforeUnmount(() => { document.documentElement.style.overflow = ""; });
 .us-p{margin:0;font:400 13.5px/1.5 var(--body);overflow-wrap:anywhere}
 .us-meta{margin:0;color:var(--muted);font:400 12.5px/1.5 var(--body)}.us-meta a{color:var(--ink)}
 .us-ver{display:flex;align-items:center;gap:10px;font:600 20px var(--body)}.us-new{color:var(--on)}
-.us-act{display:flex;flex-wrap:wrap;gap:8px}
+.us-act{display:flex;flex-wrap:wrap;gap:8px}.us-fg{flex:1 0 100%}
 .us-btn{min-height:44px;padding:0 16px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:600 13px var(--body);cursor:pointer}
 .us-btn.pri{background:var(--ink);color:var(--panel);border-color:var(--ink)}.us-btn:disabled{opacity:.45;cursor:default}
 .us-tg{display:grid;place-items:center;width:44px;height:44px;margin:-8px -8px -8px 0;border:0;background:none;color:var(--muted);cursor:pointer}

@@ -73,7 +73,7 @@ export async function runUpdate(o: RunOpts): Promise<JobResult> {
   const id = o.jobId ?? `upd-${Date.now()}`;
   const host = o.host ?? process.env.AGENTNET_HOST ?? "127.0.0.1", port = o.port ?? Number(process.env.AGENTNET_PORT ?? 3096);
   const exec = o.deps?.exec ?? defaultExec;
-  const svc = o.deps?.service ?? makeService({ repo: o.repo, host, port });
+  const svc = o.deps?.service ?? makeService({ repo: o.repo, host, port, data: o.home });
   const reset = o.deps?.resetTo ?? g.resetTo;
   const doctorFails = o.deps?.doctorFails ?? (async () => (await doctorLines({ root: o.home, host, port })).filter((l) => l.level === "FAIL").map((l) => l.check));
   const healthMs = o.deps?.healthMs ?? 45_000;
@@ -166,7 +166,9 @@ export async function runUpdate(o: RunOpts): Promise<JobResult> {
       }))
       && (await run("restart", async () => {
         mode = await svc.detectMode();
-        if (mode === "foreground" || mode === "unknown") return { skip: "Restart agentnet yourself (stop it and run agentnet serve)" };
+        // From the web or auto update nobody is at a terminal: a foreground server is stopped and started again from its launch record.
+        const fg = mode === "foreground" && o.source !== "cli" && !!svc.canRestartForeground?.();
+        if ((mode === "foreground" || mode === "unknown") && !fg) return { skip: "Restart agentnet yourself (stop it and run agentnet serve)" };
         restartRan = true;
         await svc.restart(mode);
       }))
