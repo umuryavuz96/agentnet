@@ -17,6 +17,7 @@ import { explainReport } from "./adopt-explain";
 import { launchView, setBeforeAnswer, setParkedMcp } from "./launch";
 import { checkDir, ensureDirectorHome, hasRoot, hasSession, killScanSession as realKill, SESSION, startDirector as realStart, writeScanMarker } from "./director";
 import { createdOf } from "./windows";
+import { byName, retireAgent } from "./routes";
 import { loadRoles } from "./arsenal";
 import { wsRoles } from "./workspace";
 import { scriptOf } from "./hooks";
@@ -38,6 +39,13 @@ export const seams = {
 };
 const startDirector: typeof realStart = (...a) => seams.startDirector(...a);
 const killScanSession = () => seams.killScanSession();
+/** The scan session joins as "root" (agentnet-join.sh). Once it is stopped its row must go too, or the real director's join is refused
+ *  with "root is live already". Only when this flow started a director scan; a root that is not the scan's is left alone. */
+export function retireScanRoot(): boolean {
+  const st = loadState(); if (st.scanner !== "director" || st.phase === "applied") return false;
+  const a = byName("root"); if (!a) return false;
+  retireAgent(a, "replaced"); return true;
+}
 
 const dirOf = () => join(ROOT, "adopt");
 const cur = (f: string) => join(dirOf(), "current", f);
@@ -156,6 +164,7 @@ export function startScan(dirIn: unknown, mode: "director" | "static"): Ok<{ sca
 
 export function cancelScan(): { ok: true; killed: boolean } {
   const killed = (() => { try { return killScanSession(); } catch { return false; } })();
+  try { retireScanRoot(); } catch { /* none */ }
   if (loadState().phase !== "applying") { clearCurrent(); setState({ phase: "idle", scanId: null, planId: null, error: null, scanStartedAt: null }); }
   audit("panel", "agentnet.adopt.cancel", "scan", "ok");
   return { ok: true, killed };
@@ -200,6 +209,7 @@ export async function applyCurrent(planId: unknown, confirmGlobal: boolean): Pro
     return { ok: false, status: r.status, title: r.status === 409 ? "Conflict" : r.status === 400 ? "Bad Request" : "Internal Error", detail: r.error };
   }
   try { killScanSession(); } catch { /* no tmux */ }
+  try { retireScanRoot(); } catch { /* none */ }
   const souls = plan.ops.flatMap((o) => (o.op === "register-souls" ? [o.name] : []));
   const sd = startDirector(plan.workspace, undefined, undefined, undefined, { mode: "adopt", root: ROOT, repos: facts?.repos.map((x) => x.path), souls });
   setState({ phase: "applied", runId: plan.runId, error: sd.ok ? null : sd.detail ?? "director not started" });
