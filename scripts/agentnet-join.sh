@@ -11,15 +11,17 @@ name="$1"; job="${2:-channel bot}"; project="${3:-$PWD}"
 url="${AGENTNET_URL:-http://127.0.0.1:${AGENTNET_PORT:-3096}/api/v1/agentnet}"
 mod="${AGENTNET_MOD_DIR:-$(cd "$(dirname "$0")/../plugin" && pwd)}"
 keyf="${AGENTNET_ROOT_TOKEN_FILE:-}"
+# A corporate http_proxy/HTTPS_PROXY would send this loopback call to the proxy and it fails silently. Skip proxies for loopback.
+case "$url" in http://127.0.0.1[:/]*|http://localhost[:/]*|http://\[::1\]*) np="--noproxy 127.0.0.1,localhost,::1" ;; *) np="" ;; esac
 boss="${AGENTNET_BOSS:-root}"
 case "$name" in ''|[!a-z0-9]*|*[!a-z0-9-]*) fail "bad name '$name'" ;; esac
 [ -f "$mod/.claude-plugin/plugin.json" ] || fail "mod not found at $mod"
 j() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 body="{\"name\":\"$(j "$name")\",\"job\":\"$(j "$job")\",\"boss\":\"$(j "$boss")\",\"kind\":\"member\",\"project\":\"$(j "$project")\"}"
 if [ -n "$keyf" ] && [ -r "$keyf" ]; then
-  resp="$(curl -s -m 5 -X POST "$url/spawn" -H "Authorization: Bearer $(cat "$keyf")" -H 'content-type: application/json' -d "$body" 2>/dev/null)"
+  resp="$(curl -s -m 5 $np -X POST "$url/spawn" -H "Authorization: Bearer $(cat "$keyf")" -H 'content-type: application/json' -d "$body" 2>/dev/null)"
 else
-  resp="$(curl -s -m 5 -X POST "$url/spawn" -H 'content-type: application/json' -d "$body" 2>/dev/null)"
+  resp="$(curl -s -m 5 $np -X POST "$url/spawn" -H 'content-type: application/json' -d "$body" 2>/dev/null)"
 fi
 tf="$(printf '%s' "$resp" | sed -n 's/.*"token_file":"\([^"]*\)".*/\1/p')"
 if [ -z "$tf" ]; then

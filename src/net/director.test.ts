@@ -12,7 +12,7 @@ describe("director setup", () => {
   test("sq quotes a quote", () => expect(sq("a'b")).toBe(`'a'\\''b'`));
   test("command joins as root and starts claude with the plugin", () => {
     const c = directorCommand("/tmp/my proj", { repo: "/r", port: 3096, host: "127.0.0.1" });
-    expect(c).toBe(`cd '/tmp/my proj' && eval "$('/r/scripts/agentnet-join.sh' root Director '/tmp/my proj')" && claude --plugin-dir "$AGENTNET_MOD"`);
+    expect(c).toBe(`cd '/tmp/my proj' && unset AGENTNET_MOD && eval "$('/r/scripts/agentnet-join.sh' root Director '/tmp/my proj')" && [ -n "$AGENTNET_MOD" ] && claude --plugin-dir "$AGENTNET_MOD"`);
   });
   test("a non-default port is carried in AGENTNET_URL", () => {
     expect(directorCommand("/x", { repo: "/r", port: 4321, host: "127.0.0.1" })).toContain(`eval "$(AGENTNET_URL='http://127.0.0.1:4321/api/v1/agentnet' '/r/scripts/agentnet-join.sh' root`);
@@ -130,7 +130,7 @@ describe("director modes", () => {
   const o = { repo: "/r", port: 3096, host: "127.0.0.1", promptFile: "/p/d.md" };
   test("adopt: workspace cwd, prompt file, no --add-dir", () => {
     const c = directorCommand("/w", { ...o, mode: "adopt" });
-    expect(c).toBe(`cd '/w' && eval "$('/r/scripts/agentnet-join.sh' root Director '/w')" && claude --plugin-dir "$AGENTNET_MOD" --append-system-prompt-file '/p/d.md'`);
+    expect(c).toBe(`cd '/w' && unset AGENTNET_MOD && eval "$('/r/scripts/agentnet-join.sh' root Director '/w')" && [ -n "$AGENTNET_MOD" ] && claude --plugin-dir "$AGENTNET_MOD" --append-system-prompt-file '/p/d.md'`);
     expect(c).not.toContain("--add-dir");
   });
   test("clean: own home as cwd, workspace via --add-dir", () => {
@@ -141,7 +141,7 @@ describe("director modes", () => {
   });
   test("scan: carries phase and roots env, named scan", () => {
     const c = directorCommand("/w", { ...o, mode: "scan", roots: ["/w", "/w/ios"] });
-    expect(c).toContain("export AGENTNET_ADOPT_PHASE=scan AGENTNET_ADOPT_ROOTS='/w:/w/ios' && eval");
+    expect(c).toContain("export AGENTNET_ADOPT_PHASE=scan AGENTNET_ADOPT_ROOTS='/w:/w/ios' && unset AGENTNET_MOD && eval");
     expect(c.endsWith(" -n scan 'Begin the scan.'")).toBe(true);
     expect(c).toContain("--setting-sources user --strict-mcp-config"); // D6/D9: no project settings, hooks or MCP approval
     expect(c.indexOf("--setting-sources")).toBeLessThan(c.indexOf("'Begin the scan.'")); // D8: the prompt is the last argument
@@ -191,5 +191,32 @@ describe("director modes", () => {
     expect(killScanSession("s", mk("111", l2), root)).toBe(true);
     expect(l2).toContain("kill-session");
     expect(killScanSession("s", mk("111", []), root)).toBe(false);
+  });
+});
+
+describe("director command in a real shell", () => {
+  const run = async (cmd: string, env: Record<string, string> = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), "an-dircmd-"));
+    require("node:fs").mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "bin", "claude"), '#!/bin/sh\necho "CLAUDE-RAN $*"\n', { mode: 0o755 });
+    const p = Bun.spawn(["sh", "-c", cmd], { env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin`, HOME: dir, AGENTNET_HOME: dir, ...env }, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    return { code, out, err, dir };
+  };
+  const repo = join(import.meta.dir, "..", "..");
+  test("refused join: claude never starts, even with a stale AGENTNET_MOD in the environment", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "an-ws-"));
+    const r = await run(directorCommand(dir, { mode: "adopt", repo, port: 1, host: "127.0.0.1", promptFile: "/tmp/p.md" }), { AGENTNET_MOD: "/stale/plugin" });
+    expect(r.out).not.toContain("CLAUDE-RAN");
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain("agentnet: not joined");
+  });
+  test("join reaches a loopback server even when http_proxy points elsewhere, and claude gets the plugin dir", async () => {
+    const srv = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ token_file: "/tmp/tok" }) });
+    try {
+      const dir = mkdtempSync(join(tmpdir(), "an-ws-"));
+      const r = await run(directorCommand(dir, { mode: "adopt", repo, port: srv.port, host: "127.0.0.1" }), { http_proxy: "http://127.0.0.1:9", HTTP_PROXY: "http://127.0.0.1:9", AGENTNET_URL: "" });
+      expect(r.out).toMatch(/CLAUDE-RAN --plugin-dir \/\S*plugin/);
+    } finally { srv.stop(true); }
   });
 });

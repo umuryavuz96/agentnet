@@ -12,7 +12,7 @@ export interface Dialog { kind: "trust" | "mcp" | "mcp-multi" | "pane"; title: s
 export interface Launch { state: LaunchState; dialog?: Dialog | null; startedAt: number | null; deadlineAt: number | null; stage: LaunchStage | null; error?: string; sessionName: string | null; pane?: string; /** the director process exited: its exit status (null = unknown) */ exitCode?: number | null; hint?: string }
 
 export const LAUNCH_TIMEOUT_MS = 300_000, SESSION_GRACE_MS = 5_000, UNKNOWN_AFTER_MS = 6_000;
-let cur: { startedAt: number; deadlineAt: number; session: string; failed?: string; trusted: string[]; auto: number } | null = null;
+let cur: { startedAt: number; deadlineAt: number; session: string; failed?: string; trusted: string[]; auto: number; idleSince?: number } | null = null;
 let watcher: ReturnType<typeof setInterval> | undefined;
 
 /** The director session was spawned (or the start was refused: pass failed). `trusted` = folders agentnet itself chose for this start: the watcher may answer their trust question. */
@@ -178,11 +178,26 @@ export function autoAnswer(d: AnswerDeps = realAnswer): "theme" | "continue" | "
   return null;
 }
 
-export interface LaunchDeps { now: () => number; hasSession: (s: string) => boolean; capture: (s: string) => string; helloAt: () => number | null }
+export interface LaunchDeps { now: () => number; hasSession: (s: string) => boolean; capture: (s: string) => string; helloAt: () => number | null; /** true/false: does a claude process under the session's pane carry a non-empty --plugin-dir; null = cannot tell */ pluginLoaded?: (s: string) => boolean | null }
+export const PLUGIN_CHECK_MS = 15_000;
+/** Pure: from `ps -ax -o pid=,ppid=,args=` rows, does a descendant of `root` run claude with a non-empty --plugin-dir? null when no claude process is found. */
+export function pluginInPs(rows: string, root: number): boolean | null {
+  const kids = new Map<number, number[]>(), args = new Map<number, string>();
+  for (const l of rows.split("\n")) { const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l); if (!m) continue; const pid = +m[1]!, pp = +m[2]!; args.set(pid, m[3]!); kids.set(pp, [...(kids.get(pp) ?? []), pid]); }
+  let seen = false; const todo = [root], done = new Set<number>();
+  while (todo.length) { const p = todo.pop()!; if (done.has(p)) continue; done.add(p); todo.push(...(kids.get(p) ?? [])); const a = args.get(p) ?? ""; if (!/(^|[\s/])claude(\s|$)/.test(a)) continue; seen = true; if (/--plugin-dir[ =]+(?!--)\S/.test(a)) return true; }
+  return seen ? false : null;
+}
+const realPluginLoaded = (s: string, t: Tmux = realTmux): boolean | null => {
+  const r = t.run(["list-panes", "-t", `=${s}:`, "-F", "#{pane_pid}"]); const pid = parseInt(r.out.trim().split("\n")[0] ?? "", 10);
+  if (r.code !== 0 || !pid) return null;
+  const ps = Bun.spawnSync(["ps", "-ax", "-o", "pid=,ppid=,args="]);
+  return ps.exitCode === 0 ? pluginInPs(new TextDecoder().decode(ps.stdout), pid) : null;
+};
 const capturePane = (s: string, t: Tmux = realTmux): string => { const r = t.run(["capture-pane", "-p", "-t", `=${s}:`]); return r.code === 0 ? r.out : ""; };
 /** Latest connectedAt of a live root agent. */
 const rootHelloAt = (): number | null => { const r = all().filter((a) => a.name === "root" && a.life === "live").map((a) => a.connectedAt ?? 0); return r.length ? Math.max(...r) : null; };
-const real: LaunchDeps = { now: Date.now, hasSession: (s) => tmuxHas(s), capture: (s) => capturePane(s), helloAt: rootHelloAt };
+const real: LaunchDeps = { now: Date.now, hasSession: (s) => tmuxHas(s), capture: (s) => capturePane(s), helloAt: rootHelloAt, pluginLoaded: (s) => realPluginLoaded(s) };
 
 /** What to do about the output of a director that died. */
 export function deathHint(out: string): string | undefined {
@@ -214,6 +229,10 @@ export function launchView(d: LaunchDeps = real): Launch {
     const why = p.stage === "trust" ? p.error! : p.stage === "hello" ? `The director started but did not say hello within ${LAUNCH_TIMEOUT_MS / 1000} s. The screen is shown below.` : `Claude Code did not start within ${LAUNCH_TIMEOUT_MS / 1000} s. The screen is shown below.`;
     return { ...base, state: "failed", stage: p.stage, error: why, dialog, pane: tail(text) };
   }
+  if (p.stage === "hello") {
+    cur.idleSince ??= d.now();
+    if (d.now() - cur.idleSince >= PLUGIN_CHECK_MS && d.pluginLoaded?.(session) === false) return { ...base, state: "failed", stage: "hello", error: "Claude Code started without the agentnet plugin, so the director cannot connect. Click Retry. If it happens again, open the folder's Claude Code once and check that plugins from the command line are allowed.", pane: tail(text) };
+  } else delete cur.idleSince;
   if (p.stage === "trust" || unknown) return { ...base, state: "waiting", stage: p.stage === "trust" ? "trust" : "claude", error: p.error, dialog, pane: tail(text) };
   return { ...base, state: p.stage === "hello" ? "waiting" : "starting", stage: p.stage };
 }

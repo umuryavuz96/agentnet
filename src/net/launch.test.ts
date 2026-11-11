@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 await import("./director"); // load order: director first (windows <-> director cycle)
-const { clearLaunch, launchView, LAUNCH_TIMEOUT_MS, markLaunch, readPane } = await import("./launch");
+const { clearLaunch, launchView, LAUNCH_TIMEOUT_MS, markLaunch, readPane, pluginInPs, PLUGIN_CHECK_MS } = await import("./launch");
 import type { LaunchDeps } from "./launch";
 
 const S = "agentnet-root", T0 = 1_000_000;
@@ -160,5 +160,29 @@ describe("a director whose process exited", () => {
     expect(cleanOutput("a\n\n\n\n\nb\nPane is dead (status 2, Tue)\n")).toBe("a\n\nb");
     expect(deathHint("Please login first")).toContain("signed in");
     expect(deathHint("segfault")).toBeUndefined();
+  });
+
+  test("idle prompt, no hello, plugin missing from claude args: failed with a plain reason after 15 s", () => {
+    const d = (at: number) => deps({ at, capture: () => READY, pluginLoaded: () => false });
+    expect(launchView(d(9000)).state).toBe("waiting"); // first sight of the idle prompt
+    expect(launchView(d(9000 + PLUGIN_CHECK_MS - 1)).state).toBe("waiting");
+    const v = launchView(d(9000 + PLUGIN_CHECK_MS));
+    expect(v).toMatchObject({ state: "failed", stage: "hello" });
+    expect(v.error).toContain("without the agentnet plugin");
+    expect(v.error).not.toContain("tmux");
+  });
+  test("idle prompt, plugin loaded or unknown: keeps waiting", () => {
+    for (const r of [true, null]) {
+      clearLaunch(); markLaunch(S, T0);
+      launchView(deps({ at: 9000, capture: () => READY, pluginLoaded: () => r }));
+      expect(launchView(deps({ at: 30_000, capture: () => READY, pluginLoaded: () => r })).state).toBe("waiting");
+    }
+  });
+  test("pluginInPs: finds claude under the pane pid", () => {
+    const ps = " 10 1 sh -c cd /w && claude --plugin-dir /m\n 11 10 claude --plugin-dir /opt/agentnet/plugin --append-system-prompt-file /p\n 12 1 claude --plugin-dir /other";
+    expect(pluginInPs(ps, 10)).toBe(true);
+    expect(pluginInPs(" 10 1 sh -c x\n 11 10 claude --plugin-dir  --append-system-prompt-file /p", 10)).toBe(false);
+    expect(pluginInPs(" 11 10 claude --append-system-prompt-file /p", 10)).toBe(false);
+    expect(pluginInPs(" 10 1 sh -c waiting", 10)).toBeNull();
   });
 });

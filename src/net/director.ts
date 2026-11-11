@@ -44,7 +44,8 @@ export const SCAN_PROMPT = "Begin the scan.";
 export function directorCommand(dir: string, o: CommandOpts = {}): string {
   const { mode, repo = REPO, port = PORT, host = HOST, resume, promptFile, home = join(ROOT, "director"), roots } = o;
   const url = port === 3096 && host === "127.0.0.1" ? "" : `AGENTNET_URL=${sq(`http://${host}:${port}/api/v1/agentnet`)} `;
-  const join_ = (p: string) => `eval "$(${url}${sq(join(repo, "scripts", "agentnet-join.sh"))} root Director ${sq(p)})"`;
+  // eval of an empty string succeeds, so a refused join used to fall through to claude with an empty --plugin-dir. unset first (a stale tmux env must not pass the test), then require the path join exports.
+  const join_ = (p: string) => `unset AGENTNET_MOD && eval "$(${url}${sq(join(repo, "scripts", "agentnet-join.sh"))} root Director ${sq(p)})" && [ -n "$AGENTNET_MOD" ]`;
   const tail = `claude --plugin-dir "$AGENTNET_MOD"${promptFile ? ` --append-system-prompt-file ${sq(promptFile)}` : ""}`;
   if (mode === "clean") return `cd ${sq(home)} && ${join_(home)} && ${tail}${resume ? ` --resume ${sq(resume)}` : ""} --add-dir ${sq(dir)}`;
   if (mode === "scan") return `cd ${sq(dir)} && export AGENTNET_ADOPT_PHASE=scan AGENTNET_ADOPT_ROOTS=${sq((roots?.length ? roots : [dir]).join(":"))} && ${join_(dir)} && ${tail} --setting-sources user --strict-mcp-config -n scan ${sq(SCAN_PROMPT)}`;
