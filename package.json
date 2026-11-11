@@ -1,6 +1,6 @@
 {
   "name": "agentnet",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "type": "module",
   "description": "A local network for Claude Code agents: names, a boss, task lists, messages and a live web view of who is doing what.",

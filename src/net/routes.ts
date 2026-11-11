@@ -64,9 +64,10 @@ export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|p
 
 // ---------- the one hierarchy check: boss, own reports, teammates under the same boss; root outbound exempt ----------
 export const isRoot = (a: { name: string }) => a.name === "root";
-/** Why `from` may not reach `to`, or null. The lead gate binds everyone except root: root (the director) may always send, and a team whose lead is gone is not gated. */
-export function gateDenied(from: { name: string }, to: { name: string }): string | null {
-  if (isRoot(from) || gatePasses(from.name, to.name)) return null;
+/** Why `from` may not reach `to`, or null. The lead gate binds everyone except root: root (the director) may always send, and a team whose lead is gone is not gated.
+ *  Never a gate for an agent's own boss or a teammate: `to` may sit in other, older teams whose lead is someone else. */
+export function gateDenied(from: { name: string; boss?: string | null }, to: { name: string }): string | null {
+  if (isRoot(from) || from.boss === to.name || sameTeam(from.name, to.name) || gatePasses(from.name, to.name)) return null;
   const lead = leadGate(to.name), team = teamsOf(to.name).find((t) => t.lead === lead);
   return `${to.name} is in team ${team?.id ?? "?"}: send it to its lead ${lead}`;
 }

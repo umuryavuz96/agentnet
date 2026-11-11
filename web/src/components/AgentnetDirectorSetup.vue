@@ -21,7 +21,7 @@ type Key = "folder" | "type" | "scan" | "review" | "preview" | "apply" | "start"
 const info = ref<Info | null>(null), dir = ref(""), copied = ref(false), busy = ref(false), err = ref(""), started = ref("");
 const mode = ref<Mode>("clean"), modeTouched = ref(false);
 const ad = ref<AdoptState | null>(null), picks = ref<Picks>({ findings: {}, skipActions: [] }), plan = ref<AdoptPlan | null>(null);
-const working = ref(false), reviewErr = ref(""), scanErr = ref(""), undoCopied = ref(false), attachCopied = ref(false), changedOpen = ref(false);
+const working = ref(false), reviewErr = ref(""), scanErr = ref(""), undoCopied = ref(false), changedOpen = ref(false);
 const el = ref<HTMLElement | null>(null);
 let resuming = true;
 const cur = ref<Key>("folder"), startedAt = ref(0), now = ref(Date.now());
@@ -51,13 +51,11 @@ const applied = computed(() => ad.value?.phase === "applied" && ad.value.mode ==
 const toolsOk = computed(() => !!info.value?.tools.tmux && !!info.value?.tools.claude);
 const canStart = computed(() => toolsOk.value && !info.value?.session && !info.value?.dirError);
 const missing = computed(() => (["claude", "tmux", "python3"] as const).filter((k) => info.value && !info.value.tools[k]));
-const session = computed(() => info.value?.sessionName ?? launch.value?.sessionName ?? "agentnet-root");
-const attach = computed(() => `tmux attach -t ${session.value}`);
 const why = computed(() => {
   const i = info.value; if (!i) return "";
   if (!i.tools.tmux) return "tmux is not installed, so agentnet cannot start it for you. Copy the command instead.";
   if (!i.tools.claude) return "Claude Code is not installed yet. Install it, then copy the command.";
-  if (i.session && !t0.value) return `A tmux session ${i.sessionName} already runs. Attach with: ${attach.value}`;
+  if (i.session && !t0.value) return "A director session is already running. Reset the director on the Agents page to start a new one.";
   return "";
 });
 const pc = computed(() => info.value?.precheck);
@@ -80,8 +78,7 @@ const failedWhy = computed(() => {
   if (launch.value?.state === "failed") return launch.value.error || "The director did not start.";
   if (!t0.value || !deadline.value || now.value < deadline.value) return "";
   if (info.value && !info.value.session) return "The tmux session ended before the director connected. Claude Code may have crashed or is not signed in.";
-  if (launch.value?.stage === "trust" || !launch.value?.stage) return `The session runs but the director has not said hello. Claude Code is probably waiting at the folder-trust question. Run ${attach.value}, answer Yes, then press Ctrl-b d.`;
-  return "The session runs but the director has not connected. Check it with " + attach.value + ".";
+  return "The session runs but the director has not connected. The last screen of Claude Code is shown below.";
 });
 const stuck = computed(() => (launch.value?.state === "waiting" && !up.value && !failedWhy.value ? launch.value.error ?? "" : ""));
 const dialog = computed(() => (up.value ? null : launch.value?.dialog ?? null));
@@ -89,10 +86,10 @@ const answering = ref(false), answerErr = ref("");
 /** The server sends the keys only when the pane shows exactly this dialog; a 409 means it moved on or is not that dialog. */
 const ANSWER: Record<string, { id: string; button: string }> = { trust: { id: "yes", button: "Trust this folder and continue" }, mcp: { id: "use", button: "Approve this MCP server" }, "mcp-multi": { id: "approve", button: "Approve MCP servers" } };
 const answerBtn = computed(() => (dialog.value ? ANSWER[dialog.value.kind] : undefined));
-async function answer() {
-  const d = dialog.value, a = answerBtn.value; if (!d || !a) return;
+async function answer(option?: string) {
+  const d = dialog.value, a = answerBtn.value; if (!d || (!a && !option)) return;
   answering.value = true; answerErr.value = "";
-  try { await api("v1/panel/director/answer", { method: "POST", body: { option: a.id } }); await load(); } catch (e) { answerErr.value = (e as Error).message; await load(); } finally { answering.value = false; }
+  try { await api("v1/panel/director/answer", { method: "POST", body: { option: option ?? a!.id } }); await load(); } catch (e) { answerErr.value = (e as Error).message; await load(); } finally { answering.value = false; }
 }
 const WSTAGES = ["session", "claude", "trust", "hello"] as const;
 const wlabels: Record<string, string> = { session: "tmux session started", claude: "Claude Code is starting", trust: "Claude Code questions answered", hello: "Director said hello" };
@@ -164,9 +161,9 @@ onUnmounted(() => { clearTimeout(t); clearInterval(poll); clearInterval(clock); 
 /** Move to a step and put focus on its first control, so keyboard and screen-reader users follow the flow. */
 function go(k: Key) { cur.value = k; nextTick(() => setTimeout(() => { el.value?.querySelector(".ds-s.on")?.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); el.value?.querySelector<HTMLElement>(".ds-s.on .ds-in input, .ds-s.on .ds-in [role=radio][aria-checked=true], .ds-s.on .ds-in .ds-b:not([disabled])")?.focus({ preventScroll: true }); }, 300)); }
 
-async function copy(text?: string, flag: "cmd" | "undo" | "attach" = "cmd") {
+async function copy(text?: string, flag: "cmd" | "undo" = "cmd") {
   const v = text ?? info.value?.command; if (!v) return;
-  try { await navigator.clipboard.writeText(v); const r = flag === "cmd" ? copied : flag === "undo" ? undoCopied : attachCopied; r.value = true; setTimeout(() => (r.value = false), 1600); } catch { toast("Copy failed"); }
+  try { await navigator.clipboard.writeText(v); const r = flag === "cmd" ? copied : undoCopied; r.value = true; setTimeout(() => (r.value = false), 1600); } catch { toast("Copy failed"); }
 }
 const picking = ref(false), pickMsg = ref("");
 /** Native folder dialog on the server Mac. Cancel keeps the field; no dialog available leaves the typed path as the way. */
@@ -219,7 +216,7 @@ async function applyPlan(confirmGlobal: boolean) {
   try {
     await adoptApply(plan.value.planId, confirmGlobal);
     startedAt.value = Date.now(); now.value = startedAt.value;
-    started.value = "Started in tmux. The first time, Claude Code asks you to trust the folder: run " + attach.value + ", answer Yes, then press Ctrl-b d.";
+    started.value = "agentnet answers Claude Code's first-run questions for you.";
     await Promise.all([refreshAd(), load()]); go("ready");
   } catch (e) {
     const m = (e as Error).message;
@@ -234,7 +231,7 @@ async function start(retry = false) {
   try {
     await api("v1/panel/director/start", { method: "POST", body: { dir: dir.value, mode: mode.value, ...(retry ? { restart: true } : {}) } });
     startedAt.value = Date.now(); now.value = startedAt.value;
-    started.value = "Started in tmux. The first time, Claude Code asks you to trust the folder: run " + attach.value + ", answer Yes, then press Ctrl-b d.";
+    started.value = "agentnet answers Claude Code's first-run questions for you.";
     await load(); go("ready");
   } catch (e) { err.value = (e as Error).message; } finally { busy.value = false; }
 }
@@ -313,7 +310,7 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
                     <i><Icon v-if="stage > g.k || stage === 3" name="check" :size="12" /><Icon v-else-if="stage === g.k" name="loader" :size="12" class="spin" /></i><span>{{ g.t }}</span><em v-if="g.s">{{ g.s }}</em>
                   </li>
                 </ul></div>
-                <p v-if="slow" class="ds-t sm">Nothing yet. The first time, Claude Code asks you to trust the folder: run {{ attach }}, answer Yes, then press Ctrl-b d.</p>
+                <p v-if="slow" class="ds-t sm">Nothing yet. agentnet answers Claude Code's first-run questions itself. If one needs you, it shows up here.</p>
                 <p class="ds-t sm">It may read this folder, its repos and your Claude settings. It never reads secrets.</p>
                 <div v-if="scanning" class="ds-row"><button type="button" class="ds-b ghost" @click="cancelScan">Cancel scan</button><button type="button" class="ds-link" @click="scan('static')">Basic scan instead</button></div>
               </template>
@@ -370,8 +367,12 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
                       <p class="ds-t"><b>Claude Code is waiting for you.</b> The director cannot connect until this is answered.</p>
                       <p class="ds-t">{{ dialog.title }}</p>
                       <ul v-if="dialog.servers?.length" class="ds-opts" aria-label="MCP servers"><li v-for="v in dialog.servers" :key="v.name" :class="{ pick: v.enable }"><b>{{ v.name }}</b> {{ v.enable ? "will be enabled" : "left off: adopt switched it off" }}</li></ul>
-                      <ul v-else class="ds-opts" aria-label="Choices in the terminal"><li v-for="o in dialog.options" :key="o.id" :class="{ pick: o.id === answerBtn?.id }">{{ o.label }}</li></ul>
-                      <button v-if="answerBtn" type="button" class="ds-b" :disabled="answering" @click="answer"><Icon name="check" :size="15" /> {{ answering ? "Answering…" : answerBtn.button }}</button>
+                      <ul v-else-if="dialog.kind !== 'pane'" class="ds-opts" aria-label="Choices in the terminal"><li v-for="o in dialog.options" :key="o.id" :class="{ pick: o.id === answerBtn?.id }">{{ o.label }}</li></ul>
+                      <button v-if="answerBtn" type="button" class="ds-b" :disabled="answering" @click="answer()"><Icon name="check" :size="15" /> {{ answering ? "Answering…" : answerBtn.button }}</button>
+                      <template v-else-if="dialog.kind === 'pane'">
+                        <pre v-if="launch?.pane" class="ds-pane" tabindex="0" aria-label="Last lines of the director terminal">{{ launch.pane }}</pre>
+                        <div class="ds-row"><button v-for="o in dialog.options" :key="o.id" type="button" class="ds-b" :class="{ ghost: o.id === 'esc' }" :disabled="answering" @click="answer(o.id)">{{ o.label }}</button></div>
+                      </template>
                       <p v-if="answerErr" class="ds-err" role="alert">{{ answerErr }}</p>
                     </div>
                   <template v-if="!failedWhy">
@@ -385,7 +386,6 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
                   <p class="ds-err"><Icon name="triangle-alert" :size="14" /> {{ failedWhy }}</p>
                   <div class="ds-row">
                     <button type="button" class="ds-b" :disabled="busy" @click="start(true)"><Icon name="rotate-ccw" :size="15" /> {{ busy ? "Starting…" : "Retry" }}</button>
-                    <button v-if="info?.session" type="button" class="ds-cp" :aria-label="attachCopied ? 'Copied' : 'Copy attach command'" @click="copy(attach, 'attach')"><Icon :name="attachCopied ? 'check' : 'copy'" :size="14" /> {{ attachCopied ? "Copied" : "Copy attach command" }}</button>
                   </div>
                   <p v-if="launch?.hint" class="ds-warn" role="status"><Icon name="triangle-alert" :size="15" /> {{ launch.hint }}</p>
                   <pre v-if="launch?.pane" class="ds-pane" tabindex="0" aria-label="Last lines of the director terminal">{{ launch.pane }}</pre>

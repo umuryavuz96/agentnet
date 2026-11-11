@@ -13,6 +13,9 @@ const norm = (s: string) => " " + s.toLowerCase().replace(/[^a-z0-9]+/g, " ").tr
 const LEX_NORM = LEXICON.map((w) => ({ w, n: " " + w + " " }));
 /** The lexicon words found in a text (whole word). */
 export const lexHits = (s: string): string[] => { const n = norm(s); return LEX_NORM.filter((x) => n.includes(x.n)).map((x) => x.w); };
+/** A tool name that carries the word glued on, like "harbormsg" or "fastmail": lexHits misses those (whole words only), so an MCP server named after one was never offered. */
+const STEM = /(?:^| )[a-z0-9]{2,}(msg|mail|inbox)(?= |$)/g;
+export const stemHits = (s: string): string[] => [...norm(s).matchAll(STEM)].map((m) => m[1]!);
 
 const HOOK_EVENTS = ["UserPromptSubmit", "SessionStart", "Stop", "PostToolUse", "PreToolUse", "Notification"];
 const MSG_VERB = /\b(send|reply|report|notify|ping|poll|hand[- ]?off|check (?:your |the )?inbox)\b/i;
@@ -128,7 +131,7 @@ export function collectFacts(workspaceIn: string, opts: CollectOpts = {}): Facts
       const args = Array.isArray(d.args) ? d.args.map(String) : [];
       const perms = allow.filter((a) => a.startsWith(`mcp__${name}__`));
       const words = new Set<string>();
-      for (const s of [name, command, ...args, ...perms, ...(extra ?? []).filter((x) => x.startsWith(`mcp__${name}__`))]) lexHits(s).forEach((w) => words.add(w));
+      for (const s of [name, command, ...args, ...perms, ...(extra ?? []).filter((x) => x.startsWith(`mcp__${name}__`))]) { lexHits(s).forEach((w) => words.add(w)); stemHits(s).forEach((w) => words.add(w)); }
       if (!words.size) continue;
       push("S-MCP", { file, server: name, command: redactText([command, ...args].join(" ")).slice(0, 160), url: typeof d.url === "string" ? redactText(d.url).slice(0, 160) : null, words: [...words], permissions: perms.slice(0, 10) });
     }

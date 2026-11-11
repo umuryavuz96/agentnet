@@ -75,3 +75,16 @@ describe("boss follows the lead", () => {
     expect(bossOf("solo-1")).toBe(bossOf("mem-1")); expect(foldBoss("solo-1")).toBe(bossOf("mem-1"));
   });
 });
+
+describe("an agent that sits in two teams", () => {
+  test("its own boss and its own team's lead stay reachable whatever older team gates the target", async () => {
+    for (const [n, boss] of [["old-lead", "root"], ["eng-lead", "root"], ["eng-mem", "eng-lead"], ["boss-only", "eng-lead"], ["stranger", "root"]] as const) tok[n] = rt.createAgent({ name: n, boss, job: "t", by: "test" }).token;
+    expect((await j(await call("root", "POST", "/teams", { name: "Old", lead: "old-lead", members: ["eng-lead"] }))).status).toBe(201); // eng-lead is gated by old-lead
+    expect((await j(await call("root", "POST", "/teams", { name: "Eng", lead: "eng-lead", members: ["eng-mem"] }))).status).toBe(201);
+    expect((await send("eng-mem", "eng-lead")).status).toBe(200);   // member -> own lead (was: "send it to its lead old-lead")
+    expect((await send("boss-only", "eng-lead")).status).toBe(200); // a report that is in no team -> its boss
+    expect((await send("stranger", "eng-lead")).status).toBe(403);  // an outsider is still sent to the gating lead
+    expect(JSON.stringify((await send("stranger", "eng-lead")).body)).toContain("old-lead");
+    expect(JSON.stringify((await j(await call("eng-mem", "POST", "/tasks", { agent: "eng-lead", title: "x" }))).body)).not.toContain("send it to its lead"); // tasks use the same gate
+  });
+});

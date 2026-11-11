@@ -146,7 +146,7 @@ async function init(args: string[]): Promise<number> {
   if (start) {
     const r = startDirector(d.dir);
     if (!r.ok) { console.log(`   ${r.detail}\n   Or run it yourself:\n   ${directorCommand(d.dir)}`); return 1; }
-    console.log(`   Started in tmux session ${r.session}. The first time Claude Code asks to trust the folder: ${r.attach}, answer Yes, then Ctrl-b d.`);
+    console.log(`   Started in tmux session ${r.session}. agentnet answers Claude Code's first-run questions for this folder; if one needs you, the board shows it.`);
   } else console.log(`   Run this in a terminal (or add --start to run it in tmux):\n\n   ${directorCommand(d.dir)}\n`);
   console.log(`\n4. Open the board: ${origin}   (the setup card turns green when the director says hello)`);
   return 0;

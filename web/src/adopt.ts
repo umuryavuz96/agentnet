@@ -35,7 +35,7 @@ export interface AdoptState {
   scanner?: "director" | "static" | null; facts?: { signals: number } | null; failed?: string | null;
   report: AdoptReport | null; plan: AdoptPlan | null; runs: AdoptRun[];
 }
-export interface Launch { state: "idle" | "starting" | "waiting" | "connected" | "failed"; startedAt?: number; deadlineAt?: number; stage?: "session" | "claude" | "trust" | "hello"; error?: string; sessionName?: string; attach?: string | null; pane?: string | null; exitCode?: number | null; hint?: string; dialog?: { kind: "trust" | "mcp" | "mcp-multi"; title: string; options: { id: string; label: string; selected: boolean }[]; servers?: { name: string; checked: boolean; enable: boolean }[] } | null }
+export interface Launch { state: "idle" | "starting" | "waiting" | "connected" | "failed"; startedAt?: number; deadlineAt?: number; stage?: "session" | "claude" | "trust" | "hello"; error?: string; sessionName?: string; pane?: string | null; exitCode?: number | null; hint?: string; dialog?: { kind: "trust" | "mcp" | "mcp-multi" | "pane"; title: string; options: { id: string; label: string; selected: boolean }[]; servers?: { name: string; checked: boolean; enable: boolean }[] } | null }
 export interface Precheck { instructions: boolean; claudeDir: boolean; repos: number; agentDefs: number; tmuxAgents: number }
 
 /** What the owner chose on the cards: per finding apply/skip, plus per-action opt-outs inside a card (the soul checklist). */

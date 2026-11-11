@@ -12,10 +12,11 @@ const READY = "Claude Code v2.1.322\n❯ \n  auto mode on";
 describe("director launch state", () => {
   beforeEach(() => { clearLaunch(); markLaunch(S, T0); });
   test("idle before any start", () => { clearLaunch(); expect(launchView(deps()).state).toBe("idle"); });
-  test("trust dialog: waiting at stage trust with the reason and the attach command", () => {
+  test("trust dialog: waiting at stage trust with the reason", () => {
     const v = launchView(deps({ at: 8000, capture: () => TRUST }));
     expect(v).toMatchObject({ state: "waiting", stage: "trust", sessionName: S, startedAt: T0, deadlineAt: T0 + LAUNCH_TIMEOUT_MS });
-    expect(v.error).toContain("tmux attach -t agentnet-root");
+    expect(v.error).toContain("trust this folder");
+    expect(v.error).not.toContain("tmux attach");
   });
   test("MCP approval dialog is a trust-stage wait too", () => expect(launchView(deps({ at: 9000, capture: () => MCP }))).toMatchObject({ state: "waiting", stage: "trust" }));
   test("claude up, no hello yet: waiting at hello", () => expect(launchView(deps({ at: 9000, capture: () => READY }))).toMatchObject({ state: "waiting", stage: "hello" }));
@@ -54,7 +55,7 @@ describe("startDirector feeds the launch state", () => {
     startDirector(d, () => ({ status: 1, stderr: "boom" }), tools, () => false);
     expect(launchView({ ...deps(), now: Date.now })).toMatchObject({ state: "failed", error: "boom" });
     startDirector(d, () => ({ status: 0 }), tools, () => true);
-    expect(launchView({ ...deps(), now: Date.now }).error).toContain("already exists");
+    expect(launchView({ ...deps(), now: Date.now }).error).toContain("already running");
   });
 });
 

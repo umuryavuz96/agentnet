@@ -84,3 +84,13 @@ test("no product names in adopt source", () => {
   try { for (const f of readdirSync(assets)) srcs.push(join(assets, f)); } catch { /* not built yet */ }
   for (const f of srcs) for (const n of names) expect([f, readFileSync(f, "utf8").toLowerCase().includes(n)]).toEqual([f, false]);
 });
+
+test("an MCP server named after a message tool (harbormsg, fastmail) is found; a plain one is not", () => {
+  const { stemHits } = require("./adopt-scan") as typeof import("./adopt-scan");
+  expect(stemHits("harbormsg")).toEqual(["msg"]);
+  expect(stemHits("/h/scripts/fastmail/run.sh")).toEqual(["mail"]);
+  expect(stemHits("lint-mcp")).toEqual([]);
+  fs.writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { harbormsg: { command: "/h/scripts/harbormsg/mcp.sh", env: { K: "sk-live-9999999999" } }, notes: { command: "notes-mcp" } } }));
+  const f = collectFacts(ws, none);
+  expect(f.signals.filter((s) => s.id === "S-MCP" && s.file === join(home, ".claude.json")).map((s) => s.server)).toEqual(["harbormsg"]);
+});

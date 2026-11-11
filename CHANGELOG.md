@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.4
+
+Setting up the director no longer needs a terminal. Claude Code's first-run questions are answered for you, and a stuck start shows what is on screen with buttons.
+
+**Director setup**
+
+- The step "Director said hello" no longer ticks "Claude Code questions answered" while a question is still on screen (theme picker, sign-in picker).
+- agentnet marks the director's folder as trusted in Claude Code's config before it starts (it merges one flag, with a backup of the file first) and answers the theme and "press Enter" screens itself.
+- A screen agentnet does not know is shown as text on the page, with buttons for Enter, Down then Enter, and Esc.
+- A sign-in problem or a refused join (for example an older director is still registered) fails at once with a plain reason and a next step.
+- Every "run tmux attach" text is gone from the page and the CLI.
+
+**Adopt**
+
+- An MCP server named after a message tool (a name ending in msg, mail or inbox) is now offered to switch off. Before, only plain lexicon words in its name or command counted, so it was skipped.
+
+**Teams**
+
+- An agent in two teams can always reach its own boss and its teammates. An older team's lead no longer blocks them.
+
 ## 0.5.3
 
 Adopt can now switch off the old message system for you: hooks in many repos and the MCP server in your own Claude Code settings. The After adopt summary is easier to read.

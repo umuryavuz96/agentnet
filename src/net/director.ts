@@ -18,6 +18,7 @@ import { listHooks, readHookLog } from "./hooks";
 import { templates } from "./hook-templates";
 import { precheck } from "./adopt-scan";
 import { answerDialog, clearLaunch, launchView, markLaunch } from "./launch";
+import { acceptTrust } from "./claude-trust";
 
 export const REPO = join(import.meta.dir, "..", "..");
 /** The director runs in the root agent's tmux session, so Open window on root finds it. */
@@ -144,7 +145,7 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
   if (!t.claude) return { ok: false, code: "no-claude", detail: "Claude Code (claude) is not installed. Install it, then copy the command." };
   const d = checkDir(rawDir);
   if ("error" in d) return { ok: false, code: "bad-dir", detail: d.error };
-  if (exists()) { const detail = `A tmux session ${SESSION} already exists. Attach with: tmux attach -t ${SESSION}`; markLaunch(SESSION, Date.now(), detail); return { ok: false, code: "running", detail }; }
+  if (exists()) { const detail = `A director session (${SESSION}) is already running. Use Reset director on the Agents page to stop it, then start again.`; markLaunch(SESSION, Date.now(), detail); return { ok: false, code: "running", detail }; }
   let resume: string | undefined, why: string | undefined;
   if (opts.resume) {
     if (!SESSION_ID.test(opts.resume)) why = "The last session id is not valid.";
@@ -162,10 +163,14 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
   }
   if (process.env.AGENTNET_NO_DIRECTOR_START) return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}` }; // scratch and screenshot runs: validate, write the prompt, never spawn
   clearDeath(SESSION);
+  // Claude Code asks "do you trust this folder" once per folder. Answer it ahead of time for the folder we start in (merge, with a backup); the pane watcher is the fallback.
+  const trusted = [...new Set([cwd, d.dir])];
+  const tr = acceptTrust([cwd]);
+  if (tr.error) logEvent("warn", "trust not pre-accepted", { error: tr.error });
   // remain-on-exit for this session only (never -g): when claude exits the pane stays, so the server can read why (windows.ts reapDead)
   const r = run("tmux", ["new-session", "-d", "-s", SESSION, "-c", cwd, "sh", "-c", cmd, ";", "set-option", "-t", `=${SESSION}:`, "remain-on-exit", "on"]);
   if (r.status !== 0) { const detail = (r.stderr ?? "").trim() || "tmux could not start the session."; markLaunch(SESSION, Date.now(), detail); return { ok: false, code: "failed", detail }; }
-  markLaunch(SESSION);
+  markLaunch(SESSION, Date.now(), undefined, trusted);
   logEvent("info", "director started", { session: SESSION, dir: d.dir, mode: mode ?? "plain", resumed: !!resume });
   return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}`, ...(opts.resume ? { resumed: !!resume, ...(why ? { why } : {}) } : {}) };
 }
@@ -254,7 +259,7 @@ export async function resetDirector(d: ResetDeps = realReset, now = Date.now()):
 export function directorRoutes(api: Hono<Env>): void {
   api.post("/agent-director/answer", async (c) => {
     const b = (await c.req.json().catch(() => ({}))) as { option?: unknown };
-    if (typeof b.option !== "string" || !/^[a-z]{1,8}$/.test(b.option)) return problem(c, 400, "Bad Request", "option is required");
+    if (typeof b.option !== "string" || !/^[a-z-]{1,16}$/.test(b.option)) return problem(c, 400, "Bad Request", "option is required");
     const r = answerDialog(b.option);
     return r.ok ? c.json({ ok: true, kind: r.kind }) : problem(c, 409, "Conflict", r.reason);
   });
