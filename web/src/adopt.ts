@@ -7,9 +7,9 @@ export type Suggestion = "switch-off" | "adopt-as-souls" | "neutralise-lines" | 
 export type Kind = "coordination-system" | "agent-definitions" | "workspace-instructions" | "identity-claim" | "hook" | "mcp-server" | "scheduled-runner" | "other";
 export interface Evidence { signal: string; path: string; line?: number; quote?: string }
 export type Action =
-  | { id: string; op: "park-hook"; file: string; event: string; matcher?: string | null; commandIncludes: string }
-  | { id: string; op: "park-mcp"; file: string; server: string }
-  | { id: string; op: "disable-lines"; file: string; fromLine: number; toLine: number; why: string }
+  | { id: string; op: "park-hook"; file: string; event: string; matcher?: string | null; commandIncludes: string; legacy?: true }
+  | { id: string; op: "park-mcp"; file: string; server: string; legacy?: true }
+  | { id: string; op: "disable-lines"; file: string; fromLine: number; toLine: number; why: string; legacy?: true }
   | { id: string; op: "register-souls"; repo: string; name: string; source: "agent-def" | "claude-md"; defFile?: string }
   | { id: string; op: "manual"; title: string; command?: string; why: string };
 export interface Finding {
@@ -79,13 +79,16 @@ export function parkGroups(f: Finding, base = ""): ParkGroup[] {
 }
 /** Section 4.2 defaults: switch-off only for high confidence, souls on, neutralise off, low confidence starts on Skip. */
 export function defaultPicks(fs: Finding[]): Picks {
-  const findings: Picks["findings"] = {};
+  const findings: Picks["findings"] = {}, skipActions: string[] = [];
   for (const f of fs) {
     if (f.suggestion === "keep-as-is" || f.suggestion === "manual") continue;
     const on = f.suggestion === "adopt-as-souls" ? true : f.suggestion === "switch-off" ? f.confidence === "high" : false;
-    findings[f.id] = on && f.confidence !== "low" ? "apply" : "skip";
+    const real = f.actions.filter((a) => a.op !== "manual"), old = real.filter((a) => "legacy" in a && a.legacy);
+    if (on && f.confidence !== "low") findings[f.id] = "apply";
+    else if (old.length) { findings[f.id] = "apply"; for (const a of real) if (!old.includes(a)) skipActions.push(a.id); } // predecessor leftovers: on by default, only they
+    else findings[f.id] = "skip";
   }
-  return { findings, skipActions: [] };
+  return { findings, skipActions };
 }
 /** Files the plan would change, for the "Preview changes (N files)" button: the unique files of the applied, non-manual actions. */
 export function pickedFiles(fs: Finding[], p: Picks): string[] {

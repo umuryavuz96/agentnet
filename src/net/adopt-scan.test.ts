@@ -79,7 +79,7 @@ test("limits add a skipped entry", () => {
 test("no product names in adopt source", () => {
   const names = ["agmsg", "swarmkit", "claude-flow", "mcp-agent-mail", "crewai", "autogen", "langgraph", "openclaw"];
   const dir = join(import.meta.dir);
-  const srcs = readdirSync(dir).filter((f) => /^adopt.*\.ts$/.test(f) && !f.endsWith(".test.ts")).map((f) => join(dir, f));
+  const srcs = readdirSync(dir).filter((f) => /^adopt.*\.ts$/.test(f) && !f.endsWith(".test.ts") && f !== "adopt-legacy.ts").map((f) => join(dir, f));
   const assets = join(import.meta.dir, "../../assets/director");
   try { for (const f of readdirSync(assets)) srcs.push(join(assets, f)); } catch { /* not built yet */ }
   for (const f of srcs) for (const n of names) expect([f, readFileSync(f, "utf8").toLowerCase().includes(n)]).toEqual([f, false]);

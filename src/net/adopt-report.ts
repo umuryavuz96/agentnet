@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { denyReason, redactText } from "./adopt-safe";
+import { isLegacy } from "./adopt-legacy";
 import type { Facts } from "./adopt-scan";
 
 export const KINDS = ["coordination-system", "agent-definitions", "workspace-instructions", "identity-claim", "hook", "mcp-server", "scheduled-runner", "other"] as const;
@@ -15,11 +16,14 @@ const RISKS = ["low", "medium", "high"] as const;
 export type Kind = (typeof KINDS)[number];
 export type Suggestion = (typeof SUGGESTIONS)[number];
 
+/** Stable hash of one line (trailing space ignored), so a block can be found again without storing the text. */
+export const lineHash = (l: string): string => createHash("sha256").update(l.replace(/\s+$/, "")).digest("hex").slice(0, 12);
 export interface Evidence { signal: string; path: string; line?: number; quote?: string }
 export type Action =
-  | { id: string; op: "park-hook"; file: string; event: string; matcher?: string | null; commandIncludes: string }
-  | { id: string; op: "park-mcp"; file: string; server: string }
-  | { id: string; op: "disable-lines"; file: string; fromLine: number; toLine: number; why: string }
+  | { id: string; op: "park-hook"; file: string; event: string; matcher?: string | null; commandIncludes: string; legacy?: true }
+  | { id: string; op: "park-mcp"; file: string; server: string; legacy?: true }
+  /** expect = line hashes of the range at report time (see lineHash): apply re-finds the block when the file moved. legacy = set by the server when the lines mention the predecessor setup */
+  | { id: string; op: "disable-lines"; file: string; fromLine: number; toLine: number; why: string; expect?: string[]; legacy?: true }
   | { id: string; op: "register-souls"; repo: string; name: string; source: "agent-def" | "claude-md"; defFile?: string; roleClash?: boolean }
   | { id: string; op: "manual"; title: string; command?: string; why: string };
 export interface Finding {
@@ -199,6 +203,12 @@ export function validateReport(raw: unknown, facts: Facts, opts: ValidateOpts = 
     findings.push({ id, kind, title, about, confidence, risk, agents, evidence, suggestion, actions, ...(parkedBy?.length ? { parkedBy } : {}), ...(global ? { global: true } : {}) });
   });
 
+  // server-side tags: the line hashes (apply re-locates moved lines) and the predecessor leftovers (pre-selected in the plan)
+  for (const f of findings) for (const a of f.actions) {
+    if (a.op === "park-hook" && isLegacy(a.commandIncludes)) a.legacy = true;
+    else if (a.op === "park-mcp") { const j = readJson(a.file); const sets = [j?.mcpServers, ...(isOb(j?.projects) ? Object.values(j!.projects as Obj).filter(isObj).map((p) => p.mcpServers) : [])]; if (isLegacy(a.server) || sets.some((s) => isObj(s) && isLegacy(JSON.stringify((s as Obj)[a.server] ?? "")))) a.legacy = true; }
+    else if (a.op === "disable-lines") { try { const ls = readFileSync(a.file, "utf8").split("\n").slice(a.fromLine - 1, a.toLine); a.expect = ls.map(lineHash); if (ls.some((l) => isLegacy(l))) a.legacy = true; } catch { /* unreadable: no tags */ } }
+  }
   for (const f of findings) if (f.parkedBy) { f.parkedBy = f.parkedBy.filter((x) => x !== f.id && seenF.has(x)); if (!f.parkedBy.length) delete f.parkedBy; }
   if (errors.length || summary === null) return { ok: false, errors: errors.length ? errors : ["summary: invalid"] };
   // keep the strongest findings when there are more than the UI shows

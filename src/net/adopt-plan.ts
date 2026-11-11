@@ -8,7 +8,7 @@ import { allowedRead, capFor, sha256Text, userClaudeJson } from "./adopt-safe";
 import { cutMember, mcpHolders } from "./adopt-json";
 import { ROOT } from "../core/config";
 import { soulBody, wsCatalog, wsDir } from "./workspace";
-import type { Action, AdoptReport, Finding } from "./adopt-report";
+import { lineHash, type Action, type AdoptReport, type Finding } from "./adopt-report";
 
 export interface Picks { findings: Record<string, "apply" | "skip">; /** per-action opt-out inside an applied finding (the souls checklist) */ actions?: Record<string, boolean> }
 export interface PlanCtx { runId: string; /** $AGENTNET_HOME, default ROOT */ root?: string; /** workspace souls folder, default wsDir() */ workspaceDir?: string }
@@ -249,4 +249,32 @@ export function acceptPicks(findings: { id: string; risk: string; actions?: { id
 export function opLabel(o: { op: string; file?: string; name?: string; repo?: string; global?: boolean }): string {
   const what = o.file ?? (o.op === "register-souls" ? [o.name, o.repo && `(${o.repo})`].filter(Boolean).join(" ") : "");
   return `${what}${o.global ? " (global)" : ""}`;
+}
+
+/** Where a flagged block of lines sits in the file now. Same place = same range; moved = found again by content (nearest hit); gone = null.
+ *  No `expect` (an older report) or an unreadable file counts as unchanged: the plan's own stale check decides then. */
+export function relocateLines(file: string, fromLine: number, toLine: number, expect?: string[]): { fromLine: number; toLine: number } | null {
+  if (!expect?.length) return { fromLine, toLine };
+  let lines: string[]; try { lines = readFileSync(file, "utf8").split("\n"); } catch { return { fromLine, toLine }; }
+  const h = lines.map(lineHash), n = expect.length;
+  const at = (i: number) => i >= 0 && i + n <= h.length && expect.every((x, k) => h[i + k] === x);
+  if (at(fromLine - 1)) return { fromLine, toLine: fromLine + n - 1 };
+  let best = -1;
+  for (let i = 0; i + n <= h.length; i++) if (at(i) && (best < 0 || Math.abs(i - (fromLine - 1)) < Math.abs(best - (fromLine - 1)))) best = i;
+  return best < 0 ? null : { fromLine: best + 1, toLine: best + n };
+}
+
+/** Picks the owner gets without touching anything (same rules as the panel's defaultPicks): souls on, high-confidence switch-offs on, neutralise off.
+ *  predecessor leftovers are always on: a finding that holds one is applied with only its own actions. */
+export function defaultPicksFor(report: AdoptReport): Picks {
+  const findings: Picks["findings"] = {}, actions: Record<string, boolean> = {};
+  for (const f of report.findings) {
+    if (f.suggestion === "keep-as-is" || f.suggestion === "manual") continue;
+    const on = f.suggestion === "adopt-as-souls" ? true : f.suggestion === "switch-off" ? f.confidence === "high" : false;
+    const real = f.actions.filter((a) => a.op !== "manual"), old = real.filter((a) => "legacy" in a && a.legacy);
+    if (on && f.confidence !== "low") findings[f.id] = "apply";
+    else if (old.length) { findings[f.id] = "apply"; for (const a of real) if (!old.includes(a)) actions[a.id] = false; }
+    else findings[f.id] = "skip";
+  }
+  return Object.keys(actions).length ? { findings, actions } : { findings };
 }

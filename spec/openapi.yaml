@@ -246,13 +246,21 @@ paths:
           description: OK
   /v1/admin/adopt/facts:
     get:
-      summary: admin adopt facts (root only, scan phase only)
+      summary: admin adopt facts (setup scan only, while a report can still be made)
       responses:
         "200":
           description: OK
   /v1/admin/adopt/report:
     post:
-      summary: admin adopt report (root only, scan phase only)
+      summary: admin adopt report (setup scan only; a newer report replaces the old one until apply)
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Conflict
+  /v1/admin/adopt/apply:
+    post:
+      summary: admin adopt apply (setup scan only; the owner agreed in its chat; same path as the Apply button)
       responses:
         "200":
           description: OK

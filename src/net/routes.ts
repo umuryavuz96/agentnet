@@ -1,7 +1,7 @@
 // agentnet HTTP API (/api/v1/agentnet/*): identity by per-agent token, the message outbox with a server-owned cursor,
 // the one hierarchy check, status posts, and root-only spawn/despawn. Mounted only with AGENTNET=1.
 import type { Hono, Context } from "hono";
-import { adoptFacts, adoptReportRoute } from "./adopt";
+import { adoptApplyRoute, adoptFacts, adoptReportRoute } from "./adopt";
 import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../core/db";
@@ -12,7 +12,7 @@ import { problem, type Env } from "../core/http";
 import { summarize as summarizeBg, enabled as bgSumEnabled } from "./bgsum";
 import { emit, flush, get, live, all, events, doing, progressPct, lastSeq, ensureSchema, goneKey, BG_KINDS, BG_STATES, type Snapshot, type Source } from "./store";
 import { pollOpened, pollClosed } from "./liveness";
-import { realTmux, createdOf, hasSession, sessionOf, type Tmux } from "./windows";
+import { realTmux, createdOf, hasSession, sessionOf, SCAN_AGENT, type Tmux } from "./windows";
 import { sameTeam, getTeam, addMember, createTeam, gatePasses, leadGate, teamsOf, goalError } from "./teams";
 import { teamRoutes, sendTeam } from "./teamRoutes";
 import { trailSearch, trailInject, cassReady } from "./trailSearch";
@@ -60,10 +60,12 @@ export const byName = (n: string) => (ensureSchema(), db().query("SELECT * FROM 
 
 /** The agent endpoints, listed explicitly: the panel's requireAuth lets only these through to this module's own bearer
  *  check (unknown token = 401 here). snapshot and stream are not listed: they stay behind panel auth. */
-export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|gate|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|adopt\/(facts|report)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
+export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|gate|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|adopt\/(facts|report|apply)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
 
 // ---------- the one hierarchy check: boss, own reports, teammates under the same boss; root outbound exempt ----------
 export const isRoot = (a: { name: string }) => a.name === "root";
+/** The read-only setup scan session of adopt (windows.ts SCAN_AGENT). It gets the adopt tools, nothing of root. */
+export const isScan = (a: { name: string }) => a.name === SCAN_AGENT;
 /** Why `from` may not reach `to`, or null. The lead gate binds everyone except root: root (the director) may always send, and a team whose lead is gone is not gated.
  *  Never a gate for an agent's own boss or a teammate: `to` may sit in other, older teams whose lead is someone else. */
 export function gateDenied(from: { name: string; boss?: string | null }, to: { name: string }): string | null {
@@ -140,13 +142,13 @@ export const isRevoked = (t: string): boolean => (ensureSchema(), !!db().query("
 export interface SpawnInput { name: string; job?: string; boss?: string; model?: string; effort?: string; soul?: string; goal?: string; audit?: string; compactWindow?: number; project?: string; by: string; kind?: "agent" | "member" }
 export const GHOST_MS = 60_000;
 export const ghostDeps = { pidAlive: (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as { code?: string }).code === "EPERM"; } }, hasSession: (s: string) => hasSession(s) };
-/** A root row that will never be a director: it joined (got a token) but the plugin never said hello within GHOST_MS, or it did
+/** A root (or setup-scan) row that will never be a director: it joined (got a token) but the plugin never said hello within GHOST_MS, or it did
  *  and both its process and its tmux session are gone. A connected root with a live process or session is never a ghost. */
 export function isGhostRoot(a: AgentRow, now = Date.now()): boolean {
   const s = get(a.id); if (!s) return false;
   if (s.life === "starting") return s.connectedAt == null && now - s.spawnedAt > GHOST_MS;
   if (s.life !== "live" || s.pid == null) return false;
-  return !ghostDeps.pidAlive(s.pid) && !ghostDeps.hasSession(sessionOf("root"));
+  return !ghostDeps.pidAlive(s.pid) && !ghostDeps.hasSession(sessionOf(a.name));
 }
 /** Create the spawn record and the 0600 token file. Returns the token file path (the token itself is never logged). */
 export function createAgent(i: SpawnInput, now = Date.now()): { id: string; tokenFile: string; token: string } {
@@ -158,7 +160,7 @@ export function createAgent(i: SpawnInput, now = Date.now()): { id: string; toke
     // here; its held messages move to the new row below. A starting/live/stopping row still blocks.
     const life = get(old.id)?.life;
     if (life !== "gone" && life !== "failed") {
-      if (!(i.name === "root" && isGhostRoot(old, now))) throw new Error(`${i.name} is live already`);
+      if (!((i.name === "root" || i.name === SCAN_AGENT) && isGhostRoot(old, now))) throw new Error(`${i.name} is live already`);
       retireAgent(old, "replaced", now); // a failed earlier setup left it: it must not block the director's join
     } else {
       revoke(old.id, now);
@@ -281,7 +283,7 @@ export function agentnetRoutes(api: Hono<Env>) {
     emit({ agent: a.id, type: "AgentConnected", data: { session, pid: goodPid(b.pid), version: b.version ?? null, model: b.model ?? null, client: b.client ?? "claude-code" }, source: "mod", ts: now, dedup: session ? `hello:${a.id}:${session}:${b.pid ?? ""}:${prev?.life === "gone" ? prev.lifeSince : 0}` : undefined });
     releaseHeld(a.id, now); flush();
     audit(`agent:${a.name}`, "agentnet.hello", a.id, "ok", c.get("trace"));
-    return c.json({ agent: viewOf(get(a.id)!), root: isRoot(a), poll_max_s: POLL_MAX_S });
+    return c.json({ agent: viewOf(get(a.id)!), root: isRoot(a), scan: isScan(a), poll_max_s: POLL_MAX_S });
   });
   r.post("/bye", async (c: Ctx) => {
     const a = c.get("agent"), b = await body(c);
@@ -392,8 +394,9 @@ export function agentnetRoutes(api: Hono<Env>) {
     const out = await trailInject(name, "spawn", text, typeof b.repo === "string" && b.repo ? b.repo : undefined);
     return c.json({ text: out.text, skipped: out.skipped ?? null });
   });
-  r.get("/adopt/facts", (c: Ctx) => { if (!isRoot(c.get("agent"))) return problem(c, 403, "Forbidden", "root only"); return adoptFacts(c as never); });
-  r.post("/adopt/report", async (c: Ctx) => { if (!isRoot(c.get("agent"))) return problem(c, 403, "Forbidden", "root only"); return adoptReportRoute(c as never, await body(c)); });
+  r.get("/adopt/facts", (c: Ctx) => { if (!isScan(c.get("agent")) && c.get("agent").id !== ADMIN.id) return problem(c, 403, "Forbidden", "setup scan only"); return adoptFacts(c as never); });
+  r.post("/adopt/report", async (c: Ctx) => { if (!isScan(c.get("agent")) && c.get("agent").id !== ADMIN.id) return problem(c, 403, "Forbidden", "setup scan only"); return adoptReportRoute(c as never, await body(c)); });
+  r.post("/adopt/apply", async (c: Ctx) => { if (!isScan(c.get("agent"))) return problem(c, 403, "Forbidden", "setup scan only"); return adoptApplyRoute(c as never, await body(c)); });
   /** B2: the mod asks before every work tool. Allowed (200 {allow:true}) or a reason the agent reads. Root, the loopback admin and team members are exempt. */
   r.get("/gate", (c: Ctx) => {
     const a = c.get("agent"), exempt = isRoot(a) || a.id === ADMIN.id || a.kind === "member";

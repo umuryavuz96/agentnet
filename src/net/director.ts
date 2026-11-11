@@ -13,7 +13,7 @@ import { problem, type Env } from "../core/http";
 import { logEvent } from "../core/logger";
 import { all, flush, forgetByName, live } from "./store";
 import { byName, retireAgent } from "./routes";
-import { clearDeath, createdOf, findRootSession, hasSession as tmuxHas, healRootSession, killSession, realTmux, rootPid, rootSession, type Tmux } from "./windows";
+import { SCAN_AGENT, SCAN_JOB, scanSession, clearDeath, createdOf, findRootSession, hasSession as tmuxHas, healRootSession, killSession, realTmux, rootPid, rootSession, type Tmux } from "./windows";
 import { listHooks, readHookLog } from "./hooks";
 import { templates } from "./hook-templates";
 import { precheck } from "./adopt-scan";
@@ -45,10 +45,10 @@ export function directorCommand(dir: string, o: CommandOpts = {}): string {
   const { mode, repo = REPO, port = PORT, host = HOST, resume, promptFile, home = join(ROOT, "director"), roots } = o;
   const url = port === 3096 && host === "127.0.0.1" ? "" : `AGENTNET_URL=${sq(`http://${host}:${port}/api/v1/agentnet`)} `;
   // eval of an empty string succeeds, so a refused join used to fall through to claude with an empty --plugin-dir. unset first (a stale tmux env must not pass the test), then require the path join exports.
-  const join_ = (p: string) => `unset AGENTNET_MOD && eval "$(${url}${sq(join(repo, "scripts", "agentnet-join.sh"))} root Director ${sq(p)})" && [ -n "$AGENTNET_MOD" ]`;
+  const join_ = (p: string, who = "root Director") => `unset AGENTNET_MOD && eval "$(${url}${sq(join(repo, "scripts", "agentnet-join.sh"))} ${who} ${sq(p)})" && [ -n "$AGENTNET_MOD" ]`;
   const tail = `claude --plugin-dir "$AGENTNET_MOD"${promptFile ? ` --append-system-prompt-file ${sq(promptFile)}` : ""}`;
   if (mode === "clean") return `cd ${sq(home)} && ${join_(home)} && ${tail}${resume ? ` --resume ${sq(resume)}` : ""} --add-dir ${sq(dir)}`;
-  if (mode === "scan") return `cd ${sq(dir)} && export AGENTNET_ADOPT_PHASE=scan AGENTNET_ADOPT_ROOTS=${sq((roots?.length ? roots : [dir]).join(":"))} && ${join_(dir)} && ${tail} --setting-sources user --strict-mcp-config -n scan ${sq(SCAN_PROMPT)}`;
+  if (mode === "scan") return `cd ${sq(dir)} && export AGENTNET_ADOPT_PHASE=scan AGENTNET_ADOPT_ROOTS=${sq((roots?.length ? roots : [dir]).join(":"))} && ${join_(dir, `${SCAN_AGENT} ${sq(SCAN_JOB)}`)} && ${tail} --setting-sources user --strict-mcp-config -n scan ${sq(SCAN_PROMPT)}`;
   return `cd ${sq(dir)} && ${join_(dir)} && ${tail}${resume ? ` --resume ${sq(resume)}` : ""}`;
 }
 
@@ -92,7 +92,7 @@ export function writeScanMarker(created: string, root = ROOT): void {
   writeFileSync(p, created + "\n", { mode: 0o600 });
 }
 /** Kill the scan session only when it is still the one the marker names. Always clears the marker. Returns true when a session was killed. */
-export function killScanSession(session: string = SESSION, t: Tmux = realTmux, root = ROOT): boolean {
+export function killScanSession(session: string = scanSession(), t: Tmux = realTmux, root = ROOT): boolean {
   const p = scanMarkerPath(root);
   let want = "";
   try { want = readFileSync(p, "utf8").trim(); } catch { return false; }
@@ -136,17 +136,19 @@ export function triageNow(): TriageState {
   try { return triageState(listHooks(), templates().find((t) => t.id === "agentnet-triage")?.command ?? null, readHookLog("triage.jsonl")); } catch { return "unknown"; }
 }
 
+export const hasScanSession = (): boolean => tmuxHas(scanSession());
 export const hasRoot = (): boolean => live().some((a) => a.name === "root");
 
 export interface StartResult { ok: boolean; resumed?: boolean; why?: string; code?: "no-tmux" | "no-claude" | "bad-dir" | "running" | "failed"; detail?: string; session?: string; attach?: string }
 
 /** Start the director in a detached tmux session. `run` is replaceable so tests never spawn tmux. */
-export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]) => { status: number | null; stderr?: string } = (c, a) => { const r = spawnSync(c, a, { encoding: "utf8" }); return { status: r.status, stderr: r.stderr }; }, t: Tools = tools(), exists: () => boolean = hasSession, opts: { resume?: string; hasTranscript?: (dir: string, session: string) => boolean; mode?: DirectorMode; root?: string; repos?: string[]; souls?: string[]; roots?: string[] } = {}): StartResult {
+export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]) => { status: number | null; stderr?: string } = (c, a) => { const r = spawnSync(c, a, { encoding: "utf8" }); return { status: r.status, stderr: r.stderr }; }, t: Tools = tools(), exists: (() => boolean) | undefined = undefined, opts: { resume?: string; hasTranscript?: (dir: string, session: string) => boolean; mode?: DirectorMode; root?: string; repos?: string[]; souls?: string[]; roots?: string[] } = {}): StartResult {
   if (!t.tmux) return { ok: false, code: "no-tmux", detail: "tmux is not installed. Copy the command and run it in a terminal." };
   if (!t.claude) return { ok: false, code: "no-claude", detail: "Claude Code (claude) is not installed. Install it, then copy the command." };
   const d = checkDir(rawDir);
   if ("error" in d) return { ok: false, code: "bad-dir", detail: d.error };
-  if (exists()) { const detail = `A director session (${SESSION}) is already running. Use Reset director on the Agents page to stop it, then start again.`; markLaunch(SESSION, Date.now(), detail); return { ok: false, code: "running", detail }; }
+  const SES = opts.mode === "scan" ? scanSession() : SESSION;
+  if ((exists ?? (() => tmuxHas(SES)))()) { const detail = `A director session (${SES}) is already running. Use Reset director on the Agents page to stop it, then start again.`; markLaunch(SES, Date.now(), detail); return { ok: false, code: "running", detail }; }
   let resume: string | undefined, why: string | undefined;
   if (opts.resume) {
     if (!SESSION_ID.test(opts.resume)) why = "The last session id is not valid.";
@@ -162,18 +164,18 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
     if (home) cwd = home;
     cmd = directorCommand(d.dir, { mode, resume, promptFile, roots: opts.roots, ...(home ? { home } : {}) });
   }
-  if (process.env.AGENTNET_NO_DIRECTOR_START) return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}` }; // scratch and screenshot runs: validate, write the prompt, never spawn
-  clearDeath(SESSION);
+  if (process.env.AGENTNET_NO_DIRECTOR_START) return { ok: true, session: SES, attach: `tmux attach -t ${SES}` }; // scratch and screenshot runs: validate, write the prompt, never spawn
+  clearDeath(SES);
   // Claude Code asks "do you trust this folder" once per folder. Answer it ahead of time for the folder we start in (merge, with a backup); the pane watcher is the fallback.
   const trusted = [...new Set([cwd, d.dir])];
   const tr = acceptTrust([cwd]);
   if (tr.error) logEvent("warn", "trust not pre-accepted", { error: tr.error });
   // remain-on-exit for this session only (never -g): when claude exits the pane stays, so the server can read why (windows.ts reapDead)
-  const r = run("tmux", ["new-session", "-d", "-s", SESSION, "-c", cwd, "sh", "-c", cmd, ";", "set-option", "-t", `=${SESSION}:`, "remain-on-exit", "on"]);
-  if (r.status !== 0) { const detail = (r.stderr ?? "").trim() || "tmux could not start the session."; markLaunch(SESSION, Date.now(), detail); return { ok: false, code: "failed", detail }; }
-  markLaunch(SESSION, Date.now(), undefined, trusted);
-  logEvent("info", "director started", { session: SESSION, dir: d.dir, mode: mode ?? "plain", resumed: !!resume });
-  return { ok: true, session: SESSION, attach: `tmux attach -t ${SESSION}`, ...(opts.resume ? { resumed: !!resume, ...(why ? { why } : {}) } : {}) };
+  const r = run("tmux", ["new-session", "-d", "-s", SES, "-c", cwd, "sh", "-c", cmd, ";", "set-option", "-t", `=${SES}:`, "remain-on-exit", "on"]);
+  if (r.status !== 0) { const detail = (r.stderr ?? "").trim() || "tmux could not start the session."; markLaunch(SES, Date.now(), detail); return { ok: false, code: "failed", detail }; }
+  markLaunch(SES, Date.now(), undefined, trusted);
+  logEvent("info", "director started", { session: SES, dir: d.dir, mode: mode ?? "plain", resumed: !!resume });
+  return { ok: true, session: SES, attach: `tmux attach -t ${SES}`, ...(opts.resume ? { resumed: !!resume, ...(why ? { why } : {}) } : {}) };
 }
 
 export type PickResult = { ok: true; dir: string } | { ok: false; code: "cancelled" | "unsupported" | "failed"; detail: string };
@@ -226,7 +228,7 @@ export interface ResetDeps {
 /** Remove what a director setup wrote under the agentnet home, so the next setup is a first run. Never touches a project folder, ~/.claude, or a CLAUDE.md the user edited. */
 export function cleanDirectorFiles(root = ROOT): string[] {
   const out: string[] = [];
-  clearLaunch(); clearDeath(SESSION);
+  clearLaunch(); clearDeath(SESSION); clearDeath(scanSession());
   for (const f of [promptPath("adopt", root), promptPath("scan", root), scanMarkerPath(root)]) { try { if (existsSync(f)) { unlinkSync(f); out.push(f); } } catch { /* gone */ } }
   const note = join(root, "director", "CLAUDE.md");
   try { if (readFileSync(note, "utf8") === HOME_NOTE) { unlinkSync(note); out.push(note); } rmdirSync(join(root, "director")); } catch { /* edited, missing or not empty: leave it */ }

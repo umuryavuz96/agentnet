@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # spawn-agent.sh <name> [--project DIR] [--model ID] [--soul CATALOG_ID] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT] [--boot-prompt TEXT] [--job TEXT] [--goal TEXT] [--boss NAME]
-#                      [--force-mem] [--no-wait] [--ready-timeout SECS]
+#                      [--force-mem] [--no-wait] [--ready-timeout SECS] [--mcp a,b]
 # agentnet's spawner. Registers the agent with agentnet (POST /agentnet/spawn -> 0600 token file), then starts
 # claude in a DETACHED tmux session agentnet-<name> with --plugin-dir plugin. Soul + house rules go in via
 # --append-system-prompt-file. Without --model/--soul the SERVICE picks them (and the effort) from --scope/--novelty/--risk/--need/--ask
@@ -11,7 +11,7 @@ die() { echo "spawn-agent: $*" >&2; exit 1; }
 [ $# -ge 1 ] || { sed -n '2,3p' "$0"; exit 2; }
 NAME=$1; shift
 case "$NAME" in ''|*[!a-z0-9-]*|-*) die "name must be lowercase letters, digits, dashes: $NAME" ;; esac
-PROJECT=$PWD PROJECT_SET=0 MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60
+PROJECT=$PWD PROJECT_SET=0 MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60 MCP="${AGENTNET_SPAWN_MCP:-playwright}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) PROJECT="${2:?--project needs a path}"; PROJECT_SET=1; shift 2 ;;
@@ -27,6 +27,7 @@ while [ $# -gt 0 ]; do
     --goal) GOAL="${2:?--goal needs a text}"; shift 2 ;;   # what done looks like (8+ chars); the service refuses a new agent without one
     --boss) BOSS="${2:?--boss needs a name}"; shift 2 ;;
     --force-mem) FORCE_MEM=1; shift ;;
+    --mcp) MCP="${2?--mcp needs a comma list (or empty for none)}"; shift 2 ;;   # .mcp.json servers to enable for this agent; all others are disabled (default playwright)
     --no-wait) WAIT=0; shift ;;
     --ready-timeout) READY_TIMEOUT="${2:?needs seconds}"; shift 2 ;;
     --team) TEAM="${2:?--team needs a team id}"; shift 2 ;;   # agentnet team id: the server adds the agent as a member (unknown id is ignored there)
@@ -138,21 +139,38 @@ BOOT="$(mktemp "$BOOT_DIR/boot-XXXXXX")"
 } > "$BOOT"
 chmod 700 "$BOOT"
 
+# First-run questions: Claude Code asks "trust this folder?" (default: No, exit) and "enable these .mcp.json servers?" in a folder it has not seen.
+# A detached session cannot answer them and dies. Answer both in ~/.claude.json first; only the servers in --mcp are enabled.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUN_BIN="$(command -v bun || true)"; [ -n "$BUN_BIN" ] || BUN_BIN="$HOME/.bun/bin/bun"
+if [ -x "$BUN_BIN" ]; then
+  "$BUN_BIN" "$REPO_DIR/src/cli.ts" trust "$PROJECT" --enable "$MCP" >&2 || echo "spawn-agent: WARNING could not pre-answer Claude Code's first-run questions for $PROJECT" >&2
+else echo "spawn-agent: WARNING bun not found; first-run questions of Claude Code are not pre-answered" >&2; fi
+
 S="agentnet-$NAME"
 tmux kill-session -t "=$S" 2>/dev/null || true
 tmux new-session -d -s "$S" -n "$NAME" -c "$PROJECT" "$BOOT" || die "tmux new-session -d -s $S failed"
+tmux set-option -t "=$S" remain-on-exit on >/dev/null 2>&1 || true   # keep the last screen readable when claude exits
 tmux set-option -t "=$S" automatic-rename off >/dev/null 2>&1 || true
 curl -s -m 3 -o /dev/null ${AUTH[@]+"${AUTH[@]}"} -H 'content-type: application/json' \
   -X POST "$URL/agents/$NAME/placement" -d "$(printf '{"tmux":"%s"}' "$S")" || true
 echo "spawn-agent: launched '$NAME' in detached tmux session $S (no window; open it from the Agents page)"
 
 if [ "$WAIT" = 1 ]; then
+  LAST=""
   for _ in $(seq 1 "$READY_TIMEOUT"); do
     if curl -s -m 3 ${AUTH[@]+"${AUTH[@]}"} "$URL/agents/$NAME" | grep -q '"life":"live"'; then
       echo "status=ready"; exit 0
     fi
+    if tmux has-session -t "=$S" 2>/dev/null; then
+      SCREEN="$(tmux capture-pane -p -t "=$S:" 2>/dev/null | sed 's/[[:space:]]*$//' | grep -v '^$' | tail -15 || true)"
+      [ -z "$SCREEN" ] || LAST="$SCREEN"
+    else
+      echo "status=session-ended (tmux session $S is gone before the agent joined)" >&2; break
+    fi
     sleep 1
   done
-  echo "status=spawned-not-yet-live (waited ${READY_TIMEOUT}s; check the Agents page)" >&2
-  echo "spawn-agent: if it stays offline, Claude Code may be asking to trust the folder: run 'tmux attach -t agentnet-$NAME', answer, then detach with Ctrl-b d" >&2
+  [ -n "$LAST" ] && { echo "spawn-agent: last lines of the session before it ended or timed out:" >&2; printf '%s\n' "$LAST" | sed 's/^/  | /' >&2; }
+  echo "status=spawned-not-yet-live (waited up to ${READY_TIMEOUT}s; check the Agents page)" >&2
+  echo "spawn-agent: if it stays offline, Claude Code may be asking something: run 'tmux attach -t agentnet-$NAME', answer, then detach with Ctrl-b d" >&2
 fi

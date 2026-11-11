@@ -14,6 +14,9 @@ import { live, onPatch } from "./store";
 
 export const rootSession = () => process.env.AGENTNET_ROOT_SESSION ?? "agentnet-root";
 export const sessionOf = (name: string) => (name === "root" ? rootSession() : `agentnet-${name}`);
+/** The read-only setup scan (adopt) is its own agent, never "root": the real director's name stays free for it. */
+export const SCAN_AGENT = "setup-scan", SCAN_JOB = "Setup scan";
+export const scanSession = () => sessionOf(SCAN_AGENT);
 export const isAgentSession = (s: string) => s.startsWith("agentnet-") && s !== rootSession();
 /** The .command Terminal.app runs: attach, and when the attach ends (detach or session gone) close its own window. */
 export const commandFile = (session: string) => `#!/bin/bash

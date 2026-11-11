@@ -16,6 +16,7 @@ const HELP = `agentnet: a local network for Claude Code agents
   council <project> <team> "<job>" "<name=angle,...>" "<roles>" [--go] [--ask T]   plan a council team (spawn it with --go)
   install-hooks [--write]   print the triage hook snippet for ~/.claude/settings.json; --write merges it (backup first)
   plan-spawn --job TEXT [--project DIR] [--role R] ...   where a new agent would land (name, boss, team, model, soul); changes nothing
+  trust <dir> [--enable a,b]   answer Claude Code's trust + .mcp.json questions for a folder (spawn does this itself)
   despawn <name> [--reason R]
   adopt scan --dir D [--static] | plan --scan ID [--accept all|recommended] | apply --plan ID [--confirm-global] | rollback [RUN] [--force] | runs
                             adopt an existing workspace: scan, preview, apply with a backup, roll back. rollback and runs work with the server down
@@ -361,6 +362,15 @@ async function main(): Promise<number> {
     case "plan-spawn": return planSpawn(rest);
     case "despawn": return despawn(rest);
     case "adopt": return adopt(rest);
+    case "trust": { // agentnet trust <dir> [--enable a,b]: answer Claude Code's trust + .mcp.json questions for a folder (spawn-agent.sh calls this)
+      const i = rest.indexOf("--enable"), dir = rest.filter((x, k) => x !== "--enable" && k !== i + 1)[0];
+      if (!dir) { console.error("usage: agentnet trust <dir> [--enable a,b]"); return 2; }
+      const { preAnswerProject } = await import("./net/claude-trust");
+      const r = preAnswerProject(dir, i >= 0 && rest[i + 1] ? { enable: rest[i + 1]!.split(",").filter(Boolean) } : {});
+      if (r.error) { console.error(`agentnet: trust: ${r.error}`); return 1; }
+      console.log(r.changed.length ? `trusted ${dir}; mcp enabled: ${r.enabled.join(",") || "-"}; disabled: ${r.disabled.join(",") || "-"}` : `${dir}: nothing to change`);
+      return 0;
+    }
     case "status": return status();
     case "init": return init(rest);
     case "doctor": return doctor();

@@ -20,6 +20,11 @@ describe("adopt helpers", () => {
     ]);
     expect(p.findings).toEqual({ f1: "apply", f2: "skip", f3: "apply", f4: "skip", f5: "skip" });
   });
+  test("predecessor leftovers are on by default, and only they", () => {
+    const p = defaultPicks([f({ id: "f1", suggestion: "neutralise-lines", confidence: "low", actions: [
+      { id: "a1", op: "disable-lines", file: "/w/CLAUDE.md", fromLine: 3, toLine: 3, why: "w", legacy: true }, { id: "a2", op: "disable-lines", file: "/w/CLAUDE.md", fromLine: 9, toLine: 9, why: "w" }] })]);
+    expect(p).toEqual({ findings: { f1: "apply" }, skipActions: ["a2"] });
+  });
   test("picked files are unique and only for applied cards", () => {
     const fs = [
       f({ id: "f1", suggestion: "switch-off", actions: [{ id: "a1", op: "park-hook", file: "/w/s.json", event: "Stop", commandIncludes: "x" }, { id: "a2", op: "park-mcp", file: "/w/s.json", server: "p" }] }),

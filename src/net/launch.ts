@@ -195,8 +195,8 @@ const realPluginLoaded = (s: string, t: Tmux = realTmux): boolean | null => {
   return ps.exitCode === 0 ? pluginInPs(new TextDecoder().decode(ps.stdout), pid) : null;
 };
 const capturePane = (s: string, t: Tmux = realTmux): string => { const r = t.run(["capture-pane", "-p", "-t", `=${s}:`]); return r.code === 0 ? r.out : ""; };
-/** Latest connectedAt of a live root agent. */
-const rootHelloAt = (): number | null => { const r = all().filter((a) => a.name === "root" && a.life === "live").map((a) => a.connectedAt ?? 0); return r.length ? Math.max(...r) : null; };
+/** Latest connectedAt of a live root agent or of the setup scan. */
+const rootHelloAt = (): number | null => { const r = all().filter((a) => (a.name === "root" || a.name === "setup-scan") && a.life === "live").map((a) => a.connectedAt ?? 0); return r.length ? Math.max(...r) : null; };
 const real: LaunchDeps = { now: Date.now, hasSession: (s) => tmuxHas(s), capture: (s) => capturePane(s), helloAt: rootHelloAt, pluginLoaded: (s) => realPluginLoaded(s) };
 
 /** What to do about the output of a director that died. */

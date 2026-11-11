@@ -54,9 +54,12 @@ const ROOT_TOOLS: ToolSpec[] = [
     inputSchema: obj({ job: str("what it is for"), goal: str("the outcome that means it is done (needed by spawn, ignored here)"), project: str("project folder"), role: str("role, else inferred from the job"), name: str("fixed name, else the next free <role>-N"), boss: str("explicit boss"), team: str("explicit team id"), model: str("explicit model"), effort: str("explicit effort"), soul: str("explicit persona id"), scope: int("1-5, default 2"), novelty: int("1-3, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner\'s words") }, ["job"]) },
   { name: "grade", description: "Root: grade a finished task of an agent (1-5) for its scorecard. rework = root had to ask for a fix on it; owner_rounds = how many back-and-forth rounds the owner needed on the job before it was right (0 = right first time).",
     inputSchema: obj({ agent: str("agent name"), task_id: int("the agent's task id"), grade: int("1-5"), note: str("short note; a 'rework:' prefix also marks rework"), rework: { type: "boolean", description: "a fix was requested on this task" }, owner_rounds: int("rounds the owner needed, 0 = right first time") }, ["agent", "task_id", "grade"]) },
-  { name: "adopt_facts", description: "Root, adopt scan only: the facts collected from the workspace (signals with refs g1..., repos, roots). Read-only.", inputSchema: obj({}) },
-  { name: "adopt_report", description: "Root, adopt scan only: submit the findings. Every evidence signal must be a ref from adopt_facts; actions use the ops park-hook, park-mcp, disable-lines, register-souls, manual. Nothing is applied until the owner clicks Apply.", inputSchema: obj({ summary: str("what you found, 2-3 plain sentences"), findings: { type: "array", description: "findings, riskiest first, max 40", items: { type: "object" } } }, ["summary", "findings"]) },
   { name: "despawn", description: "Root: retire an agent (token revoked, session closed).", inputSchema: obj({ agent: str("agent name"), reason: str("why") }, ["agent"]) },
+];
+const SCAN_TOOLS: ToolSpec[] = [
+  { name: "adopt_facts", description: "Setup scan only: the facts collected from the workspace (signals with refs g1..., repos, roots). Read-only.", inputSchema: obj({}) },
+  { name: "adopt_report", description: "Setup scan only: submit the findings (again later if the owner asks for changes: the newer report replaces the old one and the plan is reset). Every evidence signal must be a ref from adopt_facts; actions use the ops park-hook, park-mcp, disable-lines, register-souls, manual. Nothing is applied until the owner agrees (adopt_apply or the Apply button).", inputSchema: obj({ summary: str("what you found, 2-3 plain sentences"), findings: { type: "array", description: "findings, riskiest first, max 40", items: { type: "object" } } }, ["summary", "findings"]) },
+  { name: "adopt_apply", description: "Setup scan only: apply the setup once the owner has said yes in this chat (go, yes, apply, finalize). Same as the Apply button: backups are kept and Rollback works. Moved lines are found again by themselves. Without a plan the default picks are used. Set ownerAgreed true only after the owner agreed. If it says files outside the workspace change, tell the owner which in plain words and call again with includeGlobal true after they agree. This session closes a moment later.", inputSchema: obj({ ownerAgreed: { type: "boolean", description: "true only after the owner agreed in this chat" }, includeGlobal: { type: "boolean", description: "true when the owner agreed to changes to files in ~/.claude" } }, ["ownerAgreed"]) },
 ];
 /** tool name → method + path (+ body) on the service. */
 const ROUTES: Record<string, (a: Json) => { method: string; path: string; body?: Json }> = {
@@ -70,7 +73,7 @@ const ROUTES: Record<string, (a: Json) => { method: string; path: string; body?:
   set_status: (a) => ({ method: "POST", path: "/status", body: a }),
   list_agents: (a) => ({ method: "GET", path: `/agents${a.all ? "?all=1" : ""}` }), get_status: (a) => ({ method: "GET", path: `/agents/${encodeURIComponent(String(a.agent))}${a.events ? `?events=${Number(a.events)}` : ""}` }),
   grade: (a) => { const { agent, ...rest } = a; return { method: "POST", path: `/agents/${encodeURIComponent(String(agent))}/grade`, body: rest }; },
-  adopt_facts: () => ({ method: "GET", path: "/adopt/facts" }), adopt_report: (a) => ({ method: "POST", path: "/adopt/report", body: a }),
+  adopt_facts: () => ({ method: "GET", path: "/adopt/facts" }), adopt_report: (a) => ({ method: "POST", path: "/adopt/report", body: a }), adopt_apply: (a) => ({ method: "POST", path: "/adopt/apply", body: a }),
   spawn: (a) => ({ method: "POST", path: "/spawn", body: a }), plan_spawn: (a) => ({ method: "POST", path: "/plan-spawn", body: a }), despawn: (a) => ({ method: "POST", path: "/despawn", body: a }),
 };
 /** Secrets typed in a command must not reach the event log: blank values after token/key/secret/password/authorization words and long hex or base64 runs. */
@@ -138,7 +141,7 @@ async function hello($: $): Promise<boolean> {
   const h = await api($, "POST", "/hello", { session: S.session, pid, version: ver.version, model, client: "claude-code" }).catch(() => ({ ok: false, status: 0, json: null as Json | null }));
   if (!S.versionWarned && olderThan(String(ver.version ?? ""), MIN_VERSION)) { S.versionWarned = true; $.ui.log(`agentnet: Claude Code ${ver.version} is older than ${MIN_VERSION}. Use ${MIN_VERSION} or later (${RECOMMENDED_VERSION}+ recommended); tools and messages may not work.`); }
   if (!h.ok) { status($, `agentnet: hello failed (${h.status || "no service"})`); return false; }
-  if (!S.registered) { S.registered = true; const root = h.json?.root === true; await Promise.all([...WORKER_TOOLS, ...(root ? ROOT_TOOLS : [])].map((t) => $.tool.register(t))); }
+  if (!S.registered) { S.registered = true; const root = h.json?.root === true, scan = h.json?.scan === true; await Promise.all([...WORKER_TOOLS, ...(root ? ROOT_TOOLS : []), ...(scan ? SCAN_TOOLS : [])].map((t) => $.tool.register(t))); }
   status($, undefined);
   await note($);
   return true;
@@ -179,7 +182,7 @@ async function poll($: $) {
 /** Adopt scan phase (env AGENTNET_ADOPT_PHASE=scan, set by the scan command): the director may only read inside the scan roots and use the adopt/task tools. A test keeps DENY equal to src/net/adopt-safe.ts. */
 export const SCAN_DENY_NAMES: RegExp[] = [/^\.env(\..*)?$/i, /\.pem$/i, /\.key$/i, /\.p12$/i, /^id_rsa/i, /^id_ed25519/i, /\.kdbx$/i, /credentials/i, /secret/i, /token/i];
 export const SCAN_DENY_HOME = [".ssh", ".aws", ".gnupg", "Library/Keychains", ".config/gcloud", ".docker/config.json", ".npmrc", ".netrc"];
-const SCAN_OK = new Set(["mcp__agentnet__adopt_facts", "mcp__agentnet__adopt_report", "mcp__agentnet__set_status", "mcp__agentnet__task_add", "mcp__agentnet__task_start", "mcp__agentnet__task_done", "ToolSearch"]);
+const SCAN_OK = new Set(["mcp__agentnet__adopt_facts", "mcp__agentnet__adopt_report", "mcp__agentnet__adopt_apply", "mcp__agentnet__set_status", "mcp__agentnet__task_add", "mcp__agentnet__task_start", "mcp__agentnet__task_done", "ToolSearch"]);
 const norm = (p: string) => { const out: string[] = []; for (const s of p.split("/")) { if (s === "..") out.pop(); else if (s && s !== ".") out.push(s); } return "/" + out.join("/"); };
 /** Null when the call may run during a scan, else the reason. Lexical on purpose: the plugin has no realpath. */
 export function scanGate(tool: string, ev: Json, roots: string[], home: string): string | null {

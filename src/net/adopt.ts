@@ -11,12 +11,12 @@ import { audit, logEvent } from "../core/logger";
 import { writeAtomic } from "./adopt-safe";
 import { collectFacts, type Facts } from "./adopt-scan";
 import { MAX_ACTIONS, validateReport, type Action, type AdoptReport, type Evidence, type Finding } from "./adopt-report";
-import { buildPlan, type Picks, type Plan } from "./adopt-plan";
+import { buildPlan, defaultPicksFor, relocateLines, type Picks, type Plan } from "./adopt-plan";
 import { applyPlan, listRuns, noteLateFile, rollbackRun } from "./adopt-apply";
 import { explainReport } from "./adopt-explain";
 import { launchView, setBeforeAnswer, setParkedMcp } from "./launch";
-import { checkDir, ensureDirectorHome, hasRoot, hasSession, killScanSession as realKill, SESSION, startDirector as realStart, writeScanMarker } from "./director";
-import { createdOf } from "./windows";
+import { checkDir, ensureDirectorHome, hasRoot, hasScanSession, hasSession, killScanSession as realKill, SESSION, startDirector as realStart, writeScanMarker } from "./director";
+import { createdOf, SCAN_AGENT, scanSession } from "./windows";
 import { byName, retireAgent } from "./routes";
 import { loadRoles } from "./arsenal";
 import { wsRoles } from "./workspace";
@@ -24,8 +24,8 @@ import { scriptOf } from "./hooks";
 import { redactText } from "./adopt-safe";
 
 export type Phase = "idle" | "scanning" | "reported" | "planned" | "applying" | "applied" | "rolledback";
-export interface AdoptState { phase: Phase; workspace: string | null; mode: "clean" | "adopt" | null; scanner: "director" | "static" | null; scanId: string | null; planId: string | null; runId: string | null; scanStartedAt: number | null; error: string | null; updatedAt: number }
-const EMPTY: AdoptState = { phase: "idle", workspace: null, mode: null, scanner: null, scanId: null, planId: null, runId: null, scanStartedAt: null, error: null, updatedAt: 0 };
+export interface AdoptState { phase: Phase; workspace: string | null; mode: "clean" | "adopt" | null; scanner: "director" | "static" | null; scanId: string | null; planId: string | null; runId: string | null; scanStartedAt: number | null; error: string | null; /** line edits apply could not place again (the text is gone from the file) */ skipped: string[]; updatedAt: number }
+const EMPTY: AdoptState = { phase: "idle", workspace: null, mode: null, scanner: null, scanId: null, planId: null, runId: null, scanStartedAt: null, error: null, skipped: [], updatedAt: 0 };
 /** The director has this long to report; a session that never shows up is declared failed after SESSION_GRACE_MS. */
 export const SCAN_TIMEOUT_MS = 180_000, SESSION_GRACE_MS = 20_000;
 
@@ -36,14 +36,18 @@ export const seams = {
   killScanSession: ((...a: Parameters<typeof realKill>) => realKill(...a)) as typeof realKill,
   hasSession: ((...a: Parameters<typeof hasSession>) => hasSession(...a)) as typeof hasSession,
   hasRoot: (() => hasRoot()) as typeof hasRoot,
+  /** the setup scan's own tmux session */
+  hasScan: (() => hasScanSession()) as typeof hasScanSession,
+  /** chat-triggered apply closes the scan session it was called from: do that after the tool answered */
+  later: ((fn: () => void, ms: number) => { setTimeout(fn, ms); }) as (fn: () => void, ms: number) => void,
 };
 const startDirector: typeof realStart = (...a) => seams.startDirector(...a);
 const killScanSession = () => seams.killScanSession();
-/** The scan session joins as "root" (agentnet-join.sh). Once it is stopped its row must go too, or the real director's join is refused
- *  with "root is live already". Only when this flow started a director scan; a root that is not the scan's is left alone. */
+/** The scan session joins as "setup-scan", never "root" (agentnet-join.sh). Once it is stopped its row must go too.
+ *  Only when this flow started a director scan. The name is the scan's alone, so a real director is never touched. */
 export function retireScanRoot(): boolean {
-  const st = loadState(); if (st.scanner !== "director" || st.phase === "applied") return false;
-  const a = byName("root"); if (!a) return false;
+  const st = loadState(); if (st.scanner !== "director") return false;
+  const a = byName(SCAN_AGENT); if (!a) return false;
   retireAgent(a, "replaced"); return true;
 }
 
@@ -59,6 +63,8 @@ export function setState(patch: Partial<AdoptState>): AdoptState {
 }
 const clearCurrent = () => rmSync(join(dirOf(), "current"), { recursive: true, force: true });
 const loadFacts = () => readJson<Facts & { scanId: string }>(cur("facts.json"));
+/** The stored report (tests and callers that need the raw findings). */
+export const loadStateReport = () => loadReport()!;
 const loadReport = () => readJson<AdoptReport>(cur("report.json"));
 const loadPlan = () => readJson<Plan>(cur("plan.json"));
 const newScanId = () => "scan-" + randomBytes(4).toString("hex");
@@ -123,12 +129,14 @@ type Ok<T> = { ok: true } & T;
 /** The one place a report enters: validate against the facts of the active scan, store, move to `reported`. */
 export function submitReport(raw: unknown, scanner: "director" | "static"): Ok<{ report: AdoptReport }> | Fail {
   const st = loadState(), facts = loadFacts();
-  if (st.phase !== "scanning" || !facts) return { ok: false, status: 409, title: "Conflict", detail: "no scan in progress" };
+  // a newer report replaces the old one while nothing is applied (the scan session may report again after the owner asked for changes)
+  if (!(st.phase === "scanning" || st.phase === "reported" || st.phase === "planned") || !facts) return { ok: false, status: 409, title: "Conflict", detail: "no scan in progress" };
   const v = validateReport(raw, facts, { scanId: facts.scanId, scanner, builtinRoles: builtinRoles() });
   if (!v.ok) return { ok: false, status: 400, title: "Bad Request", detail: `the report did not validate: ${v.errors.slice(0, 5).join("; ")}`, errors: v.errors };
   putJson(cur("report.json"), v.report);
-  setState({ phase: "reported", error: null });
-  audit("agent:root", "agentnet.adopt.report", facts.scanId, "ok", undefined, { findings: v.report.findings.length, scanner });
+  rmSync(cur("plan.json"), { force: true }); // the picks and the plan belonged to the old report
+  setState({ phase: "reported", planId: null, runId: null, error: null, skipped: [] });
+  audit(`agent:${SCAN_AGENT}`, "agentnet.adopt.report", facts.scanId, "ok", undefined, { findings: v.report.findings.length, scanner });
   return { ok: true, report: v.report };
 }
 
@@ -157,7 +165,7 @@ export function startScan(dirIn: unknown, mode: "director" | "static"): Ok<{ sca
   } else {
     const r = startDirector(d.dir, undefined, undefined, undefined, { mode: "scan", root: ROOT, roots: facts.roots });
     if (!r.ok) { setState({ phase: "idle", error: r.detail ?? "could not start" }); return { ok: false, status: r.code === "running" ? 409 : r.code === "bad-dir" ? 400 : 422, title: r.code ?? "failed", detail: r.detail ?? "could not start the scan session" }; }
-    const created = createdOf(SESSION); if (created) writeScanMarker(created, ROOT);
+    const created = createdOf(scanSession()); if (created) writeScanMarker(created, ROOT);
   }
   return { ok: true, scanId, phase: loadState().phase };
 }
@@ -196,25 +204,79 @@ setBeforeAnswer((kind) => {
   return e ? `Could not back up settings.local.json first, so nothing was answered: ${e}` : null;
 });
 
-export async function applyCurrent(planId: unknown, confirmGlobal: boolean): Promise<Ok<{ runId: string; director: { ok: boolean; detail?: string } }> | Fail> {
-  const st = loadState(), plan = loadPlan();
+/** Apply time: every line edit is checked against the file as it is now. Moved text is found again by content; text that is gone is skipped
+ *  and listed. The plan is rebuilt from the same picks, so the owner never checks a line number. Returns the plan to apply. */
+function recheckPlan(plan: Plan): { ok: true; plan: Plan; skipped: string[] } | Fail {
+  const report = loadReport();
+  if (!report) return { ok: true, plan, skipped: [] };
+  const used = new Set(plan.ops.flatMap((o) => o.fromActions)), applied = new Set(plan.ops.flatMap((o) => (o.findingId ? [o.findingId] : [])));
+  const skipped: string[] = [];
+  const fresh: AdoptReport = { ...report, findings: report.findings.map((f) => ({ ...f, actions: f.actions.flatMap((a): Action[] => {
+    if (a.op !== "disable-lines") return [a];
+    const at = relocateLines(a.file, a.fromLine, a.toLine, a.expect);
+    if (!at) { if (used.has(a.id)) skipped.push(`${basename(a.file)} (lines ${a.fromLine}-${a.toLine}): the text is no longer there`); return []; }
+    return [{ ...a, ...at }];
+  }) })) };
+  const picks: Picks = { findings: {}, actions: {} };
+  for (const f of fresh.findings) {
+    picks.findings[f.id] = applied.has(f.id) ? "apply" : "skip";
+    if (applied.has(f.id)) for (const a of f.actions) if (a.op !== "manual" && !used.has(a.id)) picks.actions![a.id] = false;
+  }
+  const r = buildPlan(fresh, picks, { runId: plan.runId, root: ROOT });
+  if (!r.ok) return { ok: false, status: 409, title: "Conflict", detail: `The files changed since the preview and the plan could not be redone: ${r.errors.join("; ")}`, errors: r.errors };
+  if (r.plan.planId !== plan.planId) { putJson(cur("plan.json"), r.plan); setState({ planId: r.plan.planId }); }
+  return { ok: true, plan: r.plan, skipped };
+}
+
+export interface ApplyOpts { /** audit actor */ by?: string; /** the caller is the scan session itself: answer first, close it a moment later */ defer?: boolean }
+export async function applyCurrent(planId: unknown, confirmGlobal: boolean, o: ApplyOpts = {}): Promise<Ok<{ runId: string; director: { ok: boolean; detail?: string }; skipped: string[] }> | Fail> {
+  const by = o.by ?? "panel", st = loadState(), stored = loadPlan();
   if (st.phase === "applying") return { ok: false, status: 409, title: "Conflict", detail: "an apply is already running" };
-  if (!plan || st.phase !== "planned" || planId !== st.planId || plan.planId !== planId) return { ok: false, status: 409, title: "Conflict", detail: "That is not the current plan. Preview again." };
-  setState({ phase: "applying" });
+  if (!stored || st.phase !== "planned" || planId !== st.planId || stored.planId !== planId) return { ok: false, status: 409, title: "Conflict", detail: "That is not the current plan. Preview again." };
+  const chk = recheckPlan(stored);
+  if (!chk.ok) return chk;
+  const plan = chk.plan, skipped = chk.skipped;
+  setState({ phase: "applying", skipped });
   const facts = loadFacts();
   const r = await applyPlan(plan, { root: ROOT, confirmGlobal, builtinRoles: builtinRoles(), repos: facts?.repos.map((x) => x.path) });
   if (!r.ok) {
     setState({ phase: "reported", planId: null, error: r.error });
-    audit("panel", "agentnet.adopt.apply", plan.runId, "failed", undefined, { error: r.error });
+    audit(by, "agentnet.adopt.apply", plan.runId, "failed", undefined, { error: r.error });
     return { ok: false, status: r.status, title: r.status === 409 ? "Conflict" : r.status === 400 ? "Bad Request" : "Internal Error", detail: r.error };
   }
-  try { killScanSession(); } catch { /* no tmux */ }
-  try { retireScanRoot(); } catch { /* none */ }
-  const souls = plan.ops.flatMap((o) => (o.op === "register-souls" ? [o.name] : []));
-  const sd = startDirector(plan.workspace, undefined, undefined, undefined, { mode: "adopt", root: ROOT, repos: facts?.repos.map((x) => x.path), souls });
+  const souls = plan.ops.flatMap((x) => (x.op === "register-souls" ? [x.name] : []));
+  const finish = () => {
+    try { killScanSession(); } catch { /* no tmux */ }
+    try { retireScanRoot(); } catch { /* none */ }
+    return startDirector(plan.workspace, undefined, undefined, undefined, { mode: "adopt", root: ROOT, repos: facts?.repos.map((x) => x.path), souls });
+  };
+  if (o.defer) {
+    setState({ phase: "applied", runId: plan.runId, error: null });
+    audit(by, "agentnet.adopt.apply", plan.runId, "ok", undefined, { files: r.manifest.files.length, skipped: skipped.length });
+    seams.later(() => { const sd = finish(); if (!sd.ok) setState({ error: sd.detail ?? "director not started" }); }, 1500);
+    return { ok: true, runId: plan.runId, director: { ok: true, detail: "starting" }, skipped };
+  }
+  const sd = finish();
   setState({ phase: "applied", runId: plan.runId, error: sd.ok ? null : sd.detail ?? "director not started" });
-  audit("panel", "agentnet.adopt.apply", plan.runId, "ok", undefined, { files: r.manifest.files.length, director: sd.ok });
-  return { ok: true, runId: plan.runId, director: { ok: sd.ok, ...(sd.detail ? { detail: sd.detail } : {}) } };
+  audit(by, "agentnet.adopt.apply", plan.runId, "ok", undefined, { files: r.manifest.files.length, director: sd.ok, skipped: skipped.length });
+  return { ok: true, runId: plan.runId, director: { ok: sd.ok, ...(sd.detail ? { detail: sd.detail } : {}) }, skipped };
+}
+
+/** The owner said yes in the scan session's chat: same path as the panel's Apply button (backups, Rollback). A plan made in the panel is used as it is; without one the default picks are planned first. */
+export async function applyFromChat(ownerAgreed: unknown, includeGlobal: boolean): Promise<Ok<{ runId: string; director: { ok: boolean; detail?: string }; skipped: string[] }> | Fail> {
+  if (ownerAgreed !== true) return { ok: false, status: 400, title: "Bad Request", detail: "ownerAgreed must be true, and only after the owner said yes in this chat" };
+  let st = loadState();
+  if (st.phase !== "reported" && st.phase !== "planned") return { ok: false, status: 409, title: "Conflict", detail: st.phase === "applied" || st.phase === "applying" ? `already ${st.phase}` : "there is no report to apply yet" };
+  if (st.phase === "reported") {
+    const report = loadReport();
+    if (!report) return { ok: false, status: 409, title: "Conflict", detail: "there is no report to apply yet" };
+    const p = makePlan(st.scanId, defaultPicksFor(report));
+    if (!p.ok) return p;
+    st = loadState();
+  }
+  const plan = loadPlan();
+  if (plan?.needsConfirmGlobal && !includeGlobal) return { ok: false, status: 400, title: "Bad Request", detail: "The plan changes files outside the workspace (~/.claude). Tell the owner in plain words which, and call again with includeGlobal true once they agree." };
+  return applyCurrent(st.planId, includeGlobal, { by: `agent:${SCAN_AGENT}`, defer: true });
 }
 
 /** Reset director: undo an applied adopt run (backed-up files restored, files adopt created removed, files you changed since kept), then forget the whole adopt state. The workspace itself is never deleted. */
@@ -253,7 +315,7 @@ export function view() {
   let st = loadState(), scan: { state: "idle" | "reading" | "ready" | "failed"; error: string | null } = { state: "idle", error: null };
   if (st.phase === "scanning") {
     const age = Date.now() - (st.scanStartedAt ?? Date.now());
-    if (st.scanner === "director" && !process.env.AGENTNET_ADOPT_STUB && (age > SCAN_TIMEOUT_MS || (age > SESSION_GRACE_MS && !seams.hasSession()))) scan = { state: "failed", error: age > SCAN_TIMEOUT_MS ? "the director did not report in time" : "the scan session ended without a report" };
+    if (st.scanner === "director" && !process.env.AGENTNET_ADOPT_STUB && (age > SCAN_TIMEOUT_MS || (age > SESSION_GRACE_MS && !seams.hasScan()))) scan = { state: "failed", error: age > SCAN_TIMEOUT_MS ? "the director did not report in time" : "the scan session ended without a report" };
     else scan = { state: "reading", error: null };
   } else if (st.phase === "reported" || st.phase === "planned") scan = { state: "ready", error: null };
   return { ...st, launch: launchView(), failed: scan.state === "failed" ? scan.error : null, scan, facts: st.phase === "idle" ? null : (() => { const f = loadFacts(); return f ? { signals: f.signals.length, repos: f.repos.length, skipped: f.skipped } : null; })(), report: explainReport(loadReport(), loadFacts()), plan: st.phase === "planned" || st.phase === "applying" ? loadPlan() : null, runs: listRuns(ROOT).slice(0, 5) };
@@ -279,11 +341,16 @@ export function adoptRoutes(api: Hono<Env>): void {
 /** Root-only agent tools (called from agentnetRoutes after its auth): the scan phase gate is here. */
 export function adoptFacts(c: Context<Env>) {
   const st = loadState(), facts = loadFacts();
-  if (st.phase !== "scanning" || !facts) return problem(c, 409, "Conflict", "no scan in progress");
+  if (!(st.phase === "scanning" || st.phase === "reported" || st.phase === "planned") || !facts) return problem(c, 409, "Conflict", "no scan in progress");
   return c.json(facts);
 }
 export function adoptReportRoute(c: Context<Env>, raw: Record<string, unknown>) {
   const r = submitReport(raw, "director");
   if (!r.ok) { logEvent("warn", "adopt report refused", { detail: r.detail }); return fail(c, r); }
   return c.json({ ok: true, scanId: r.report.scanId, findings: r.report.findings.length, phase: "reported" });
+}
+export async function adoptApplyRoute(c: Context<Env>, raw: Record<string, unknown>) {
+  const r = await applyFromChat(raw.ownerAgreed, raw.includeGlobal === true);
+  if (!r.ok) { logEvent("warn", "adopt apply from chat refused", { detail: r.detail }); return fail(c, r); }
+  return c.json({ ok: true, runId: r.runId, skipped: r.skipped, note: "applied; this session closes in a moment and the director takes over" });
 }
