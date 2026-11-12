@@ -41,7 +41,11 @@ export function updateTeam(id: string, p: { name?: string; goal?: string | null;
   return getTeam(id);
 }
 export function archiveTeam(id: string): Team | null { if (!getTeam(id)) return null; db().run("UPDATE teams SET state = 'archived' WHERE id = ?", [id]); return getTeam(id); }
-export function addMember(id: string, agent: string, now = Date.now()) { db().run("INSERT OR IGNORE INTO team_members (team_id, agent, added_at) VALUES (?, ?, ?)", [id, agent, now]); }
+/** An agent joining an archived team brings it back (a finished team that gets new work is active again). */
+export function addMember(id: string, agent: string, now = Date.now()) {
+  db().run("INSERT OR IGNORE INTO team_members (team_id, agent, added_at) VALUES (?, ?, ?)", [id, agent, now]);
+  db().run("UPDATE teams SET state = 'active' WHERE id = ? AND state = 'archived'", [id]);
+}
 export function removeMember(id: string, agent: string) { db().run("DELETE FROM team_members WHERE team_id = ? AND agent = ?", [id, agent]); const t = getTeam(id); if (t?.lead === agent) db().run("UPDATE teams SET lead = NULL WHERE id = ?", [id]); }
 /** Active teams an agent sits in. */
 export function teamsOf(agent: string): Team[] { ensureSchema(); return (db().query("SELECT t.* FROM teams t JOIN team_members m ON m.team_id = t.id WHERE m.agent = ? AND t.state = 'active' ORDER BY t.created_at").all(agent) as TRow[]).map(toTeam); }
@@ -51,6 +55,14 @@ export function sameTeam(a: string, b: string): boolean {
   return !!db().query("SELECT 1 FROM team_members x JOIN team_members y ON y.team_id = x.team_id JOIN teams t ON t.id = x.team_id WHERE x.agent = ? AND y.agent = ? AND t.state = 'active' LIMIT 1").get(a, b);
 }
 const liveAgent = (name: string) => !!db().query("SELECT 1 FROM agents WHERE name = ? AND archived_at IS NULL").get(name);
+/** After `agent` was despawned: archive every active team it sat in that has no live member left (an unarchived agent row counts as live,
+ *  so channel bots keep their team open). `isDirector` names the director, which is always live and so never keeps a team open alone.
+ *  Only called on a despawn, so a team that never had an agent is never touched. Returns the archived ids. */
+export function archiveAbandoned(agent: string, isDirector: (name: string) => boolean = () => false): string[] {
+  const done: string[] = [];
+  for (const t of teamsOf(agent)) if (!t.members.some((m) => !isDirector(m) && liveAgent(m))) { archiveTeam(t.id); done.push(t.id); }
+  return done;
+}
 /** Teams where `agent` is a non-lead member of a team that has a live lead: the lead is the only door into them for outsiders.
  *  A lead that was despawned (no live agent row) opens no door, so the gate lifts and the boss chain and root reach the members. */
 const gatedTeams = (agent: string) => teamsOf(agent).filter((t) => t.lead && t.lead !== agent && liveAgent(t.lead));

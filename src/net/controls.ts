@@ -151,8 +151,8 @@ export function agentControlRoutes(api: Hono<Env>, deps: RunDeps = realRun) {
     if (name === "root") return problem(c, 403, "Forbidden", "root cannot be despawned");
     if (!t) return problem(c, 404, "Not Found", "no live agent by that name");
     const told = adminAction(t, "close", ""); // before the retire: the boss hears about it even when the agent is gone a moment later
-    retireAgent(t, "despawn", Date.now(), deps.kill);
-    audit(c.get("actor"), "agentnet.despawn", t.id, "ok", c.get("trace"), { via: "panel" });
-    return c.json({ agent: t.id, state: "gone", told });
+    const closed = retireAgent(t, "despawn", Date.now(), deps.kill);
+    audit(c.get("actor"), "agentnet.despawn", t.id, "ok", c.get("trace"), { via: "panel", ...(closed.length ? { teams_archived: closed.join(",") } : {}) });
+    return c.json({ agent: t.id, state: "gone", told, ...(closed.length ? { teams_archived: closed } : {}) });
   });
 }

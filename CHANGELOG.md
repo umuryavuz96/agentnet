@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.9
+
+The numbers in agent names stop climbing, and a finished team closes by itself.
+
+**Agent names**
+
+- A new agent could be named `mobile-dev-20` in a team that had never had a mobile developer. The next number was taken from the member lists of every team, and those lists keep the names of agents that were closed long ago. The number now comes from running agents only: a new agent gets the lowest `<role>-N` that no running agent holds, so the first one is `mobile-dev-1` again. Names stay unique across the machine, so two teams that both run a mobile developer get `-1` and `-2`.
+- `spawn-agent.sh @mobile-dev` lets the service pick the number. The script reads the final name from the reply and prints it. A full name such as `mobile-dev-3` still works. If that name is running already, the error says so and tells you to give the role alone.
+
+**Teams**
+
+- A team is archived when its last agent is closed, from the command line, the API or the Close button. The reply lists the teams that were closed (`teams_archived`). A team with a running member stays open, and so does a team that has not had an agent yet. The director alone does not keep a team open.
+- An archived team becomes active again when an agent joins it.
+
 ## 0.5.8
 
 The map no longer keeps finished teams listed.

@@ -88,3 +88,57 @@ describe("teams", () => {
     expect((await j(await call("dev-1", "GET", "/teams"))).body.teams.map((t: { id: string }) => t.id)).not.toContain("turntable");
   });
 });
+
+describe("teams close themselves", () => {
+  const mk = (name: string) => { tok[name] = rt.createAgent({ name, boss: "root", job: "t", by: "test" }).token; };
+  const state = async (id: string) => (await j(await call("root", "GET", `/teams/${id}`))).body.team.state;
+  const despawn = async (name: string) => j(await call("root", "POST", "/despawn", { agent: name }));
+
+  test("the last despawn archives the team; one live member keeps it open; a team with no agent yet stays open", async () => {
+    mk("ca-1"); mk("ca-2");
+    expect((await j(await call("root", "POST", "/teams", { name: "Closer", members: ["ca-1", "ca-2"] }))).status).toBe(201);
+    expect((await j(await call("root", "POST", "/teams", { name: "Waiting", goal: "agents join later", members: ["ca-later-1"] }))).status).toBe(201); // council.sh: team first, agents a moment later
+    const first = await despawn("ca-1"); expect(first.status).toBe(200); expect(first.body.teams_archived).toBeUndefined();
+    expect(await state("closer")).toBe("active");
+    const last = await despawn("ca-2"); expect(last.body.teams_archived).toEqual(["closer"]);
+    expect(await state("closer")).toBe("archived");
+    expect(await state("waiting")).toBe("active");
+    expect((await j(await call("root", "GET", "/teams"))).body.teams.map((t: { id: string }) => t.id)).not.toContain("closer");
+  });
+
+  test("a team with a live channel bot (kind member) is not archived when the last agent leaves", async () => {
+    rt.createAgent({ name: "ca-chan", boss: "root", job: "t", by: "test", kind: "member" }); mk("ca-3");
+    await call("root", "POST", "/teams", { name: "Bot Team", members: ["ca-chan", "ca-3"] });
+    expect((await despawn("ca-3")).body.teams_archived).toBeUndefined();
+    expect(await state("bot-team")).toBe("active");
+  });
+
+  test("a team created with zero agents is not archived by an unrelated despawn", async () => {
+    mk("ca-solo");
+    await call("root", "POST", "/teams", { name: "Empty Team", goal: "agents join later" });
+    await call("root", "POST", "/teams", { name: "Other Team", members: ["ca-solo"] });
+    expect((await despawn("ca-solo")).body.teams_archived).toEqual(["other-team"]);
+    expect(await state("empty-team")).toBe("active");
+  });
+
+  test("the director alone does not keep a team open: members [root, x-1], despawn x-1 -> archived", async () => {
+    mk("x-1");
+    await call("root", "POST", "/teams", { name: "With Director", members: ["root", "x-1"] });
+    expect((await despawn("x-1")).body.teams_archived).toEqual(["with-director"]);
+    expect(await state("with-director")).toBe("archived");
+  });
+
+  test("an agent joining an archived team brings it back (spawn --team and members add)", async () => {
+    mk("ca-4");
+    await call("root", "POST", "/teams", { name: "Back", members: ["ca-4"] });
+    expect((await despawn("ca-4")).body.teams_archived).toEqual(["back"]);
+    expect(await state("back")).toBe("archived");
+    expect((await j(await call("root", "POST", "/spawn", { name: "ca-5", boss: "root", team: "back", goal: "come back to life" }))).status).toBe(201);
+    expect(await state("back")).toBe("active");
+    expect((await despawn("ca-5")).body.teams_archived).toEqual(["back"]);
+    mk("ca-6");
+    await call("root", "POST", "/teams/back/members", { add: ["ca-6"] });
+    expect(await state("back")).toBe("active");
+  });
+
+});

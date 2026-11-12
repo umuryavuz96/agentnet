@@ -147,6 +147,14 @@ describe("routes", () => {
     expect(st.events(id).some((e) => e.type === "AdminAction" && (e.data as { action: string }).action === "close")).toBe(true);
     expect((await req("POST", "/despawn")).status).toBe(404);
   });
+  test("Close: the last live member leaving archives its team, a team with a live member stays open", async () => {
+    const { createTeam, getTeam } = await import("./teams");
+    createTeam({ id: "ctl-team", name: "ctl-team", members: ["ctl-agent"] });
+    createTeam({ id: "ctl-shared", name: "ctl-shared", members: ["ctl-agent", "lead-1"] });
+    const r = (await (await req("POST", "/despawn")).json()) as { teams_archived?: string[] };
+    expect(r.teams_archived).toEqual(["ctl-team"]);
+    expect(getTeam("ctl-team")!.state).toBe("archived"); expect(getTeam("ctl-shared")!.state).toBe("active");
+  });
   test("root cannot be stopped or closed from the panel; the message shows as from admin", async () => {
     for (const p of ["/stop", "/despawn"]) expect((await app.request(`/api/v1/agentnet/agents/root${p}`, { method: "POST" })).status).toBe(403);
     expect(rt.nameMap().get("@panel")).toBe("admin");

@@ -71,11 +71,11 @@ export function inferRole(job: string, cfg: PlacementConfig): { role: string; wh
     : { role: cfg.default_role, why: `role ${cfg.default_role}: no job word matched a role keyword; the default` };
 }
 
-/** Next free `<role>-N`: no live or unarchived agent and no active-team member has the name. */
+/** Next free `<role>-N`: the lowest N no live (unarchived) agent holds. A despawned agent frees its number, and the member lists of teams
+ *  are not read: they keep names of agents that left long ago, which made the numbers only go up (mobile-dev-20 in a new team, 2026-11-12). */
 export function nextName(role: string, pattern: string): string {
   ensureSchema();
   const taken = new Set((db().query("SELECT name FROM agents WHERE archived_at IS NULL").all() as { name: string }[]).map((r) => r.name));
-  for (const t of listTeams()) for (const m of t.members) taken.add(m);
   for (let n = 1; ; n++) { const name = pattern.replace("{role}", role).replace("{n}", String(n)); if (!taken.has(name)) return name; }
 }
 
@@ -113,7 +113,7 @@ export async function planSpawn(i: PlanInput, opts: { log?: boolean } = {}): Pro
   else {
     if (i.role) { role = i.role; reasons.push(`role ${role}: explicit`); }
     else { const r = inferRole(i.job ?? "", cfg); role = r.role; reasons.push(r.why); }
-    name = nextName(role, cfg.naming); reasons.push(`name ${name}: next free ${role} number`);
+    name = nextName(role, cfg.naming); reasons.push(`name ${name}: lowest ${role} number no live agent holds`);
   }
   // A workspace role (a repo agent registered by an adopt run) starts in its repo with its own soul. Explicit soul/project win.
   let soul = i.soul;

@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# spawn-agent.sh <name> [--project DIR] [--model ID] [--soul CATALOG_ID] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT] [--boot-prompt TEXT] [--job TEXT] [--goal TEXT] [--boss NAME]
+# spawn-agent.sh <name|@role> [--project DIR] [--model ID] [--soul CATALOG_ID] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT] [--boot-prompt TEXT] [--job TEXT] [--goal TEXT] [--boss NAME]
 #                      [--force-mem] [--no-wait] [--ready-timeout SECS] [--mcp a,b]
 # agentnet's spawner. Registers the agent with agentnet (POST /agentnet/spawn -> 0600 token file), then starts
 # claude in a DETACHED tmux session agentnet-<name> with --plugin-dir plugin. Soul + house rules go in via
 # --append-system-prompt-file. Without --model/--soul the SERVICE picks them (and the effort) from --scope/--novelty/--risk/--need/--ask
 # (defaults 2/2/1) and refuses in reserve mode; the audit line is printed and kept on the agent record. Despawn: agentnet despawn <name> or POST /agentnet/despawn.
+# @role (e.g. @mobile-dev) lets the SERVICE pick the number: the lowest <role>-N no live agent holds. The final name is in the spawn reply.
 # Env overrides: AGENTNET_URL AGENTNET_ROOT_TOKEN_FILE AGENTNET_MOD_DIR ARSENAL_DIR AGENTNET_PRESPAWN_CHECK.
 set -euo pipefail
 die() { echo "spawn-agent: $*" >&2; exit 1; }
 [ $# -ge 1 ] || { sed -n '2,3p' "$0"; exit 2; }
-NAME=$1; shift
-case "$NAME" in ''|*[!a-z0-9-]*|-*) die "name must be lowercase letters, digits, dashes: $NAME" ;; esac
+NAME=$1; shift; ROLE=""
+if [ "${NAME#@}" != "$NAME" ]; then ROLE="${NAME#@}"; NAME=""; fi   # @role: the service picks the number
+case "$NAME$ROLE" in ''|*[!a-z0-9-]*|-*) die "name must be lowercase letters, digits, dashes: $NAME$ROLE" ;; esac
 PROJECT=$PWD PROJECT_SET=0 MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60 MCP="${AGENTNET_SPAWN_MCP:-playwright}"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -40,7 +42,7 @@ command -v claude >/dev/null || die "claude is not on PATH"
 
 # Optional pre-spawn check (e.g. a low-memory guard): a shell command that exits non-zero to refuse.
 if [ "$FORCE_MEM" != 1 ] && [ -n "${AGENTNET_PRESPAWN_CHECK:-}" ]; then
-  MEM_MSG="$(sh -c "$AGENTNET_PRESPAWN_CHECK" 2>&1)" || die "refusing to spawn '$NAME': $MEM_MSG"
+  MEM_MSG="$(sh -c "$AGENTNET_PRESPAWN_CHECK" 2>&1)" || die "refusing to spawn '${NAME:-@$ROLE}': $MEM_MSG"
 fi
 
 URL="${AGENTNET_URL:-http://127.0.0.1:${AGENTNET_PORT:-3096}/api/v1/agentnet}"
@@ -51,14 +53,17 @@ AUTH=(); if [ -n "${AGENTNET_ROOT_TOKEN_FILE:-}" ] && [ -r "$AGENTNET_ROOT_TOKEN
 [ -n "$JOB" ] || JOB="(no job given)"
 
 # Register with agentnet
-BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1],"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None,"project_default":a[14]=="0"}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL" "$PROJECT_SET")"
+BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1] or None,"role":a[15] or None,"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None,"project_default":a[14]=="0"}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL" "$PROJECT_SET" "$ROLE")"
 RESP="$(curl -s -m 5 ${AUTH[@]+"${AUTH[@]}"} -H 'content-type: application/json' -X POST "$URL/spawn" -d "$BODY")" \
   || die "service not answering at $URL (is agentnet running? try: agentnet status)"
 TOKEN_FILE="$(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("token_file",""))' 2>/dev/null || true)"
 [ -n "$TOKEN_FILE" ] || die "spawn refused: $RESP"
 # The service routed model/effort/soul: use what it chose (an explicit --model/--soul comes back unchanged).
-IFS=$'\t' read -r MODEL_ID EFFORT SOUL COMPACT RBOSS RPROJECT < <(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r.get(k) or "-") for k in ("model","effort","soul","compact_window","boss","project"))); [print("spawn-agent: auto "+l, file=sys.stderr) for l in (r.get("audit") or "").split("\n") if l]; [print("spawn-agent: "+w, file=sys.stderr) for w in r.get("warnings") or []]') || true
+RNAME="-"; IFS=$'\t' read -r MODEL_ID EFFORT SOUL COMPACT RBOSS RPROJECT RNAME < <(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r.get(k) or "-") for k in ("model","effort","soul","compact_window","boss","project","name"))); [print("spawn-agent: auto "+l, file=sys.stderr) for l in (r.get("audit") or "").split("\n") if l]; [print("spawn-agent: "+w, file=sys.stderr) for w in r.get("warnings") or []]') || true
 [ "$MODEL_ID" != "-" ] || MODEL_ID=""; [ "$EFFORT" != "-" ] || EFFORT=""; [ "$SOUL" != "-" ] || SOUL=""; [ "$COMPACT" != "-" ] || COMPACT=""; [ "$RBOSS" = "-" ] || BOSS="$RBOSS"; [ -n "$BOSS" ] || BOSS=root
+[ "$RNAME" = "-" ] || NAME="$RNAME"   # the name the service chose (also the explicit one, unchanged)
+[ -n "$NAME" ] || die "service gave no agent name: $RESP"
+echo "spawn-agent: name=$NAME" >&2
 # A workspace soul starts in its own repo when the caller gave no --project.
 if [ "$PROJECT_SET" = 0 ] && [ "$RPROJECT" != "-" ] && [ -d "$RPROJECT" ]; then PROJECT="$RPROJECT"; fi
 echo "spawn-agent: registered '$NAME' (boss $BOSS), token file $TOKEN_FILE" >&2

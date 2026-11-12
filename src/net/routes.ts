@@ -13,7 +13,7 @@ import { summarize as summarizeBg, enabled as bgSumEnabled } from "./bgsum";
 import { emit, flush, get, live, all, events, doing, progressPct, lastSeq, ensureSchema, goneKey, BG_KINDS, BG_STATES, type Snapshot, type Source } from "./store";
 import { pollOpened, pollClosed } from "./liveness";
 import { realTmux, createdOf, hasSession, sessionOf, SCAN_AGENT, type Tmux } from "./windows";
-import { sameTeam, getTeam, addMember, createTeam, gatePasses, leadGate, teamsOf, goalError } from "./teams";
+import { sameTeam, getTeam, addMember, archiveAbandoned, createTeam, gatePasses, leadGate, teamsOf, goalError } from "./teams";
 import { teamRoutes, sendTeam } from "./teamRoutes";
 import { trailSearch, trailInject, cassReady } from "./trailSearch";
 import { RouteBlocked } from "./autoroute";
@@ -160,7 +160,7 @@ export function createAgent(i: SpawnInput, now = Date.now()): { id: string; toke
     // here; its held messages move to the new row below. A starting/live/stopping row still blocks.
     const life = get(old.id)?.life;
     if (life !== "gone" && life !== "failed") {
-      if (!((i.name === "root" || i.name === SCAN_AGENT) && isGhostRoot(old, now))) throw new Error(`${i.name} is live already`);
+      if (!((i.name === "root" || i.name === SCAN_AGENT) && isGhostRoot(old, now))) throw new Error(`${i.name} is live already: give a role without a number and the service picks the next free one`);
       retireAgent(old, "replaced", now); // a failed earlier setup left it: it must not block the director's join
     } else {
       revoke(old.id, now);
@@ -180,15 +180,17 @@ export function createAgent(i: SpawnInput, now = Date.now()): { id: string; toke
   flush();
   return { id, tokenFile, token: t };
 }
-/** Revoke the token, archive the row, delete the token file; the fold gets AgentGone{reason}. */
-export function retireAgent(a: AgentRow, reason: string, now = Date.now(), kill: (pid: number | null, placement: string | null, name?: string) => void = killAgent) {
+/** Revoke the token, archive the row, delete the token file; the fold gets AgentGone{reason}. A despawn also closes every team that has no live member left; returns their ids. */
+export function retireAgent(a: AgentRow, reason: string, now = Date.now(), kill: (pid: number | null, placement: string | null, name?: string) => void = killAgent): string[] {
   revoke(a.id, now);
   db().run("UPDATE agents SET token_hash = NULL, archived_at = ? WHERE id = ?", [now, a.id]);
   try { unlinkSync(a.token_file ?? join(TOKEN_DIR(), `${a.name}.token`)); } catch { /* already gone */ }
   const s = get(a.id);
   if (reason === "despawn" && a.kind !== "member") kill(s?.pid ?? null, a.placement ?? null, a.name);
   emit({ agent: a.id, type: "AgentGone", data: { reason }, source: "service", ts: now, dedup: reason === "despawn" ? `despawn:${a.id}` : goneKey(s ?? null, a.id) });
+  const closed = reason === "despawn" ? archiveAbandoned(a.name, (n) => isRoot({ name: n })) : [];
   flush();
+  return closed;
 }
 /** A pid worth signalling: an integer above 1 (0, 1 and negatives would reach every process of the user). */
 export const goodPid = (x: unknown): number | null => { const n = Number(x); return typeof x !== "boolean" && x !== null && Number.isInteger(n) && n > 1 ? n : null; };
@@ -520,9 +522,9 @@ export function agentnetRoutes(api: Hono<Env>) {
     if (!t) return problem(c, 404, "Not Found", "no such live agent");
     if (t.name === "root") return problem(c, 403, "Forbidden", "root cannot be despawned"); // its pid is the main bot's claude
     const open = (get(t.id)?.tasks ?? []).filter((x) => x.status !== "done"); // B4: warn root, do not block
-    retireAgent(t, "despawn");
-    audit(`agent:${a.name}`, "agentnet.despawn", t.id, "ok", c.get("trace"), { reason: String(b.reason ?? ""), open_tasks: open.length });
-    return c.json({ agent: t.id, state: "gone", ...(open.length ? { warning: `${t.name} was despawned with ${open.length} open task${open.length > 1 ? "s" : ""}: ${open.map((x) => `${x.id} ${x.text.slice(0, 40)}`).join("; ")}`, open_tasks: open.map((x) => x.id) } : {}) });
+    const closed = retireAgent(t, "despawn");
+    audit(`agent:${a.name}`, "agentnet.despawn", t.id, "ok", c.get("trace"), { reason: String(b.reason ?? ""), open_tasks: open.length, ...(closed.length ? { teams_archived: closed.join(",") } : {}) });
+    return c.json({ agent: t.id, state: "gone", ...(closed.length ? { teams_archived: closed } : {}), ...(open.length ? { warning: `${t.name} was despawned with ${open.length} open task${open.length > 1 ? "s" : ""}: ${open.map((x) => `${x.id} ${x.text.slice(0, 40)}`).join("; ")}`, open_tasks: open.map((x) => x.id) } : {}) });
   });
   logEvent("info", "agentnet routes mounted", { flag: "AGENTNET=1" });
 }
