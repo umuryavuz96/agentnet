@@ -436,7 +436,7 @@ const extraTip = (id: string) => otherTeams(id).map((t) => (t.lead === nameOf(id
 /** LEAD only for the team whose cluster the node sits in. */
 const isLead = (id: string) => { const t = activeTeams().find((x) => x.id === placedIn.value.get(id)); return !!t && t.lead === nameOf(id); };
 /** Active teams with no cluster on the map because every live member sits in an earlier team: reachable as chips in the hook strip. Teams with no live member are not shown. */
-const unplaced = computed(() => { const live = new Set(Object.values(net.agents).map((a) => a.name)); return activeTeams().filter((t) => !placedTeams.value.has(t.id) && t.members.some((m) => live.has(m))); });
+const unplaced = computed(() => { const live = new Set(Object.values(net.agents).filter((a) => a.name !== ROOT).map((a) => a.name)); return activeTeams().filter((t) => !placedTeams.value.has(t.id) && t.members.some((m) => live.has(m))); });
 const pickTeam = (c: C) => { if (c.team && !panned) emit("select", "team:" + c.team); };
 /** Cluster sub blocks at 13 px: the team's purpose (target icon) and what the team is doing now (activity icon). Each wraps on
  *  words up to SUB_MAX lines (no text measuring in SVG: ~0.56 em per character). No member counts: the icon stack shows them. */

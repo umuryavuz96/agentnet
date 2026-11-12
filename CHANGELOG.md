@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.8
+
+The map no longer keeps finished teams listed.
+
+**Map**
+
+- A team whose agents have all been closed left its chip on the map for as long as the director was one of its members. The director is always running, so those chips never went away. The director alone no longer counts as a live member, and the chip goes when the last agent is closed.
+
 ## 0.5.7
 
 Setup of an existing workspace no longer leaves you stuck, and a new agent no longer dies at Claude Code's first-run questions.
