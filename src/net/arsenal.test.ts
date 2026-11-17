@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { LAN, LOOP } from "../../test/helpers";
+import { LAN, LOOP, asRoot } from "../../test/helpers";
 import type { Env } from "../core/http";
 
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-ars-home-"));
@@ -21,10 +21,11 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-async function app() {
+/** raw: no token (the loopback-guard tests, run with AGENTNET_PANEL_LOGIN=off); else every call carries root.token. */
+async function app(raw = false) {
   const { arsenalRoutes } = await import("./arsenal");
   const a = new Hono<Env>(), api = new Hono<Env>();
-  arsenalRoutes(api); a.route("/api/v1", api); return a;
+  arsenalRoutes(api); a.route("/api/v1", api); return raw ? a : asRoot(a);
 }
 test("lists catalog, roles and decisions", async () => {
   const j = await (await (await app()).request("/api/v1/arsenal", {}, LAN)).json() as any;
@@ -37,7 +38,7 @@ test("persona body, and no path escape", async () => {
 });
 test("roles save checks ids, needs admin, backs up", async () => {
   const body = (r: unknown) => ({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(r) });
-  expect((await (await app()).request("/api/v1/arsenal/roles", body({ roles: {} }), LAN)).status).toBe(403);
+  expect((await (await app(true)).request("/api/v1/arsenal/roles", body({ roles: {} }), LAN)).status).toBe(403);
   const a = await app();
   expect((await a.request("/api/v1/arsenal/roles", body({ roles: { qa: { default: "nope" } } }), LOOP)).status).toBe(400);
   expect((await a.request("/api/v1/arsenal/roles", body({ roles: { qa: { default: "r/a", categories: ["qa"] } } }), LOOP)).status).toBe(200);
@@ -46,8 +47,9 @@ test("roles save checks ids, needs admin, backs up", async () => {
 });
 
 test("roles write: forwarded caller gets 403, loopback 200", async () => {
+  process.env.AGENTNET_PANEL_LOGIN = "off"; // the loopback guard under test now exists only behind this house flag
   const body = (h: Record<string, string>) => ({ method: "PUT", headers: { "Content-Type": "application/json", ...h }, body: JSON.stringify({ roles: { ui: { default: "r/a" } } }) });
-  const a = await app();
+  const a = await app(true);
   expect((await a.request("/api/v1/arsenal/roles", body({ "X-Forwarded-For": "10.0.0.5" }), LOOP)).status).toBe(403);
   expect((await a.request("/api/v1/arsenal/roles", body({}), LOOP)).status).toBe(200);
 });

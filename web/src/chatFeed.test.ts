@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildRows, feedItems, type FeedItem } from "./chatFeed";
+import { RUN_MS, buildRows, feedItems, runs, type FeedItem } from "./chatFeed";
 import type { Msg } from "./net";
 
 const step = (n: number, status: FeedItem["status"] = "ok"): FeedItem => ({ id: `t${n}`, ts: 1000 + n, kind: "step", title: `Step ${n}`, status });
@@ -33,5 +33,20 @@ describe("feedItems", () => {
     const items = new Map<string, FeedItem>([["u1", { id: "u1", ts: 5, kind: "owner", text: "go", nonce: "n1" }]]);
     const pending: FeedItem[] = [{ id: "sending:n1", ts: 4, kind: "owner", text: "go", nonce: "n1", sending: true }, { id: "sending:n2", ts: 6, kind: "owner", text: "next", nonce: "n2", sending: true }];
     expect(feedItems(items, pending).map((i) => i.id)).toEqual(["u1", "sending:n2"]);
+  });
+});
+
+describe("runs", () => {
+  const day = (t: number) => String(Math.floor(t / 86_400_000));
+  const a = (id: string, ts: number): FeedItem => ({ id, ts, kind: "assistant", text: "x" });
+  test("one header per run of the same speaker; a step, another speaker or a 5 minute gap starts a new run", () => {
+    const rows = buildRows([], [a("a1", 1000), a("a2", 2000), step(3000), a("a3", 5000), { id: "o1", ts: 6000, kind: "owner", text: "hi" }, a("a4", 7000), a("a5", 7000 + RUN_MS + 1)], "all");
+    expect(rows.map((r) => r.type)).toEqual(["assistant", "assistant", "step", "assistant", "owner", "assistant", "assistant"]);
+    expect(runs(rows, day).map((r) => `${+r.first}${+r.last}`)).toEqual(["10", "01", "00", "11", "11", "11", "11"]);
+  });
+  test("messages group by sender and receiver; a new day breaks the run", () => {
+    const m = (at: number, to: string): Msg => ({ id: at, from: "root", to, kind: "info", body: "hi", at });
+    const rows = buildRows([m(1000, "a"), m(2000, "a"), m(3000, "b"), m(86_400_000 + 10, "b")], [], "messages");
+    expect(runs(rows, day).map((r) => `${+r.first}${+r.last}`)).toEqual(["10", "01", "11", "11"]);
   });
 });

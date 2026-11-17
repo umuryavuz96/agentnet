@@ -4,6 +4,8 @@ import { recordLaunch } from "./update/launch";
 import { problem, requireAuth, tracing, type Env } from "./core/http";
 import { logEvent } from "./core/logger";
 import { bindOk, rootOnly } from "./core/access";
+import { ensureSecrets, houseFlags, newLoginCode, sessionCount } from "./core/auth";
+import { loginApiRoutes, loginPageRoute } from "./net/login";
 import { healthRoute } from "./net/health";
 import { isPanelWrite, toLegacy } from "./net/mount";
 import { agentnetTeamPanelRoutes } from "./net/teamRoutes";
@@ -29,6 +31,7 @@ import { adoptRoutes } from "./net/adopt";
 import { snapshotDiscipline } from "./net/scores";
 
 export function buildApp(): Hono<Env> {
+  ensureSecrets(); // run/ 0700, root.token + panel.token 0600
   const app = new Hono<Env>();
   app.use("*", async (c, next) => { c.header("Agentnet-Api", "1"); await next(); }); // set before next: Hono copies it onto json, body and SSE responses
   app.use("*", tracing);
@@ -40,8 +43,10 @@ export function buildApp(): Hono<Env> {
   agentnetStreamRoutes(api); agentnetUsageRoutes(api); agentnetPanelSendRoute(api); agentnetTeamPanelRoutes(api);
   trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); ownerChatRoutes(api); agentControlRoutes(api); checksPanelRoutes(api);
   summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api); updateRoutes(api); directorRoutes(api); adoptRoutes(api);
+  loginApiRoutes(api);
   agentnetRoutes(api);
   app.route("/api/v1", api);
+  loginPageRoute(app);
   webRoutes(app);
   app.notFound((c) => problem(c, 404, "Not Found", "no such route"));
   return app;
@@ -71,4 +76,10 @@ if (import.meta.main) {
   setTimeout(snap, 15_000); setInterval(snap, 3600_000);
   logEvent("info", "agentnet listening", { host: HOST, port: PORT, version: VERSION });
   console.log(`agentnet ${VERSION} on http://${HOST}:${PORT}`);
+  for (const f of houseFlags()) { logEvent("warn", `house flag ${f}: loopback trust is on`, { flag: f }); console.warn(`agentnet: house flag ${f} is on`); }
+  if (sessionCount() === 0) { // first start: a fresh login link (one use, 60 s); later links come from `agentnet login`
+    const link = `http://${HOST.includes(":") ? `[${HOST}]` : HOST}:${PORT}/login?code=${newLoginCode()}`;
+    logEvent("info", "login link (one use, 60 s)", { url: link });
+    console.log(`agentnet: sign in at ${link}`);
+  }
 }

@@ -11,3 +11,14 @@ dist/
 .env.*
 .DS_Store
 coverage/
+
+# redesign board: third-party 3D assets are fetched by docs/redesign/tools/fetch-assets.py, not committed (see proto/SOURCES.md)
+docs/redesign/proto/vendor/
+docs/redesign/proto/sd.json
+docs/redesign/proto/out/
+docs/redesign/tools/private-patterns.txt
+.playwright-mcp/
+__pycache__/
+
+# 3D office assets (CC0, fetched from web/src/office3d/SOURCES.md; not committed)
+web/public/office/

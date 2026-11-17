@@ -1,5 +1,5 @@
 // agentnet page contract: GET /agentnet/snapshot {seq, agents, messages} and the SSE
-// /agentnet/stream: `hello` (full), `agent` (merge patch of one row), `gone` ({id, seq, prev, reason}), `msg`, `check` (an owner check created or resolved, whole row), `ping`.
+// /agentnet/stream: `hello` (full), `agent` (merge patch of one row), `gone` ({id, seq, prev, reason}), `msg`, `check` (an owner check created or resolved, whole row), `trails-stats-ready` (a trail stats recompute finished: reload GET /trails/stats), `ping`.
 // Every frame carries `id: <seq>` and `data.prev` (EventSource drops unknown fields). Phase 1 floor: `hello` on every
 // reconnect, no ring buffer. Panel auth (requireAuth on the api app), not the agent token.
 import type { Hono } from "hono";
@@ -9,8 +9,11 @@ import type { Env } from "../core/http";
 import { doing, progressPct, ensureSchema, lastSeq, live, onPatch, type Patch, type Snapshot } from "./store";
 import { onCheck, visibleChecks, type Check } from "./checks";
 import { nameMap, onMessage, subjectOf } from "./routes";
+import { onStatsReady, trailsWatch } from "./trailStats";
 
 const RECENT = 200;
+/** Connected stream clients by id (sent in `hello`): a client says which page it shows with POST /agentnet/watch. */
+const conns = new Set<string>();
 export interface MsgRow { id: number; from: string; to: string; kind: string; subject: string; body: string; reply_to: number | null; at: number; state: string }
 const names = () => nameMap();
 type Raw = { id: number; from_agent: string; to_agent: string; kind: string; subject: string | null; body: string; reply_to: number | null; created_at: number; state: string };
@@ -40,7 +43,14 @@ export function mergePatch(prev: Record<string, unknown> | null, next: Record<st
 export function agentnetStreamRoutes(api: Hono<Env>) {
   ensureSchema();
   api.get("/agentnet/snapshot", (c) => c.json(snapshot()));
+  api.post("/agentnet/watch", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { cid?: string; topic?: string; on?: boolean };
+    if (b.topic !== "trails" || !b.cid || !conns.has(b.cid)) return c.json({ ok: false }, 404);
+    if (b.on) trailsWatch.add(b.cid); else trailsWatch.remove(b.cid);
+    return c.json({ ok: true });
+  });
   api.get("/agentnet/stream", (c) => streamSSE(c, async (stream) => {
+    const cid = crypto.randomUUID(); conns.add(cid);
     const queue: Array<{ event: string; data: Record<string, unknown>; seq: number }> = [];
     let wake: (() => void) | null = null, prev = 0;
     const last = new Map<string, Record<string, unknown>>();
@@ -57,11 +67,12 @@ export function agentnetStreamRoutes(api: Hono<Env>) {
     // every stored message is a frame, whoever sent it (loopback root has no agent row); the row rides whole
     const pushMsg = (id: number) => { const row = messageRow(id); if (row) { queue.push({ event: "msg", data: row as unknown as Record<string, unknown>, seq: lastSeq() }); wake?.(); } };
     const pushCheck = (k: Check) => { queue.push({ event: "check", data: k as unknown as Record<string, unknown>, seq: lastSeq() }); wake?.(); };
-    const off = onPatch(push), offMsg = onMessage(pushMsg), offCheck = onCheck(pushCheck);
-    stream.onAbort(() => { off(); offMsg(); offCheck(); wake?.(); });
+    const pushReady = () => { queue.push({ event: "trails-stats-ready", data: {}, seq: lastSeq() }); wake?.(); };
+    const off = onPatch(push), offMsg = onMessage(pushMsg), offCheck = onCheck(pushCheck), offReady = onStatsReady(pushReady);
+    stream.onAbort(() => { off(); offMsg(); offCheck(); offReady(); conns.delete(cid); trailsWatch.remove(cid); wake?.(); });
     const hello = snapshot(); prev = hello.seq;
     for (const [id, s] of Object.entries(hello.agents)) last.set(id, s as unknown as Record<string, unknown>);
-    await stream.writeSSE({ id: String(hello.seq), event: "hello", data: JSON.stringify({ ...hello, prev: 0 }) });
+    await stream.writeSSE({ id: String(hello.seq), event: "hello", data: JSON.stringify({ ...hello, prev: 0, cid }) });
     let beat = Date.now();
     while (!stream.aborted) {
       if (!queue.length) await new Promise<void>((r) => { wake = r; setTimeout(r, 15_000); });
@@ -69,6 +80,6 @@ export function agentnetStreamRoutes(api: Hono<Env>) {
       while (queue.length) { const f = queue.shift()!; await stream.writeSSE({ id: String(f.seq), event: f.event, data: JSON.stringify({ ...f.data, seq: f.seq, prev }) }); prev = f.seq; }
       if (Date.now() - beat > 15_000) { await stream.writeSSE({ event: "ping", data: JSON.stringify({ at: Date.now(), prev }) }); beat = Date.now(); }
     }
-    off(); offMsg(); offCheck();
+    off(); offMsg(); offCheck(); offReady(); conns.delete(cid); trailsWatch.remove(cid);
   }));
 }

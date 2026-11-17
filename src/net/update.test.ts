@@ -11,7 +11,8 @@ const { autoGate, autoTick, spawnPlan, updateRoutes, updaterArgv } = await impor
 const { isPanelWrite, toLegacy, V1_PATHS } = await import("./mount");
 const { acquire } = await import("../update/lock");
 const { makeFixture, sh } = await import("../../test/updateFixture");
-const { LAN, LOOP } = await import("../../test/helpers");
+const { LAN, LOOP, rootToken } = await import("../../test/helpers");
+const ROOT_T = await rootToken();
 import type { Mode } from "../update/service";
 
 const LATEST = { tag: "v99.0.0", version: "99.0.0", url: "https://github.com/umuryavuz96/agentnet/releases/tag/v99.0.0", notes: "## 99.0.0\n- x", publishedAt: "2026-11-09T00:00:00Z" };
@@ -24,7 +25,7 @@ function setup(o: { mode?: Mode; latest?: typeof LATEST | null; launchOk?: boole
   const api = new Hono(); updateRoutes(api as never, deps);
   const app = new Hono(); app.route("/api/v1", api);
   const call = (method: string, path: string, body?: unknown, env: unknown = LOOP) =>
-    app.request(`/api/v1/agent-update${path}`, { method, ...(body !== undefined ? { headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) } : {}) }, env as never);
+    app.request(`/api/v1/agent-update${path}`, { method, headers: { authorization: `Bearer ${env === LAN ? "" : ROOT_T}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) }, ...(body !== undefined ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}) }, env as never); // root.token, except the LAN refusal checks
   return { f, deps, spawned, call };
 }
 afterEach(() => { delete process.env.AGENTNET_WEB_UPDATE; delete process.env.AGENTNET_AUTO_UPDATE; delete process.env.AGENTNET_AUTO_UPDATE_HOUR; });

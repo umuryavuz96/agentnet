@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import type { Env } from "../core/http";
-import { LAN, LOOP } from "../../test/helpers";
+import { LAN, LOOP, asRoot } from "../../test/helpers";
 
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-routing-home-"));
 const int = (value: number, min: number, max: number) => ({ value, type: "int", min, max, description: "x" });
@@ -25,9 +25,10 @@ afterEach(() => {
   rmSync(d, { recursive: true, force: true });
 });
 
-async function app() {
+/** raw: no token (the loopback-guard checks, run with AGENTNET_PANEL_LOGIN=off); else every call carries root.token. */
+async function app(raw = false) {
   const { routingRoutes } = await import("./routing");
-  const api = new Hono<Env>(); routingRoutes(api); const a = new Hono<Env>(); a.route("/api/v1", api); return a;
+  const api = new Hono<Env>(); routingRoutes(api); const a = new Hono<Env>(); a.route("/api/v1", api); return raw ? a : asRoot(a);
 }
 const put = (changes: unknown, headers: Record<string, string> = {}) => ({ method: "PUT", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ changes }) });
 
@@ -38,7 +39,8 @@ test("read: fields, mode normal, usage unknown without a usage file", async () =
   expect(j.mode.mode).toBe("normal"); expect(j.mode.windows).toEqual([]);
 });
 test("write: needs root, validates, backs up", async () => {
-  const a = await app();
+  process.env.AGENTNET_PANEL_LOGIN = "off"; // the loopback guard under test now exists only behind this house flag
+  const a = await app(true);
   expect((await a.request("/api/v1/agent-routing", put({}, { "X-Forwarded-For": "10.0.0.5" }), LOOP)).status).toBe(403);
   expect((await a.request("/api/v1/agent-routing", put({ "usage.modes.eco.min_pct": 70 }), LAN)).status).toBe(403);
   expect((await a.request("/api/v1/agent-routing", put({ "usage.modes.reserve.min_pct": 85 }), LOOP)).status).toBe(400);

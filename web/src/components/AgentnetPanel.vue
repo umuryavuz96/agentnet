@@ -5,16 +5,22 @@
 // "Now" as the loudest block, tasks as a checklist, messages as a thread, identity and hooks folded away.
 // Every value comes from the agentnet snapshot row; a field the row does not have is left out, never invented.
 import { computed, nextTick, ref, watch } from "vue";
+import AgentTrail from "./AgentTrail.vue";
+import { brk } from "../crewTree";
+import TrailLine from "./TrailLine.vue";
 import Icon from "../ui/Icon.vue";
 import AgentnetChat from "./AgentnetChat.vue";
 import AgentnetJobs from "./AgentnetJobs.vue";
 import AgentnetControls from "./AgentnetControls.vue";
 import AgentnetUsage from "./AgentnetUsage.vue";
 import AgentnetScore from "./AgentnetScore.vue";
-import { net, hooks, humanDoing, ctxView, windows, type AgentRow, type HookFire } from "../net";
-import { api } from "../ui/api";
+import { phrase } from "../trail";
+import { short, trailView } from "../trailView";
+import { earlierJobs, openAsks, planCount, type PlanCount } from "../plan";
+import { net, hooks, teams, humanDoing, ctxView, windows, type AgentRow, type HookFire, type Job } from "../net";
+import { api, toast } from "../ui/api";
 
-const props = defineProps<{ row: AgentRow | null; name: string; sheet: boolean }>();
+const props = defineProps<{ row: AgentRow | null; name: string; sheet: boolean; startTab?: "trail" }>();
 const emit = defineEmits<{ close: []; open: []; closeWin: [] }>();
 
 const dur = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return s + "s"; const m = Math.floor(s / 60); if (m < 60) return m + "m"; const h = Math.floor(m / 60); return h < 48 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`; };
@@ -24,6 +30,24 @@ const tok = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? M
 const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 const r = computed(() => props.row);
+// Trail tab head (map board 10-agent-trail panel): state word, how long in it, model; step count; context ring.
+const ST: Record<string, string> = { working: "Working", idle: "Idle", waiting: "Waiting", blocked: "Blocked" };
+const thGone = computed(() => !!r.value && (r.value.life === "gone" || r.value.life === "failed"));
+const thState = computed(() => (thGone.value ? "closed" : r.value?.state ?? "idle"));
+const thFor = computed(() => (!r.value ? "" : thGone.value ? `closed ${short(net.now - r.value.lifeSince)} ago` : `for ${short(net.now - r.value.stateSince)}`));
+const thDone = computed(() => (r.value?.tasks ?? []).filter((t) => t.status === "done").length);
+// ---- the job plan (plan.ts): the count is brief steps over the fixed total, added steps are a figure of their own ----
+const tv = computed(() => (r.value ? trailView(r.value) : null));
+const plan = computed<PlanCount | null>(() => tv.value?.plan ?? null);
+const job = computed<Job | null>(() => tv.value?.job ?? null);
+const asks = computed(() => (r.value ? openAsks(r.value) : []));
+const oldestAsk = computed(() => (asks.value.length ? Math.min(...asks.value.map((k) => k.at)) : 0));
+/** Jobs before the current one, newest first. Each opens to its steps, read only: the same rail, fed a still row. */
+const earlier = computed(() => { const x = r.value; return !x ? [] : earlierJobs(x).map((j) => ({ j, c: planCount(j), row: { ...x, jobs: [j], asks: [], tasks: [], life: "live" as const, state: "idle" as const, action: null, lastTool: null, bg: [] } })); });
+const openEarlier = ref(false), openJob = ref(0), seenJobs = ref(new Set<number>());
+const toggleJob = (id: number) => { seenJobs.value.add(id); openJob.value = openJob.value === id ? 0 : id; };
+const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
+const TH_C = 2 * Math.PI * 18;
 const isRoot = computed(() => props.name === "root");
 const gone = computed(() => !!r.value && (r.value.life === "gone" || r.value.life === "failed"));
 const dot = computed(() => {
@@ -55,7 +79,6 @@ const tasks = computed(() => r.value?.tasks ?? []);
 const done = computed(() => tasks.value.filter((t) => t.status === "done").length);
 // Lifecycle hint only (never auto-closes): every task done and idle for over 10 minutes.
 const goalReview = computed(() => !!r.value?.goal && r.value.life === "live" && r.value.state === "idle" && allDone.value && net.now - r.value.stateSince > 600_000);
-const tool = (t: { tool: string; target: string | null }) => humanDoing(t.tool + (t.target ? " · " + t.target : "")) ?? t.tool;
 
 const idRows = computed(() => {
   const x = r.value; if (!x) return [];
@@ -77,22 +100,38 @@ watch(() => hooks.fires[0], (f) => { if (f && f.agent === props.name && !agentFi
 const failed = computed(() => agentFires.value.filter((f) => !f.ok && !f.skipped).length);
 
 const openId = ref(false), openHooks = ref(false);
+const teamName = computed(() => { const t = teams.list.find((x) => x.members.includes(props.name)); return t ? (t.name || t.id) : null; });
+const projectName = computed(() => r.value?.project?.split("/").filter(Boolean).pop() ?? null);
+
+// ---- action bar (board page 03): Message, Open window, Interrupt, More; Stop asks inside the pane ----
+const menuOpen = ref(false), stopAsk = ref(false), acting = ref("");
+const canAct = computed(() => !!r.value && r.value.life === "live" && !isRoot.value);
+const openTasks = computed(() => (plan.value && tv.value ? tv.value.steps.filter((t) => t.status === "pending" || t.status === "in_progress").length : tasks.value.length - done.value));
+async function post(what: "stop" | "despawn", ok: string) {
+  if (acting.value) return; acting.value = what;
+  try { await api(`v1/panel/agents/${encodeURIComponent(props.name)}/${what}`, { method: "POST" }); toast(ok); if (what === "despawn") { stopAsk.value = false; emit("close"); } }
+  catch (e) { toast(`${what === "stop" ? "Interrupt" : "Stop"} failed: ${(e as Error).message}`); }
+  finally { acting.value = ""; }
+}
+const interrupt = () => post("stop", `Interrupted ${props.name}`);
+const stopAgent = () => post("despawn", `Stopped ${props.name}`);
+const goMsg = () => { menuOpen.value = false; if (tab.value !== "chat") setTab("chat"); };
 
 // Segmented tabs: Overview | Chat. Background jobs are a fixed collapsible panel under them, visible on both. Switching slides the body a few px and fades (transform + opacity only).
-const TABS = [{ id: "overview", label: "Overview" }, { id: "chat", label: "Chat" }] as const;
+const TABS = [{ id: "now", label: "Now" }, { id: "trail", label: "Trail" }, { id: "chat", label: "Messages" }, { id: "usage", label: "Usage" }] as const;
 type Tab = (typeof TABS)[number]["id"];
-const tab = ref<Tab>("overview");
+const tab = ref<Tab>(props.startTab ?? "now"); // the team panel's Plans tab opens an agent on its Trail
 /** The pane on screen. It follows tab only when the new pane enters, so the old pane keeps its own layout while it fades out (out-in). */
-const shown = ref<Tab>("overview");
+const shown = ref<Tab>(tab.value);
 const tabIdx = computed(() => TABS.findIndex((t) => t.id === tab.value));
 const slide = ref("fwd");
-const setTab = (t: Tab) => { slide.value = TABS.findIndex((x) => x.id === t) > tabIdx.value ? "fwd" : "back"; tab.value = t; nextTick(() => { if (t === "overview" && el.value) { const b = el.value.querySelector<HTMLElement>(".bd"); if (b) b.scrollTop = 0; } }); };
+const setTab = (t: Tab) => { slide.value = TABS.findIndex((x) => x.id === t) > tabIdx.value ? "fwd" : "back"; tab.value = t; nextTick(() => { if (el.value) { const b = el.value.querySelector<HTMLElement>(".bd"); if (b) b.scrollTop = 0; } }); };
 function tabKey(e: KeyboardEvent) {
   const d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0; if (!d) return;
   e.preventDefault(); const n = TABS[(tabIdx.value + d + TABS.length) % TABS.length].id; setTab(n);
   nextTick(() => el.value?.querySelector<HTMLElement>(`[data-tab="${n}"]`)?.focus());
 }
-watch(() => props.name, () => { tab.value = "overview"; shown.value = "overview"; });
+watch(() => props.name, () => { tab.value = "now"; shown.value = "now"; menuOpen.value = false; stopAsk.value = false; openEarlier.value = false; openJob.value = 0; seenJobs.value.clear(); });
 
 // ---- phone: drag the sheet down by its header to close it ----
 const el = ref<HTMLElement | null>(null);
@@ -121,35 +160,82 @@ defineExpose({ el });
     <header class="hd" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp">
       <span v-if="sheet" class="grab" aria-hidden="true" />
       <div class="t1">
-        <span :class="['ap-dot', 's-' + dot]" role="img" :aria-label="DOT_LABEL[dot] ?? dot" :title="DOT_LABEL[dot] ?? dot" />
-        <h2 class="ap-nm" :title="name">{{ name }}</h2>
+        <div class="tt"><i :class="['hdot', 'h-' + dot]" role="img" :aria-label="dot" />
+        <h2 class="ap-nm" :title="name">{{ brk(name) }}</h2>
         <span v-if="modelChip" class="ap-chip" :title="r?.model ?? ''">{{ modelChip }}</span>
+        <span v-if="teamName" class="ap-chip tm">{{ teamName }}</span></div>
         <button type="button" class="x" data-close aria-label="Close panel" @click="emit('close')"><Icon name="x" :size="20" /></button>
       </div>
-      <!-- Chat needs the height: these rows fold away while it is open (Overview keeps them) -->
+      <!-- Messages need the height: the goal and the boss fold away while it is open -->
       <div :class="['fold-r', 'hdf', { shut: tab === 'chat' }]" :inert="tab === 'chat' || undefined"><div class="fold-in">
-      <p v-if="r?.job || isRoot" class="job" :title="r?.job ?? ''">{{ r?.job ?? "Director of every agent · main session" }}</p>
-      <div v-if="r" class="acts">
-        <button type="button" class="btn sm ghost" :disabled="!windows.available || !!windows.busy || gone" @click="emit('open')"><Icon name="square-terminal" :size="15" /> Open window</button>
-        <button type="button" class="btn sm ghost" :disabled="!windows.available || !!windows.busy" @click="emit('closeWin')"><Icon name="x" :size="15" /> Close window</button>
-      </div>
-      <AgentnetControls v-if="r && !isRoot && !gone" mode="actions" :name="name" :can-act="r.life === 'live'" @closed="emit('close')" />
+      <p v-if="r?.goal || r?.job || isRoot" class="goal-t">{{ r?.goal ?? r?.job ?? "Director of every agent · main session" }}</p>
+      <TrailLine v-if="r && !isRoot" class="hdtl" :row="r" />
+      <p v-if="r?.boss" class="boss">Reports to <a :href="'#/agents?agent=' + encodeURIComponent(r.boss)">{{ r.boss }}</a><template v-if="projectName"> · {{ projectName }}</template></p>
       </div></div>
       <div class="tabs" role="tablist" aria-label="Agent sections" @keydown="tabKey">
-        <i class="ind" aria-hidden="true" :style="{ transform: `translateX(${tabIdx * 100}%)`, width: `calc(100% / ${TABS.length})` }" />
-        <button v-for="t in TABS" :key="t.id" type="button" role="tab" :id="`ap-tab-${t.id}`" :data-tab="t.id" :aria-selected="tab === t.id" :aria-controls="`ap-pn-${t.id}`" :tabindex="tab === t.id ? 0 : -1" :class="{ on: tab === t.id }" @click="setTab(t.id)">{{ t.label }}</button>
+        <button v-for="t in TABS" :key="t.id" type="button" role="tab" :id="`ap-tab-${t.id}`" :data-tab="t.id" :aria-selected="tab === t.id" :aria-controls="`ap-pn-${t.id}`" :tabindex="tab === t.id ? 0 : -1" :class="{ on: tab === t.id }" @click="setTab(t.id)">{{ t.label }}<span v-if="t.id === 'trail' && tv?.count" class="tc ap-num">{{ tv.count }}</span></button>
       </div>
     </header>
-
-    <div :class="['fold-r', { shut: tab === 'chat' }]" :inert="tab === 'chat' || undefined"><div class="fold-in"><AgentnetJobs v-if="r" mode="jobs" :name="name" :tasks="tasks" /></div></div>
 
     <div :class="['bd', { fill: shown === 'chat' }]">
      <Transition :name="'tab-' + slide" mode="out-in" @before-enter="shown = tab">
       <AgentnetChat v-if="tab === 'chat'" id="ap-pn-chat" key="chat" role="tabpanel" aria-labelledby="ap-tab-chat" :name="name" :is-root="isRoot" :gone="gone && !isRoot" :connected="!!r && r.life === 'live' && !!r.connectedAt" :working="!!r && r.life === 'live' && r.state === 'working'" />
-      <div v-else id="ap-pn-overview" key="overview" class="ap-pn" role="tabpanel" aria-labelledby="ap-tab-overview">
+      <div v-else :id="`ap-pn-${tab}`" :key="tab" class="ap-pn" role="tabpanel" :aria-labelledby="`ap-tab-${tab}`">
       <p v-if="!r" class="none">No live reading for {{ name }} yet.</p>
-      <template v-else>
+      <template v-else-if="tab === 'now'">
+        <!-- Now: the loudest block, GitHub Actions style -->
+        <section :class="['now', { working: dot === 'working', blocked: !!rep?.blockedOn }]" aria-label="Now">
+          <p v-if="rep?.blockedOn" class="blk"><Icon name="triangle-alert" :size="16" /><span>Blocked on {{ rep.blockedOn }}</span></p>
+          <p v-if="r.doing" :class="['doing', { dim: fromReport && repOld }]">{{ humanDoing(r.doing) }}<span v-if="fromReport" class="rage">reported {{ ago(rep!.at) }}</span></p>
+          <p v-else-if="!rep?.blockedOn" class="none">Nothing running.</p>
+          <p v-if="r.action" class="tool"><Icon name="loader" :size="14" class="ap-spin" /><span>{{ phrase(r.action) }}</span></p>
+          <div class="n3">
+            <div v-if="plan"><span class="lbl">Plan</span><b class="ap-num">{{ tv!.count }}<span v-if="plan.added" :class="['plus', { grew: plan.grew }]">+{{ plan.added }}</span></b></div>
+            <div v-else><span class="lbl">Tasks</span><b class="ap-num">{{ prog != null ? prog + "%" : "none" }}</b></div>
+            <div><span class="lbl">Context</span><b class="ap-num">{{ ctx ? ctxPct + "%" : "none" }}</b></div>
+            <div><span class="lbl">Cost so far</span><b class="ap-num">{{ r.cost != null ? "$" + r.cost.toFixed(2) : "none" }}</b></div>
+          </div>
+        </section>
+        <section v-if="tv?.n" class="sec" aria-label="Trail peek">
+          <h3>Trail</h3>
+          <AgentTrail :row="r" peek />
+        </section>
+        <button v-if="asks.length" type="button" class="ask-1" title="Opens the Trail tab" @click="setTab('trail')"><b>{{ asks.length }} open {{ asks.length === 1 ? "ask" : "asks" }}</b><span>oldest {{ short(net.now - oldestAsk) }}</span><Icon name="chevron-down" :size="16" /></button>
+        <section v-if="r.lastMsg" class="sec" aria-label="Last message">
+          <h3>Last message</h3>
+          <p class="lm">{{ r.lastMsg.dir === "out" ? "to" : "from" }} {{ r.lastMsg.peer }} · {{ r.lastMsg.kind }} · {{ ago(r.lastMsg.at) }}<template v-if="r.lastTool"><br /><span>{{ phrase(r.lastTool) }}</span> · {{ ago(r.lastTool.at) }}</template></p>
+        </section>
+        <AgentnetJobs mode="jobs" :name="name" :tasks="tasks" />
         <AgentnetControls v-if="!isRoot && !gone" mode="schedules" :name="name" />
+      </template>
+      <section v-else-if="tab === 'trail'" class="sec" aria-label="Trail">
+        <div class="th">
+          <div class="th-st"><span :class="['th-w', 's-' + thState]">{{ thGone ? "Closed" : ST[thState] }}</span><span class="th-sm">{{ thFor }}<span v-if="r.model" class="th-chip">{{ r.model.replace(/^claude-/, "").replace(/-(\d+)-(\d+)$/, " $1.$2") }}</span></span></div>
+          <div class="th-big"><span class="th-row"><b class="ap-num">{{ tv?.count || "–" }}</b><span v-if="plan?.added" :class="['plus', { grew: plan.grew }]" :title="`${plan.added} ${plan.added === 1 ? 'step' : 'steps'} added after the plan was set`">+{{ plan.added }}</span></span><span class="th-lbl">{{ plan ? "brief steps" : "steps" }}</span></div>
+          <div :class="['th-ring', { hi: ctxPct >= 80 }]" role="img" :aria-label="`Context used ${ctx ? ctxPct : 0} percent`"><svg viewBox="0 0 44 44"><circle class="rt" cx="22" cy="22" r="18" /><circle v-if="ctx" class="rf" cx="22" cy="22" r="18" :stroke-dasharray="TH_C.toFixed(1)" :stroke-dashoffset="(TH_C * (1 - ctxPct / 100)).toFixed(1)" /></svg><span>{{ ctx ? ctxPct + "%" : "–" }}</span></div>
+        </div>
+        <h3 v-if="plan && job" class="trh"><span class="tl">Job {{ job.id }} · plan</span><span v-if="plan.grew" class="grew-c" title="The plan grew by more than half of the brief's steps">Scope grew</span><span class="sp" /><span class="ap-num">{{ job.closedAt != null ? "closed " + time(job.closedAt) : `opened ${time(job.openedAt)} by ${job.openedBy}` }}</span></h3>
+        <h3 v-else-if="tasks.length" class="trh"><span class="tl">Trail</span><span class="sp" /><span class="ap-num">{{ thDone }} of {{ tasks.length }} done</span></h3>
+        <AgentTrail :row="r" @msg="goMsg" />
+        <section v-if="asks.length" class="asks-b" aria-label="Open asks">
+          <p class="asks-h"><span class="tl">Open asks</span><span class="ap-num">{{ asks.length }}</span></p>
+          <p class="asks-hint">An ask closes when {{ name }} replies to that message.</p>
+          <ul class="asks"><li v-for="k in asks" :key="k.id"><button type="button" class="ask" :title="`Opens the messages (message ${k.id})`" @click="goMsg"><span class="id">#{{ k.id }}</span><span class="sj">{{ k.subject }}</span><span class="mt">{{ k.from }} · {{ short(net.now - k.at) }}</span></button></li></ul>
+        </section>
+        <section v-if="earlier.length" class="fold ej">
+          <button type="button" class="fh" :aria-expanded="openEarlier" aria-controls="ap-ej" @click="openEarlier = !openEarlier"><span>Earlier jobs</span><span class="ap-hint ap-num">{{ earlier.length }}</span><Icon name="chevron-down" :size="16" class="cv-i" /></button>
+          <div id="ap-ej" class="fb" :class="{ 'is-open': openEarlier }" :inert="!openEarlier || undefined"><div>
+            <div v-for="e in earlier" :key="e.j.id" class="job">
+              <button type="button" class="job-h" :aria-expanded="openJob === e.j.id" :aria-controls="`ap-ej-${e.j.id}`" @click="toggleJob(e.j.id)">
+                <span class="jn">Job {{ e.j.id }}</span><span class="jg">{{ e.j.goal ?? e.j.brief ?? "No goal written" }}</span>
+                <span class="job-m"><span :class="['out', { bad: e.j.outcome !== 'done' }]">{{ cap(e.j.outcome ?? "open") }}</span><span v-if="!e.j.legacy">{{ e.c.done }}/{{ e.c.plan }}<template v-if="e.c.added"> +{{ e.c.added }}</template></span><span v-else>{{ e.j.steps.filter((x) => x.status === "done").length }}/{{ e.j.steps.length }}</span><span>{{ e.j.grade != null ? "grade " + e.j.grade : "not graded" }}</span><span v-if="e.j.closedAt != null">closed {{ time(e.j.closedAt) }}</span></span>
+              </button>
+              <div :id="`ap-ej-${e.j.id}`" class="fb" :class="{ 'is-open': openJob === e.j.id }" :inert="openJob !== e.j.id || undefined"><div><AgentTrail v-if="seenJobs.has(e.j.id)" :row="e.row" @msg="goMsg" /></div></div>
+            </div>
+          </div></div>
+        </section>
+      </section>
+      <template v-else-if="tab === 'usage'">
         <!-- key numbers, Vercel-style: one glance before any detail -->
         <div class="ap-hero">
           <div class="ap-tile">
@@ -180,41 +266,8 @@ defineExpose({ el });
           </div>
         </div>
 
-        <section v-if="r.goal" class="goal" aria-label="Goal">
-          <div class="now-h"><span class="lbl">Goal</span><span v-if="goalReview" class="ap-chip goal-hint">Goal reached? Review and close</span></div>
-          <p class="goal-t" :title="r.goal">{{ r.goal }}</p>
-        </section>
-
-        <!-- Now: the loudest block, GitHub Actions style -->
-        <section :class="['now', { working: dot === 'working', blocked: !!rep?.blockedOn }]" aria-label="Now">
-          <div class="now-h"><span class="lbl">Now</span><span v-if="rep?.phase" class="ap-chip ap-ph">{{ rep.phase }}</span></div>
-          <p v-if="rep?.blockedOn" class="blk"><Icon name="triangle-alert" :size="16" /><span>Blocked on {{ rep.blockedOn }}</span></p>
-          <p v-if="r.doing" :class="['doing', { dim: fromReport && repOld }]">{{ humanDoing(r.doing) }}<span v-if="fromReport" class="rage">reported {{ ago(rep!.at) }}</span></p>
-          <p v-else-if="!rep?.blockedOn" class="none">Nothing running.</p>
-          <p v-if="r.action" class="tool"><Icon name="loader" :size="14" class="ap-spin" /><span class="mono">{{ tool(r.action) }}</span></p>
-          <p v-if="allDone" class="sm">All {{ tasks.length }} tasks done</p>
-          <div v-else-if="prog != null" class="pb">
-            <div class="ap-bar" role="progressbar" :aria-label="`Tasks ${done} of ${tasks.length}`" :aria-valuenow="prog" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: prog + '%' }" /></div>
-            <span class="ap-num">Tasks {{ done }}/{{ tasks.length }} · {{ prog }}%</span>
-          </div>
-          <p v-if="!allDone && prog != null && curPct != null" class="sm">current task ~{{ curPct }}%</p>
-          <p v-else-if="prog == null" class="sm">No tasks yet</p>
-          <dl class="ap-kv">
-            <template v-if="r.turn"><dt>Turn</dt><dd>{{ since(r.turn.startedAt) }} · {{ r.turn.tools }} {{ r.turn.tools === 1 ? "tool" : "tools" }}<template v-if="r.turns"> · turn {{ r.turns }}</template></dd></template>
-            <template v-else-if="r.turns"><dt>Turns</dt><dd>{{ r.turns }}</dd></template>
-            <template v-if="r.lastTool"><dt>Last tool</dt><dd><span class="mono">{{ tool(r.lastTool) }}</span> · <span :class="r.lastTool.ok ? 'ok' : 'bad'">{{ r.lastTool.ok ? "ok" : "failed" }}</span>{{ r.lastTool.ms != null ? " · " + r.lastTool.ms + " ms" : "" }} · {{ ago(r.lastTool.at) }}</dd></template>
-            <template v-if="rep"><dt>Reported</dt><dd>{{ ago(rep.at) }}</dd></template>
-            <template v-if="r.lastMsg"><dt>Last message</dt><dd>{{ r.lastMsg.dir === "out" ? "to" : "from" }} {{ r.lastMsg.peer }} · {{ r.lastMsg.kind }} · {{ ago(r.lastMsg.at) }}</dd></template>
-          </dl>
-        </section>
-      </template>
-
-      <AgentnetJobs v-if="r" mode="tasks" :name="name" :tasks="tasks" />
-
-      <AgentnetUsage v-if="r" compact :only="name" class="ap-usage" />
-
-      <AgentnetScore v-if="r && !isRoot" :only="name" class="ap-score" />
-
+        <AgentnetUsage compact :only="name" class="ap-usage" />
+        <AgentnetScore v-if="!isRoot" :only="name" class="ap-score" />
       <section v-if="r && idRows.length" class="sec fold">
         <button type="button" class="fh" :aria-expanded="openId" aria-controls="ap-id" @click="openId = !openId">
           <span>Details</span><span class="ap-hint">{{ isRoot ? "session, pid" : "project, session, persona" }}</span><Icon name="chevron-down" :size="16" class="cv-i" />
@@ -237,23 +290,57 @@ defineExpose({ el });
           </div>
         </div>
       </section>
+      </template>
       </div>
      </Transition>
     </div>
+
+    <footer v-if="r && tab !== 'chat'" class="bar">
+      <div v-if="stopAsk" class="confirm" role="alertdialog" :aria-label="`Stop ${name}?`" @keydown.esc.stop="stopAsk = false">
+        <p><b>Stop {{ name }}?</b> Its turn ends now and its window closes. <template v-if="openTasks && plan && job">Job {{ job.id }} closes as dropped and its {{ openTasks }} open {{ openTasks === 1 ? "step is" : "steps are" }} marked unfinished.</template><template v-else-if="openTasks">Its {{ openTasks }} open {{ openTasks === 1 ? "task stays" : "tasks stay" }} on the list for whoever picks {{ openTasks === 1 ? "it" : "them" }} up.</template> Its boss gets a message.</p>
+        <div class="row"><button type="button" class="btn sm solid-danger" :disabled="!!acting" @click="stopAgent"><Icon name="square" :size="15" /> Stop agent</button><button type="button" class="btn sm ghost" :disabled="!!acting" @click="stopAsk = false">Cancel</button></div>
+      </div>
+      <div v-else class="row">
+        <button type="button" class="btn sm pri" @click="goMsg"><Icon name="send" :size="15" /> Message</button>
+        <button type="button" class="btn sm" :disabled="!windows.available || !!windows.busy || gone" @click="emit('open')"><Icon name="app-window" :size="15" /> Open window</button>
+        <span class="sp" />
+        <button v-if="canAct" type="button" class="btn sm ghost" :disabled="!!acting" title="End the current turn; the agent stays alive" @click="interrupt"><Icon name="circle-stop" :size="15" /> Interrupt</button>
+        <button type="button" class="btn sm ghost ico" aria-label="More actions" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen"><Icon name="ellipsis" :size="18" /></button>
+      </div>
+      <div v-if="menuOpen && !stopAsk" class="menu" role="menu">
+        <button type="button" role="menuitem" :disabled="!windows.available || !!windows.busy" @click="menuOpen = false; emit('closeWin')"><Icon name="x" :size="16" /> Close window</button>
+        <a v-if="teamName" role="menuitem" :href="'#/agents?team=' + encodeURIComponent(teams.list.find((x) => x.members.includes(name))?.id ?? '')" @click="menuOpen = false"><Icon name="users" :size="16" /> Open team</a>
+        <hr v-if="canAct" />
+        <button v-if="canAct" type="button" role="menuitem" class="bad" @click="menuOpen = false; stopAsk = true"><Icon name="square" :size="16" /> Stop agent</button>
+      </div>
+    </footer>
   </aside>
 </template>
 
 <style scoped>
+.hdot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--off)}
+.h-working{background:var(--on)}.h-idle{background:var(--muted)}.h-waiting{background:var(--warn)}.h-blocked{background:var(--bad)}.h-starting{background:transparent;border:2px dashed var(--muted)}
 /* Desktop: a sheet over the right edge of the map/cards area. The view decides where it sits; this file draws it. */
 .hd{flex:none;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:14px 16px 12px;border-bottom:1px solid var(--line)}
-.t1{display:flex;align-items:center;gap:10px}
-.ap-nm{flex:0 1 auto;margin:0;text-transform:none;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:700 18px/1.2 var(--body);letter-spacing:-.01em}
-.ap-chip{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 8px;border:1px solid var(--line);border-radius:999px;background:var(--track);color:var(--muted);font:600 11.5px/1.3 var(--mono)}
+.t1{display:flex;align-items:flex-start;gap:8px}.tt{flex:1;min-width:0;display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px}.t1 .x{flex:none;margin-left:0}
+.ap-nm{flex:0 1 auto;min-width:0;margin:0;text-transform:none;color:var(--ink);overflow-wrap:anywhere;font:700 18px/1.2 var(--body);letter-spacing:-.01em}
+.ap-chip{flex:none;max-width:100%;overflow-wrap:anywhere;padding:3px 8px;border:1px solid var(--line);border-radius:999px;background:var(--track);color:var(--muted);font:600 11.5px/1.3 var(--mono)}
 .x{flex:none;margin:-8px -8px -8px auto;display:grid;place-items:center;width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:var(--ink);cursor:pointer;transition:background-color .2s var(--ease)}
 .x:hover{background:var(--track)}
 .x:focus{outline:none}
 .x:focus-visible,.fh:focus-visible{outline:2px solid var(--on);outline-offset:1px}
-.job{margin:0;color:var(--muted);font-size:13.5px;line-height:1.4;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.boss{margin:0;color:var(--muted);font-size:13px}.boss a{color:var(--ink);font-weight:600;text-decoration:none}.boss a:hover{text-decoration:underline}
+.ap-chip.tm{font-family:var(--body)}
+.tc{font-weight:500;opacity:.75}
+.bar{flex:none;position:relative;padding:12px 16px;border-top:1px solid var(--line);background:var(--panel-2)}
+.bar .row{display:flex;align-items:center;gap:8px}.bar .sp{flex:1}
+.bar .btn{white-space:nowrap;display:inline-flex;align-items:center;gap:6px;min-height:40px;padding-inline:12px}
+.bar .btn.pri{background:var(--ink);color:var(--bg);border-color:var(--ink)}.bar .btn.ico{padding-inline:8px}
+.bar .btn.solid-danger{color:#fff;background:var(--bad);border-color:var(--bad)}
+.confirm{display:grid;gap:10px}.confirm p{margin:0;font-size:14px;line-height:1.45}
+.menu{position:absolute;right:16px;bottom:calc(100% - 4px);width:240px;display:grid;padding:6px;border-radius:12px;background:var(--panel);box-shadow:inset 0 0 0 1px var(--line),0 18px 40px -16px rgb(0 0 0/.55);z-index:3}
+.menu > *{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:10px;min-height:40px;padding:0 10px;border-radius:8px;font:500 14px var(--body);color:var(--ink);cursor:pointer}
+.menu > *:hover,.menu > *:focus-visible{background:var(--track)}.menu .bad{color:var(--bad)}.menu hr{all:unset;display:block;border-top:1px solid var(--line);margin:4px 6px;min-height:0;padding:0}
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-left:-8px}
 .acts .btn{display:inline-flex;align-items:center;gap:5px;min-height:36px;padding-inline:8px}
 .ap-dot{flex:none;width:11px;height:11px;border-radius:50%;background:var(--off)}
@@ -269,7 +356,7 @@ defineExpose({ el });
 .none{margin:0;color:var(--muted);font-size:13px;line-height:1.4}
 .ap-num{font-variant-numeric:tabular-nums}
 .mono{font-family:var(--mono);font-size:12px;overflow-wrap:anywhere;word-break:break-word}
-.lbl{color:var(--muted);font:600 11px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.lbl{color:var(--muted);font:600 12px/1.2 var(--body)}
 .sm{color:var(--muted);font-size:12px;line-height:1.3}
 
 .ap-hero{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
@@ -285,11 +372,14 @@ defineExpose({ el });
 .rf{stroke:var(--on);stroke-linecap:round;transition:stroke-dashoffset .5s var(--ease)}
 .rf.hi{stroke:var(--warn)}
 
+.n3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.n3 > div{display:grid;gap:2px}.n3 b{font:700 18px/1.2 var(--body)}
+.nx{list-style:none;margin:0;padding:0;display:grid;gap:6px}.nx li{display:flex;gap:8px;align-items:flex-start;font-size:13.5px;line-height:1.35}.nx li span{overflow-wrap:anywhere}
+.lm{margin:0;font-size:13px;line-height:1.5;color:var(--muted)}
 .now{display:grid;gap:8px;padding:12px 14px;border:1px solid var(--line);border-left:3px solid var(--off);border-radius:14px;background:color-mix(in srgb,var(--ink) 5%,transparent)}
 .now.working{border-left-color:var(--on);background:color-mix(in srgb,var(--on) 7%,transparent)}
 .now.blocked{border-left-color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,transparent)}
 .goal{display:grid;gap:6px;padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--ink) 4%,transparent)}
-.goal-t{margin:0;font:500 14px/1.4 var(--body);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.goal-t{margin:0;font:500 14px/1.4 var(--body);overflow-wrap:anywhere}
 .goal-hint{margin-left:auto;font-family:var(--body);color:var(--warn)}
 .now-h{display:flex;align-items:center;gap:8px}
 .now-h .ap-ph{margin-left:auto;font-family:var(--body);max-width:60%}
@@ -309,21 +399,72 @@ defineExpose({ el });
 .ap-kv dd{margin:0;overflow-wrap:anywhere}
 .ok{color:var(--on)} .bad{color:var(--bad)}
 
-.sec h3{display:flex;align-items:baseline;gap:6px;margin:0 0 8px;color:var(--muted);font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.sec h3{display:flex;align-items:baseline;gap:6px;margin:0 0 8px;color:var(--muted);font:600 13px/1.2 var(--body)}
+.th{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:center;padding-bottom:12px;margin-bottom:12px;border-bottom:1px solid color-mix(in srgb,var(--ink) 6%,transparent)}
+.th-st{display:flex;flex-direction:column;gap:4px;min-width:0}
+.th-w{font:600 11px/1 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.th-w.s-working{color:var(--on)}.th-w.s-waiting{color:var(--pend)}.th-w.s-blocked{color:var(--bad)}
+.th-sm{color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.th-chip{display:inline-flex;align-items:center;height:20px;padding:0 7px;margin-left:4px;border-radius:999px;font:600 11px/1 var(--mono);letter-spacing:.02em;color:var(--muted);background:color-mix(in srgb,var(--ink) 6%,transparent);white-space:nowrap}
+.th-big{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.th-big b{font:600 22px/1 var(--mono);color:var(--ink);opacity:1}
+.th-row{display:flex;align-items:baseline;gap:6px}
+/* steps added after the plan was set: muted, amber once the plan grew by more than half */
+.plus{font:600 12px/1 var(--mono);font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
+.plus.grew{color:var(--pend)}
+.n3 b .plus{margin-left:5px}
+.grew-c{display:inline-flex;align-items:center;min-height:20px;padding:0 7px;border-radius:999px;font:600 11px/1 var(--body);white-space:nowrap;color:var(--pend);background:color-mix(in srgb,var(--pend) 12%,transparent)}
+/* open asks: what a boss asked by message and got no reply to yet */
+.asks-b{display:grid;gap:8px;margin-top:16px}
+.asks-h{display:flex;align-items:baseline;gap:8px;margin:0}
+.asks-h .tl{font:600 11px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.asks-h .ap-num{font:600 12px/1 var(--mono);color:var(--ink)}
+.asks-hint{margin:-4px 0 0;color:var(--muted);font-size:12px;line-height:1.35}
+.asks{list-style:none;margin:0;padding:0;display:grid;border-radius:12px;box-shadow:inset 0 0 0 1px var(--line);overflow:hidden}
+.asks li+li{border-top:1px solid var(--line)}
+.ask{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:10px;align-items:baseline;width:100%;min-height:44px;padding:10px 12px;border:0;background:transparent;color:var(--ink);text-align:left;cursor:pointer;font:400 13px/1.4 var(--body)}
+.ask:hover{background:color-mix(in srgb,var(--ink) 4%,transparent)}
+.ask:focus-visible,.ask-1:focus-visible,.job-h:focus-visible{outline:2px solid var(--on);outline-offset:-2px}
+.ask .id,.ask .mt{font:500 11px/1.5 var(--mono);color:var(--muted)}
+.ask .sj{overflow-wrap:anywhere}
+.ask .mt{white-space:nowrap}
+.ask-1{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0 12px;border:0;border-radius:12px;background:transparent;box-shadow:inset 0 0 0 1px var(--line);color:var(--ink);text-align:left;cursor:pointer;font:400 13px/1.3 var(--body)}
+.ask-1 b{font-weight:600}.ask-1 span{color:var(--muted)}.ask-1 .icon{margin-left:auto;color:var(--muted);transform:rotate(-90deg)}
+/* earlier jobs: one row per job, a row opens to its steps */
+.ej{margin-top:16px}
+.job{display:grid;border-radius:12px;box-shadow:inset 0 0 0 1px var(--line)}
+.job-h{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:10px;row-gap:4px;align-items:baseline;width:100%;min-height:44px;padding:10px 12px;border:0;border-radius:12px;background:transparent;color:var(--ink);text-align:left;cursor:pointer;font:400 13px/1.4 var(--body)}
+.job-h .jn{font:600 11px/1.5 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.job-h .jg{overflow-wrap:anywhere}
+.job-m{grid-column:2;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font:500 12px/1.4 var(--mono);color:var(--muted)}
+.job-m .out{font-family:var(--body);font-weight:600;color:var(--ink)}
+.job-m .out.bad{color:var(--bad)}
+.job>.fb>div{padding-inline:12px}
+.job>.fb.is-open>div{padding-bottom:12px}
+.th-lbl{font:600 11px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.th-ring{position:relative;width:44px;height:44px}
+.th-ring svg{width:44px;height:44px;transform:rotate(-90deg)}
+.th-ring circle{fill:none;stroke-width:3.5}
+.th-ring .rt{stroke:color-mix(in srgb,var(--fiber) 35%,transparent)}
+.th-ring .rf{stroke:var(--lit);stroke-linecap:round}
+.th-ring.hi .rf{stroke:var(--pend)}
+.th-ring span{position:absolute;inset:0;display:grid;place-items:center;font:600 11px/1 var(--mono);color:var(--ink)}
+.trh{margin-bottom:12px}.trh .sp{flex:1}.trh .tl{font:600 11px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase}.trh .ap-num{font:500 12px/1 var(--mono);color:var(--muted);opacity:1}
 .sec h3 .ap-num{letter-spacing:0;color:var(--ink);opacity:.8}
 /* folded sections: animated open/close via grid rows 0fr -> 1fr */
 .fold{border-top:1px solid var(--line);padding-top:4px}
-.fh{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0;border:0;background:transparent;color:var(--muted);cursor:pointer;text-align:left;font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.fh{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0;border:0;background:transparent;color:var(--muted);cursor:pointer;text-align:left;font:600 13px/1.2 var(--body)}
 .fh .ap-hint{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:none;letter-spacing:0;font-weight:500;opacity:.75}
 .cv-i{flex:none;transition:transform .28s cubic-bezier(.2,.8,.2,1)}
 .fh[aria-expanded="true"] .cv-i{transform:rotate(180deg)}
 .fb{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease)}
 .fb.is-open{grid-template-rows:1fr;opacity:1}
-.fb > div{overflow:hidden;display:grid;gap:8px;transition:padding .3s cubic-bezier(.2,.8,.2,1)}
+.fb > div{overflow:hidden;display:grid;gap:8px;visibility:hidden;transition:padding .3s cubic-bezier(.2,.8,.2,1),visibility 0s .3s}
+.fb.is-open > div{visibility:visible;transition-delay:0s}
 .fb.is-open > div{padding-bottom:6px}
 .hk{list-style:none;margin:0;padding:0;display:grid;gap:6px;font-size:12.5px}
 .hk li{display:flex;align-items:center;gap:8px}
-.hk i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--hook,#f2b04a)}
+.hk i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--off)} /* ok = muted grey, failed = red; amber stays for waiting */
 .hk li.idle,.hk li.off{opacity:.6}
 .hk li.off i{background:var(--off)}
 .hk i.bad{background:var(--bad)}
@@ -337,10 +478,9 @@ defineExpose({ el });
 .hdf{margin-inline:-8px}.hdf .fold-in{padding-inline:8px}
 .hdf.shut{margin-bottom:-8px}
 .ap.sheet.chat-on{height:92dvh;transition:transform .32s cubic-bezier(.2,.8,.2,1),height .3s cubic-bezier(.2,.8,.2,1)}
-.tabs{position:relative;display:grid;margin:0;overflow:visible;grid-template-columns:repeat(2,minmax(0,1fr));padding:3px;border:1px solid var(--line);border-radius:12px;background:var(--track)}
-.tabs .ind{position:absolute;top:3px;bottom:3px;left:3px;width:calc((100% - 6px) / 2);border-radius:9px;background:color-mix(in srgb,var(--ink) 12%,transparent);box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .3s cubic-bezier(.2,.8,.2,1)}
-.tabs button{position:relative;min-height:36px;border:0;border-radius:9px;background:transparent;color:var(--muted);font:600 13px/1 var(--body);cursor:pointer;transition:color .2s var(--ease)}
-.tabs button.on{color:var(--ink)}
+.tabs{position:relative;display:flex;gap:2px;margin:0 -16px;padding:0 12px;border-bottom:1px solid var(--line)}
+.tabs button{position:relative;display:inline-flex;align-items:center;gap:6px;height:40px;padding:0 10px;border:0;background:transparent;color:var(--muted);font:600 13px/1 var(--body);cursor:pointer;transition:color .2s var(--ease)}
+.tabs button{box-shadow:inset 0 -2px 0 transparent}.tabs button.on{color:var(--ink);box-shadow:inset 0 -2px 0 var(--ink)}
 .tabs button:focus-visible{outline:2px solid var(--on);outline-offset:1px}
 .ap-pn{display:grid;gap:16px;min-width:0}
 .tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s var(--ease),transform .2s cubic-bezier(.2,.8,.2,1)}
@@ -353,5 +493,5 @@ defineExpose({ el });
 
 .sheet .hd{padding-top:8px;touch-action:none;cursor:grab}
 .grab{justify-self:center;width:40px;height:5px;border-radius:3px;background:color-mix(in srgb,var(--ink) 28%,transparent)}
-@media (prefers-reduced-motion:reduce){.tabs .ind{transition:none}.tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s}.tab-fwd-enter-from,.tab-back-leave-to,.tab-fwd-leave-to,.tab-back-enter-from{transform:none}.ap-dot.s-working,.ap-spin{animation:none}.rf,.ap-bar i,.cv-i,.fb,.fb > div{transition:none}.ap.sheet,.ap.sheet.chat-on,.fold-r{transition:none}}
+@media (prefers-reduced-motion:reduce){.tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s}.tab-fwd-enter-from,.tab-back-leave-to,.tab-fwd-leave-to,.tab-back-enter-from{transform:none}.ap-dot.s-working,.ap-spin{animation:none}.rf,.ap-bar i,.cv-i,.fb,.fb > div{transition:none}.ap.sheet,.ap.sheet.chat-on,.fold-r{transition:none}}
 </style>

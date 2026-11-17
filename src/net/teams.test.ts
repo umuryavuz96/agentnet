@@ -142,3 +142,12 @@ describe("teams close themselves", () => {
   });
 
 });
+
+describe("member bosses", () => {
+  test("team detail carries each member's last boss, also after despawn", async () => {
+    const r = await j(await call("root", "POST", "/teams", { name: "Bosses", goal: "check last known bosses", lead: "lead-1", members: ["dev-1"] }));
+    expect(r.body.bosses).toEqual({ "lead-1": "root", "dev-1": "lead-1" });
+    await call("root", "POST", "/despawn", { name: "dev-1" });
+    expect((await j(await call("root", "GET", "/teams/bosses"))).body.bosses["dev-1"]).toBe("lead-1");
+  });
+});

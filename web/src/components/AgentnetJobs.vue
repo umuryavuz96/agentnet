@@ -124,7 +124,7 @@ watch(() => jobFocus.n, applyFocus); watch(loaded, applyFocus);
 <style scoped>
 .aj{display:grid;gap:18px;min-width:0}
 .aj *,.jp *{min-width:0}
-h3{display:flex;align-items:baseline;gap:6px;margin:0 0 8px;color:var(--muted);font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+h3{display:flex;align-items:baseline;gap:6px;margin:0 0 8px;color:var(--muted);font:600 12px/1.2 var(--body);}
 .num{font-variant-numeric:tabular-nums}
 h3 .num{letter-spacing:0;color:var(--ink);opacity:.8}
 .none{margin:0;color:var(--muted);font-size:13px;line-height:1.4}
@@ -143,7 +143,7 @@ h3 .num{letter-spacing:0;color:var(--ink);opacity:.8}
 .tasks li.done .icon{color:var(--on)}
 /* fixed panel under the tab control: header never scrolls, the list scrolls inside its own max-height */
 .jp{flex:none;border-bottom:1px solid var(--line);padding:0 16px}
-.jph{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0;border:0;background:transparent;color:var(--muted);cursor:pointer;text-align:left;font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.jph{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0;border:0;background:transparent;color:var(--muted);cursor:pointer;text-align:left;font:600 12px/1.2 var(--body);}
 .jph:focus-visible{outline:2px solid var(--on);outline-offset:1px;border-radius:8px}
 .jt{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cnt{flex:none;letter-spacing:0;color:var(--ink);opacity:.8}
@@ -151,8 +151,8 @@ h3 .num{letter-spacing:0;color:var(--ink);opacity:.8}
 .rn .jdot{margin:0 4px 0 2px}
 .jph > .cv{margin-left:auto}
 .jph[aria-expanded="true"] > .cv{transform:rotate(180deg)}
-.jpb{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease)}
-.jpb.is-open{grid-template-rows:1fr;opacity:1}
+.jpb{display:grid;grid-template-rows:0fr;opacity:0;visibility:hidden;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease),visibility 0s .3s}
+.jpb.is-open{grid-template-rows:1fr;opacity:1;visibility:visible;transition-delay:0s}
 .jpb > div{overflow:hidden}
 .jpi{max-height:240px;overflow-y:auto;overscroll-behavior:contain;padding-bottom:12px}
 @media (max-width:700px){.jpi{max-height:134px}}

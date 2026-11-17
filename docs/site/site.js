@@ -1,4 +1,4 @@
-// Copy buttons and animated FAQ. The page is fully readable without this file.
+// Copy buttons, scroll steps and animated FAQ. The page is fully readable without this file.
 (() => {
   const live = document.getElementById("live");
   const reduce = matchMedia("(prefers-reduced-motion: reduce)");
@@ -21,33 +21,66 @@
     }
   }
 
-  // Hero video: only mounted when the figure says data-video="on" (files exist). Muted by default,
-  // autoplay only without reduced motion, visible play/pause (WCAG 2.2.2) and unmute controls.
-  const fig = document.querySelector(".shot");
-  const tpl = document.getElementById("hero-video");
-  if (fig && tpl && fig.dataset.video === "on") {
-    const box = fig.querySelector(".shot-box");
-    box.replaceChildren(tpl.content.cloneNode(true));
-    fig.classList.add("has-video");
-    const v = box.querySelector("video");
-    const play = box.querySelector('[data-act="play"]');
-    const sound = box.querySelector('[data-act="sound"]');
-    const icon = (btn, id) => btn.querySelector("use").setAttribute("href", id);
-    const sync = () => {
-      const on = !v.paused;
-      icon(play, on ? "#i-pause" : "#i-play");
-      play.setAttribute("aria-label", on ? "Pause video" : "Play video");
-      icon(sound, v.muted ? "#i-muted" : "#i-sound");
-      sound.setAttribute("aria-pressed", String(!v.muted));
-      sound.setAttribute("aria-label", v.muted ? "Unmute" : "Mute");
-      sound.querySelector("span").textContent = v.muted ? "Unmute" : "Mute";
-    };
-    v.addEventListener("play", sync); v.addEventListener("pause", sync); v.addEventListener("volumechange", sync);
-    play.addEventListener("click", () => { v.paused ? v.play().catch(() => {}) : v.pause(); });
-    sound.addEventListener("click", () => { v.muted = !v.muted; if (!v.muted && v.paused) v.play().catch(() => {}); });
-    if (!reduce.matches) v.play().catch(() => {});
-    sync();
+  // Scroll steps: the section most in view plays its loop, the rest pause. Reduced motion shows posters only.
+  const root = document.documentElement;
+  root.classList.add("js");
+  const steps = [...document.querySelectorAll(".step")];
+  const secs = [document.querySelector(".hero"), ...steps].filter(Boolean);
+  const ol = document.querySelector(".rail ol"), prog = document.querySelector(".prog");
+  steps.forEach((s) => {
+    ol.insertAdjacentHTML("beforeend", `<li><a href="#${s.id}">${s.dataset.name}</a></li>`);
+    prog.insertAdjacentHTML("beforeend", "<i></i>");
+  });
+  const links = [...ol.querySelectorAll("a")], segs = [...prog.children];
+  let userPaused = reduce.matches;   // a pause by the reader sticks; reduced motion starts paused
+  let current = null;
+  const medias = [...document.querySelectorAll(".media")];
+  // A decode or load error: retry once with the mp4 first, then give up and keep the poster with a play button.
+  const fail = (m, v) => {
+    m.classList.remove("playing", "on");
+    if (v.dataset.retry) { v.dataset.failed = "1"; return; }
+    v.dataset.retry = "1";
+    for (const s of [...v.querySelectorAll("source")].filter((s) => s.type === "video/mp4").reverse()) v.prepend(s);
+    v.load();
+    if (m === current && !userPaused) v.play().catch(() => {});
+  };
+  for (const m of medias) {
+    const v = m.querySelector("video"), pp = m.querySelector(".pp");
+    v.addEventListener("playing", () => { m.classList.add("on", "playing"); pp.setAttribute("aria-label", "Pause"); });
+    v.addEventListener("pause", () => { m.classList.remove("playing"); pp.setAttribute("aria-label", "Play"); });
+    v.addEventListener("error", () => fail(m, v));
+    v.querySelector("source:last-of-type").addEventListener("error", () => fail(m, v));
+    pp.hidden = false;
+    pp.addEventListener("click", () => { userPaused = !v.paused; if (userPaused) v.pause(); else { delete v.dataset.failed; v.play().catch(() => {}); } });
   }
+  // The first loop starts after the page has loaded and settled, so the poster paints first and nothing competes with it.
+  let ready = false;
+  // Starting a decode is heavy on slow phones, so the loop starts on the first touch, key or scroll, or after 5 s.
+  const go = () => { if (ready) return; ready = true; sync(); };
+  const start = () => { const t = setTimeout(go, 5000); for (const ev of ["pointerdown", "keydown", "wheel", "touchstart", "scroll"]) addEventListener(ev, () => { clearTimeout(t); go(); }, { once: true, passive: true }); };
+  if (document.readyState === "complete") start(); else addEventListener("load", start, { once: true });
+  function sync() {
+    if (!ready) return;
+    for (const m of medias) {
+      const v = m.querySelector("video");
+      if (m === current && !userPaused) { if (!v.dataset.failed && v.paused) v.play().catch(() => {}); } else if (!v.paused) v.pause();
+    }
+  }
+  const ratio = new Map();
+  const io = new IntersectionObserver((es) => {
+    for (const e of es) { ratio.set(e.target, e.isIntersecting ? e.intersectionRatio : 0); if (e.intersectionRatio >= 0.35) e.target.classList.add("in"); }
+    let best = null, top = 0.35;
+    for (const s of secs) { const r = ratio.get(s) || 0; if (r > top) { top = r; best = s; } }
+    current = best ? best.querySelector(".media") : null;
+    const i = steps.indexOf(best);
+    links.forEach((a, n) => (n === i ? a.setAttribute("aria-current", "true") : a.removeAttribute("aria-current")));
+    if (i >= 0) ol.style.setProperty("--i", i);
+    segs.forEach((g, n) => g.classList.toggle("cur", n === i));
+    prog.classList.toggle("on", i >= 0);
+    sync();
+  }, { threshold: [0, 0.2, 0.35, 0.5, 0.65, 0.8, 1] });
+  secs.forEach((s) => io.observe(s));
+  reduce.addEventListener("change", () => { userPaused = reduce.matches; sync(); });
 
   // FAQ: animate the answer's height and opacity on open and close.
   for (const d of document.querySelectorAll(".faq details")) {

@@ -78,7 +78,7 @@ const rows = computed(() => list.value);
 
   <div v-else-if="canAct" class="ctl-wrap">
     <div class="ctl">
-      <button type="button" class="btn sm ghost" :disabled="!!acting || confirming" title="Interrupt the current turn; the agent stays alive" @click="stop"><Icon :name="acting === 'stop' ? 'loader' : 'square'" :size="14" :class="{ spin: acting === 'stop' }" /> Stop</button>
+      <button type="button" class="btn sm ghost" :disabled="!!acting || confirming" title="Interrupt the current turn; the agent stays alive" @click="stop"><Icon :name="acting === 'stop' ? 'loader' : 'circle-stop'" :size="14" :class="{ spin: acting === 'stop' }" /> Stop</button>
       <button ref="closeBtn" type="button" class="btn sm danger-ghost" :disabled="!!acting || confirming" :aria-expanded="confirming" @click="ask"><Icon name="x" :size="15" /> Close agent</button>
     </div>
     <Transition name="cf">
@@ -100,7 +100,7 @@ const rows = computed(() => list.value);
 </template>
 
 <style scoped>
-.sch h3{display:flex;align-items:baseline;gap:6px;margin:0 0 8px;color:var(--muted);font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.sch h3{display:flex;align-items:baseline;gap:6px;margin:0 0 8px;color:var(--muted);font:600 12px/1.2 var(--body);}
 .sch h3 .n{letter-spacing:0;color:var(--ink);opacity:.8;font-variant-numeric:tabular-nums}
 .sl{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .sl li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:6px 10px;padding:8px 10px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--ink) 4%,transparent)}

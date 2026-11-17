@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LOOP } from "../../test/helpers";
+import { LOOP, fetchAsRoot } from "../../test/helpers";
 import { makeWorkspace } from "../../test/helpers/adoptFixture";
 
 const tmp = mkdtempSync(join(tmpdir(), "an-adopt-"));
@@ -18,7 +18,7 @@ const { seams, loadState, setState } = await import("./adopt");
 const started: unknown[] = [];
 seams.startDirector = ((dir: string, _r: unknown, _t: unknown, _e: unknown, opts: unknown) => { started.push({ dir, opts }); return { ok: true, session: "x", attach: "tmux a" }; }) as never;
 seams.killScanSession = () => false; seams.hasRoot = () => false; seams.hasSession = () => false;
-const f = makeFetch(buildApp());
+const f = await fetchAsRoot(makeFetch(buildApp())); // root.token bearer on every call
 const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") => f(new Request(`http://x${path}`, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), LOOP);
 const snap = (dir: string, out = new Map<string, string>()): Map<string, string> => {
   for (const n of readdirSync(dir)) { const p = join(dir, n); if (statSync(p).isDirectory()) snap(p, out); else out.set(p, readFileSync(p, "utf8")); }

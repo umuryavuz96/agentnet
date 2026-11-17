@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import type { Env } from "../core/http";
-import { LAN, LOOP } from "../../test/helpers";
+import { LAN, LOOP, asRoot } from "../../test/helpers";
 
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-hooks-"));
 
@@ -115,9 +115,10 @@ test("recentFires filters by agent and strips the agentnet/ prefix", async () =>
   expect(recentFires(undefined, 1).length).toBe(1);
 });
 
-async function app() {
+/** raw: no token (the loopback-guard tests, run with AGENTNET_PANEL_LOGIN=off); else every call carries root.token. */
+async function app(raw = false) {
   const { hooksRoutes } = await import("./hooks");
-  const api = new Hono<Env>(); hooksRoutes(api); const a = new Hono<Env>(); a.route("/api/v1", api); return a;
+  const api = new Hono<Env>(); hooksRoutes(api); const a = new Hono<Env>(); a.route("/api/v1", api); return raw ? a : asRoot(a);
 }
 const post = (body: unknown, headers: Record<string, string> = {}) => ({ method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
 
@@ -134,7 +135,8 @@ test("enable then rollback through the routes: file after rollback equals the fi
   expect(readFileSync(file, "utf8")).toBe(before);
 });
 test("hook writes need root: forwarded or non-loopback callers get 403, loopback gets through", async () => {
-  const a = await app(), fwd = { "X-Forwarded-For": "10.0.0.5" };
+  process.env.AGENTNET_PANEL_LOGIN = "off"; // the loopback guard under test now exists only behind this house flag
+  const a = await app(true), fwd = { "X-Forwarded-For": "10.0.0.5" };
   expect((await a.request("/api/v1/agent-hooks/rollback", post({}, fwd), LOOP)).status).toBe(403);
   expect((await a.request("/api/v1/agent-hooks/rollback", post({}), LAN)).status).toBe(403);
   expect((await a.request("/api/v1/agent-hooks/abc/enabled", post({ enabled: true }, fwd), LOOP)).status).toBe(403);
@@ -144,7 +146,8 @@ test("hook writes need root: forwarded or non-loopback callers get 403, loopback
 });
 
 test("fires route is root only: forwarded or LAN peers get 403, loopback root gets 200", async () => {
-  const a = await app();
+  process.env.AGENTNET_PANEL_LOGIN = "off"; // the loopback guard under test now exists only behind this house flag
+  const a = await app(true);
   expect((await a.request("/api/v1/agent-hooks/fires", { headers: { "X-Forwarded-For": "10.0.0.5" } }, LOOP)).status).toBe(403);
   expect((await a.request("/api/v1/agent-hooks/fires", {}, LAN)).status).toBe(403);
   expect((await a.request("/api/v1/agent-hooks/fires", {}, LOOP)).status).toBe(200);

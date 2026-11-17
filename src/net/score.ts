@@ -41,7 +41,10 @@ export interface TaskRecord {
   tokens: number | null; costUsd: number | null;
   /** Hygiene facts taken when the task was done. */
   listedFirst: boolean; promptStart: boolean; promptDone: boolean; noteFilled: boolean;
-  grade: number | null; /** Root's grade before the discipline penalty, and the points taken off (B5). */ gradeRaw?: number | null; penalty?: number | null; note: string | null; rework: boolean; reworkAt: number | null; ownerRounds: number | null; gradedAt: number | null;
+  /** A record of a whole job (scores.ts job_scores), not of one task: its cost is compared with other jobs, and `reliability` (0-100, the job's
+   *  discipline score; null when it has none) replaces the four hygiene facts. `agentId` (name#gen) and `taskId` (the job number) name the job. */
+  unit?: "job"; reliability?: number | null; agentId?: string;
+  grade: number | null; /** Old rows only: root's grade before the penalty that existed then, and the points taken off. */ gradeRaw?: number | null; penalty?: number | null; note: string | null; rework: boolean; reworkAt: number | null; ownerRounds: number | null; gradedAt: number | null;
 }
 export interface SubScores { quality: number | null; firstTimeRight: number | null; efficiency: number | null; reliability: number | null; rework: number | null }
 export interface Score {
@@ -56,10 +59,12 @@ export const median = (a: number[]) => { if (!a.length) return null; const s = [
 export const gradePoints = (g: number) => clamp(((g - 1) / 4) * 100);
 export const roundsPoints = (n: number, pts = DEFAULTS.roundsPoints) => pts[Math.min(Math.max(0, Math.floor(n)), pts.length - 1)]!;
 
-/** Median cost of a done task per role, over every record that has a cost. The yardstick for efficiency. */
+/** Jobs and single tasks are measured against their own kind. */
+const medKey = (r: TaskRecord) => (r.unit === "job" ? `${r.role}#job` : r.role);
+/** Median cost of a done task (or job) per role, over every record that has a cost. The yardstick for efficiency. */
 export function roleMedians(all: TaskRecord[]): Map<string, number> {
   const by = new Map<string, number[]>();
-  for (const r of all) if (r.costUsd != null) (by.get(r.role) ?? by.set(r.role, []).get(r.role)!).push(r.costUsd);
+  for (const r of all) if (r.costUsd != null) (by.get(medKey(r)) ?? by.set(medKey(r), []).get(medKey(r))!).push(r.costUsd);
   return new Map([...by].map(([k, v]) => [k, median(v)!]));
 }
 
@@ -72,12 +77,13 @@ export function computeScore(recs: TaskRecord[], medians: Map<string, number>, c
   // rework: a flag only counts when root set it within the window after the task was done
   const reworked = (r: TaskRecord) => r.rework && (r.reworkAt == null || r.reworkAt - r.doneAt <= cfg.reworkWindowMs);
   const rework = graded.length ? 100 * (1 - graded.filter(reworked).length / graded.length) : null;
-  const ratios = recs.filter((r) => r.costUsd != null && (medians.get(r.role) ?? 0) > 0).map((r) => Math.min(cfg.ratioCap, r.costUsd! / medians.get(r.role)!));
+  const ratios = recs.filter((r) => r.costUsd != null && (medians.get(medKey(r)) ?? 0) > 0).map((r) => Math.min(cfg.ratioCap, r.costUsd! / medians.get(medKey(r))!));
   const ratio = mean(ratios);
   // r = 0 -> 100, r = 1 -> effAtMedian, linear down to 0 (clamped)
   const efficiency = ratio == null ? null : clamp(100 - (100 - cfg.effAtMedian) * ratio);
-  const checks = recs.reduce((n, r) => n + +r.listedFirst + +r.promptStart + +r.promptDone + +r.noteFilled, 0);
-  const reliability = recs.length + stale ? (100 * checks) / (4 * (recs.length + stale)) : null;
+  // a task record: its four hygiene facts; a job record: its discipline score (left out when it has none)
+  const rel = recs.map((r) => (r.unit === "job" ? r.reliability ?? null : 25 * (+r.listedFirst + +r.promptStart + +r.promptDone + +r.noteFilled))).filter((v): v is number => v != null);
+  const reliability = rel.length + stale ? rel.reduce((a, b) => a + b, 0) / (rel.length + stale) : null;
   const sub: SubScores = { quality, firstTimeRight: ftr, efficiency, reliability, rework };
   // weighted mean over the sub-scores that exist (missing data never counts as zero)
   let w = 0, s = 0;

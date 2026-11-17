@@ -6,7 +6,7 @@ import { problem, type Env } from "../core/http";
 import { audit } from "../core/logger";
 import { flush, ensureSchema } from "./store";
 import { ADMIN, BODY_MAX, body, bad, enqueueMessage, isRoot, kindOf, nameMap, releaseBoss, resolveTo, subjectOf, syncBosses, type Ctx } from "./routes";
-import { addMember, addTeamTask, archiveTeam, createTeam, getTeam, getTeamTask, isMember, listTeams, removeMember, setTeamTask, teamTasks, updateTeam, goalError, NAME_RE, type Team } from "./teams";
+import { addMember, addTeamTask, archiveTeam, createTeam, getTeam, getTeamTask, isMember, listTeams, memberBosses, removeMember, setTeamTask, teamTasks, updateTeam, goalError, NAME_RE, type Team } from "./teams";
 
 type A = Parameters<typeof enqueueMessage>[0];
 const CHANNEL_KEEP = 80;
@@ -38,7 +38,7 @@ function channel(id: string) {
   const rows = db().query("SELECT * FROM messages WHERE to_agent = ? ORDER BY id DESC LIMIT ?").all("team:" + id, CHANNEL_KEEP) as { id: number; from_agent: string; body: string; kind: string; subject: string | null; created_at: number }[];
   return rows.reverse().map((m) => ({ id: m.id, from: names.get(m.from_agent) ?? m.from_agent, kind: kindOf(m.kind), subject: m.subject ?? subjectOf(undefined, m.body), body: m.body, at: m.created_at }));
 }
-const detail = (t: Team) => ({ team: t, tasks: teamTasks(t.id), channel: channel(t.id) });
+const detail = (t: Team) => ({ team: t, tasks: teamTasks(t.id), channel: channel(t.id), bosses: memberBosses(t.id) });
 const names = (x: unknown): string[] => (Array.isArray(x) ? x : []).map((n) => String(n)).filter((n) => NAME_RE.test(n)).slice(0, 40);
 
 export function teamRoutes(r: Hono<Env>, actorOf: (c: Context) => A, base = "/teams") {

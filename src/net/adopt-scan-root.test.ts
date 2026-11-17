@@ -3,7 +3,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LOOP } from "../../test/helpers";
+import { LOOP, fetchAsRoot } from "../../test/helpers";
 import { makeWorkspace } from "../../test/helpers/adoptFixture";
 
 const tmp = mkdtempSync(join(tmpdir(), "an-adopt-root-"));
@@ -27,7 +27,7 @@ let directorJoin: string | Error = "";
 const saved = { ...seams };
 seams.startDirector = (() => { try { directorJoin = rt.createAgent({ name: "root", by: "t" }).id; } catch (e) { directorJoin = e as Error; } return { ok: true, session: "x", attach: "" }; }) as never;
 seams.killScanSession = () => true; seams.hasRoot = () => false; seams.hasSession = () => false; // the scan tmux session is killed, the root row is not touched by that
-const f = makeFetch(buildApp());
+const f = await fetchAsRoot(makeFetch(buildApp())); // root.token bearer on every call
 const call = (path: string, body?: unknown) => f(new Request(`http://x${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), LOOP);
 
 test("the setup-scan row (connected, still live) is retired on apply; the director joins as root", async () => {

@@ -6,7 +6,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import Icon from "../ui/Icon.vue";
 import BentoCard from "../ui/BentoCard.vue";
-import { fetchAgentScore, scores, useScores, type AgentScore, type AgentScoreRow, type Discipline, type ScoreBase, type SubScores } from "../net";
+import { DISCIPLINE_CHECKS, fetchAgentScore, scores, useScores, type AgentScore, type AgentScoreRow, type ScoreBase, type ScoreGrade, type SubScores } from "../net";
 
 const props = defineProps<{ only?: string }>();
 
@@ -17,9 +17,12 @@ const SUBS: [keyof SubScores, string, string][] = [
   ["reliability", "Reliability", "Task list kept first, started and finished promptly, decision notes filled"],
   ["rework", "No rework", "Share of graded tasks root did not have to send back"],
 ];
-const DCHECKS: [keyof Discipline["checks"], string][] = [["listedFirst", "Listed first"], ["started", "Started before done"], ["onTime", "Started on time"], ["notBatch", "Not batch-closed"], ["oneAtATime", "One at a time"]];
 const usd = (n: number | null) => (n == null ? "–" : n < 0.1 ? "$" + n.toFixed(3) : "$" + n.toFixed(2));
-const pt = (n: number | null) => (n == null ? "–" : String(Math.round(n)));
+const pt = (n: number | null | undefined) => (n == null ? "–" : String(Math.round(n)));
+const pc = (n: number | null | undefined) => (n == null ? "–" : Math.round(n) + "%");
+const count = (jobs?: number, steps?: number) => (jobs == null ? "" : `${jobs} ${jobs === 1 ? "job" : "jobs"}, ${steps ?? 0} ${steps === 1 ? "step" : "steps"}`);
+// a job grade row names its job and the agent's generation ("job 2 · #1"); an old task row has no such id
+const jobId = (g: ScoreGrade) => (g.unit === "job" && g.job != null ? `job ${g.job}${g.agent_id?.includes("#") ? " · #" + g.agent_id.split("#").pop() : ""}` : "");
 const rounds = (n: number | null) => (n == null ? "–" : (Math.round(n * 10) / 10).toString());
 const ago = (t: number) => { const m = Math.max(0, Math.round((Date.now() - t) / 60000)); return m < 60 ? m + "m ago" : m < 2880 ? Math.round(m / 60) + "h ago" : Math.round(m / 1440) + "d ago"; };
 const band = (s: number | null) => (s == null ? "na" : s >= 80 ? "great" : s >= 60 ? "good" : s >= 40 ? "fair" : "poor");
@@ -85,17 +88,18 @@ const grp = ref<(typeof GROUPS)[number][0]>("byRole");
           <span class="sc-v sc-num">{{ pt(one.sub[k]) }}</span>
         </li>
       </ul>
-      <div class="sc-disc" :title="`Task discipline ${one.discipline.score ?? 'n/a'} of 100: listed first, started before done, started on time, not batch-closed, one at a time`">
-        <p class="sc-lh">Task discipline<span v-if="one.discipline.open"> · {{ one.discipline.open }} left open at despawn</span></p>
+      <div v-if="one.discipline" class="sc-disc" :title="`Task discipline ${one.discipline.score ?? 'n/a'} of 100, over the steps of closed jobs: work seen, proof, plan kept, not dropped, closed`">
+        <p class="sc-lh">Task discipline<span v-if="count(one.discipline.jobs, one.discipline.steps)"> · {{ count(one.discipline.jobs, one.discipline.steps) }}</span></p>
         <div class="sc-row"><span class="sc-bar" role="progressbar" aria-label="Task discipline" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="one.discipline.score ?? undefined"><i :class="'b-' + band(one.discipline.score)" :style="{ width: (one.discipline.score ?? 0) + '%' }" /></span><b class="sc-num sc-dn">{{ pt(one.discipline.score) }}</b></div>
-        <ul class="sc-chk"><li v-for="[k, label] in DCHECKS" :key="k"><span>{{ label }}</span><b class="sc-num">{{ pt(one.discipline.checks[k]) }}%</b></li></ul>
+        <ul class="sc-chk"><li v-for="[k, label] in DISCIPLINE_CHECKS" :key="k"><span>{{ label }}</span><b class="sc-num">{{ pc(one.discipline.checks?.[k]) }}</b></li></ul>
       </div>
       <div v-if="one.last.length" class="sc-last">
         <p class="sc-lh">Last {{ one.last.length }} {{ one.last.length === 1 ? "grade" : "grades" }}<span v-if="one.lastAvgRounds != null"> · avg rounds {{ rounds(one.lastAvgRounds) }}</span></p>
         <ul>
           <li v-for="g in one.last" :key="g.id">
             <span :class="['sc-g', 'b-' + band(g.grade == null ? null : (g.grade - 1) * 25)]" :aria-label="`Grade ${g.grade} of 5`">{{ g.grade }}</span>
-            <span v-if="g.penalty > 0" class="sc-tag bad" :title="`Root gave ${g.grade_raw}; ${g.penalty} points off for task discipline`">{{ g.grade_raw }}→{{ g.grade }}</span>
+            <span v-if="(g.penalty ?? 0) > 0" class="sc-tag bad" :title="`Root gave ${g.grade_raw}; ${g.penalty} points off for task discipline`">{{ g.grade_raw }}→{{ g.grade }}</span>
+            <span v-if="jobId(g)" class="sc-tag" title="The job this grade is for, and the agent's generation">{{ jobId(g) }}</span>
             <span class="sc-t" :title="g.text">{{ g.text }}</span>
             <span v-if="g.owner_rounds != null" class="sc-tag" :title="`${g.owner_rounds} back-and-forth rounds with the owner`">{{ g.owner_rounds }}r</span>
             <span v-if="g.rework" class="sc-tag bad">rework</span>
@@ -137,11 +141,11 @@ const grp = ref<(typeof GROUPS)[number][0]>("byRole");
         <div v-if="scores.data.discipline.days.length" class="dc-top">
           <div class="bv"><b :class="['num', 'b-' + band(scores.data.discipline.today?.score ?? scores.data.discipline.all)]">{{ pt(scores.data.discipline.today?.score ?? scores.data.discipline.all) }}</b><small>{{ scores.data.discipline.today ? "today" : "all time" }}</small></div>
           <div class="dc-trend" role="img" :aria-label="`Discipline per day, last ${scores.data.discipline.days.length} days`">
-            <span v-for="d in scores.data.discipline.days" :key="d.day" class="dc-d" :title="`${d.day}: ${d.score ?? 'n/a'} over ${d.tasks} tasks`"><i :class="'b-' + band(d.score)" :style="{ height: Math.max(4, d.score ?? 0) + '%' }" /></span>
+            <span v-for="d in scores.data.discipline.days" :key="d.day" class="dc-d" :title="`${d.day}: ${d.score ?? 'n/a'}${count(d.jobs, d.steps) ? ' over ' + count(d.jobs, d.steps) : ''}`"><i :class="'b-' + band(d.score)" :style="{ height: Math.max(4, d.score ?? 0) + '%' }" /></span>
           </div>
         </div>
-        <p v-else class="sc-none">– No finished tasks yet.</p>
-        <template #foot>Share of finished tasks that kept the five habits: listed first, started before done, started on time, not batch-closed, one at a time. All time: {{ pt(scores.data.discipline.all) }}.</template>
+        <p v-else class="sc-none">– No closed jobs yet.</p>
+        <template #foot>Share of steps in closed jobs that kept the five habits: work seen, proof, plan kept, not dropped, closed. All time: {{ pt(scores.data.discipline.all) }}.</template>
       </BentoCard>
 
       <BentoCard size="F" title="Breakdown" class="sg">

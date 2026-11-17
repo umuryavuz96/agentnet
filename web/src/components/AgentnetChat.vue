@@ -3,11 +3,15 @@
 // tool calls), merged by time (web/src/chatFeed.ts). The terminal comes from GET v1/panel/agents/:name/feed (SSE, only while this
 // tab is open). The box talks as YOU by typing into the agent's terminal (POST .../prompt), or sends an agentnet message as root.
 // Entry: owner and root on the right, the agent on the left, tool calls as compact rows (3+ in a row fold into "N steps").
-import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+// Bodies are safe markdown (AgentnetChatBody, web/src/md.ts). Bubbles from one speaker form a run with one header (chatFeed runs()).
+// The list follows the bottom only while the reader is there; scrolled up, a pill counts what arrived.
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import AgentnetChatBody from "./AgentnetChatBody.vue";
 import Icon from "../ui/Icon.vue";
+import Skel from "../ui/Skel.vue";
 import { net, type Msg } from "../net";
 import { api, url } from "../ui/api";
-import { FILTERS, buildRows, feedItems, type FeedItem, type Filter, type Row } from "../chatFeed";
+import { FILTERS, buildRows, feedItems, runs, speaker, type FeedItem, type Filter, type Row } from "../chatFeed";
 
 const props = defineProps<{ name: string; isRoot: boolean; gone: boolean; connected: boolean; working: boolean }>();
 
@@ -20,9 +24,15 @@ const KINDS = ["info", "task", "question"] as const;
 const kind = ref<(typeof KINDS)[number]>("info");
 const mode = ref<"you" | "agentnet">("you");
 const text = ref(""), busy = ref(false), err = ref(""), noTerm = ref("");
-const list = ref<HTMLElement | null>(null);
+const list = ref<HTMLElement | null>(null), inner = ref<HTMLElement | null>(null);
 const open = ref(new Set<string>());
 const stick = ref(true);
+const unseen = ref(0);
+const loaded = ref(false);
+// Rows that arrive after the first load rise in; `armed` keeps the first paint and filter switches still.
+const fresh = ref(new Set<string>());
+const known = new Set<string>();
+let armed = false, armT = 0, knownFilter: Filter = filter.value;
 
 // ---------- the live terminal feed ----------
 const items = shallowRef(new Map<string, FeedItem>());
@@ -32,35 +42,89 @@ let es: EventSource | null = null;
 function connect() {
   es?.close(); es = null;
   items.value = new Map(); serverPending.value = []; local.value = [];
+  known.clear(); armed = false; loaded.value = false; unseen.value = 0; fresh.value = new Set();
+  const arm = (ms: number) => { clearTimeout(armT); armT = window.setTimeout(() => { armed = true; loaded.value = true; }, ms); };
+  arm(3000);
   const name = props.name;
   es = new EventSource(url(`v1/panel/agents/${encodeURIComponent(name)}/feed`));
-  es.addEventListener("reset", (e) => { const d = JSON.parse((e as MessageEvent).data) as { items: FeedItem[]; pending: FeedItem[] }; items.value = new Map(d.items.map((i) => [i.id, i])); serverPending.value = d.pending; });
+  es.addEventListener("reset", (e) => { const d = JSON.parse((e as MessageEvent).data) as { items: FeedItem[]; pending: FeedItem[] }; items.value = new Map(d.items.map((i) => [i.id, i])); serverPending.value = d.pending; if (!loaded.value) { loaded.value = true; arm(500); } });
   es.addEventListener("items", (e) => { const m = new Map(items.value); for (const i of JSON.parse((e as MessageEvent).data) as FeedItem[]) m.set(i.id, i); items.value = m; });
   es.addEventListener("pending", (e) => { serverPending.value = JSON.parse((e as MessageEvent).data); });
 }
 watch(() => props.name, () => { stick.value = true; open.value = new Set(); err.value = ""; noTerm.value = ""; mode.value = "you"; connect(); }, { immediate: true });
-onBeforeUnmount(() => { es?.close(); es = null; });
+onBeforeUnmount(() => { es?.close(); es = null; clearTimeout(armT); ro?.disconnect(); });
 
 // ---------- timeline ----------
-const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 const day = (t: number) => new Date(t).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
 const msgs = computed<Msg[]>(() => net.messages.filter((m) => m.from === props.name || m.to === props.name).slice(-60));
 const pend = computed(() => { const seen = new Set<string>(); return [...local.value, ...serverPending.value].filter((p) => p.nonce && !seen.has(p.nonce) && seen.add(p.nonce)); });
 const rows = computed(() => {
   const r = buildRows(msgs.value, feedItems(items.value, pend.value), filter.value);
-  return r.map((row, i) => ({ row, div: i === 0 || day(r[i - 1]!.at) !== day(row.at) ? day(row.at) : null }));
+  const run = runs(r, day);
+  return r.map((row, i) => ({ row, div: i === 0 || day(r[i - 1]!.at) !== day(row.at) ? day(row.at) : null, first: run[i]!.first }));
 });
+watch(rows, (rs) => {
+  const quiet = !armed || knownFilter !== filter.value;
+  knownFilter = filter.value;
+  const add: string[] = [];
+  let bubbles = 0;
+  for (const { row } of rs) {
+    const id = row.type === "owner" && row.nonce ? `n:${row.nonce}` : row.key;
+    if (known.has(id)) continue;
+    known.add(id);
+    if (!quiet && speaker(row) !== null) { add.push(row.key); bubbles++; }
+  }
+  if (!add.length) return;
+  fresh.value = new Set([...fresh.value, ...add]);
+  setTimeout(() => { const s = new Set(fresh.value); for (const k of add) s.delete(k); fresh.value = s; }, 500);
+  if (!stick.value) unseen.value += bubbles;
+}, { immediate: true });
 const mine = (m: Msg) => m.from === "root";
 const subject = (m: Msg) => m.subject ?? m.body.split("\n")[0]!.slice(0, 60);
+// A subject that only repeats the start of the body (a sender with no subject of its own) is not shown twice.
+const ownSubject = (m: Msg) => !!m.subject && !m.body.trimStart().startsWith(m.subject.replace(/(\.{3}|…)$/, "").trim());
 const dur = (ms?: number) => (ms == null ? "" : ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60_000)} min`);
 const toggle = (k: string) => { const s = new Set(open.value); s.has(k) ? s.delete(k) : s.add(k); open.value = s; };
 const empty = computed(() => !rows.value.length);
+const who = (m: Msg) => `${m.from} to ${m.to}`;
+/** Show more / Show less on a long body. Opening lets go of the bottom so the reader keeps their place; closing brings the bubble back into view. */
+function toggleBody(k: string) {
+  const opening = !open.value.has(k);
+  toggle(k);
+  if (opening) { stick.value = false; return; }
+  nextTick(() => list.value?.querySelector(`[data-k="${CSS.escape(k)}"]`)?.scrollIntoView({ block: "nearest" }));
+}
 
-function toEnd(smooth = false) { nextTick(() => { const el = list.value; if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth && !matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" }); }); }
-function onScroll() { const el = list.value; if (el) stick.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48; }
-watch(() => [rows.value.length, props.working], () => { if (stick.value) toEnd(); }, { flush: "post" });
+// Only the reader lets go of the bottom: a scroll with no wheel, touch, key or pointer just before it is ours (a smooth
+// follow passes through "far from the bottom" on its way down) and must not unstick the list.
+let userAt = 0;
+const userInput = () => { userAt = performance.now(); };
+function toEnd(smooth = false) {
+  nextTick(() => {
+    const el = list.value;
+    if (!el) return;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const s = smooth && gap < el.clientHeight * 1.5 && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollTo({ top: el.scrollHeight, behavior: s ? "smooth" : "auto" });
+  });
+}
+function onScroll() {
+  const el = list.value;
+  if (!el) return;
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 48) { stick.value = true; unseen.value = 0; }
+  else if (performance.now() - userAt < 1500) stick.value = false;
+}
+// Follow anything that changes the height (a new row, text growing in place, the sheet resizing), not only new rows.
+let ro: ResizeObserver | null = null;
+onMounted(() => {
+  ro = new ResizeObserver(() => { if (stick.value) toEnd(armed); });
+  if (inner.value) ro.observe(inner.value);
+  if (list.value) ro.observe(list.value);
+});
 watch(() => props.name, () => toEnd());
-watch(filter, () => { stick.value = true; toEnd(); });
+watch(filter, () => { stick.value = true; unseen.value = 0; toEnd(); });
+const pill = computed(() => (unseen.value ? `${unseen.value} new ${unseen.value === 1 ? "message" : "messages"}` : "Latest"));
 
 // ---------- the box ----------
 const agentnetOff = computed(() => (props.gone ? "Retired: read-only history" : !props.connected ? "Not connected" : null));
@@ -103,61 +167,77 @@ const rowKey = (r: Row) => r.key;
       </div>
     </div>
 
-    <div ref="list" class="ac-list" role="log" aria-live="polite" :aria-label="`Chat with ${name}`" @scroll.passive="onScroll">
-      <p v-if="empty" class="ac-none">{{ filter === "terminal" ? `No terminal activity from ${name} yet.` : `Nothing with ${name} yet.` }}</p>
-      <template v-for="{ row, div } in rows" :key="rowKey(row)">
-        <p v-if="div" class="ac-day">{{ div }}</p>
-
-        <article v-if="row.type === 'msg'" :class="['ac-b', mine(row.m) ? 'out' : 'in']">
-          <p class="ac-h"><span class="ac-kind">{{ row.m.kind }}</span><span class="ac-who" :title="`${row.m.from} to ${row.m.to}`">{{ mine(row.m) ? "to " + row.m.to : row.m.from + " to " + row.m.to }}</span><time>{{ time(row.m.at) }}</time></p>
-          <p v-if="row.m.subject && row.m.subject !== row.m.body" class="ac-s">{{ subject(row.m) }}</p>
-          <p class="ac-t">{{ row.m.body }}</p>
-        </article>
-
-        <article v-else-if="row.type === 'owner'" :class="['ac-b', 'out', 'you', { sending: row.sending }]">
-          <p class="ac-h"><span class="ac-kind">you</span><span class="ac-who">{{ row.sending ? "sending" : "typed in the terminal" }}</span><time>{{ time(row.at) }}</time></p>
-          <p class="ac-t">{{ row.text }}</p>
-        </article>
-
-        <article v-else-if="row.type === 'assistant'" class="ac-b in">
-          <p class="ac-h"><span class="ac-who">{{ name }}</span><time>{{ time(row.at) }}</time></p>
-          <p class="ac-t">{{ row.text }}</p>
-        </article>
-
-        <p v-else-if="row.type === 'step'" :class="['ac-st', row.step.status]">
-          <Icon :name="row.step.status === 'running' ? 'loader' : row.step.status === 'error' ? 'circle-x' : 'square-terminal'" :size="14" :class="{ spin: row.step.status === 'running' }" />
-          <span class="ac-sw" :title="row.step.out || row.step.title">{{ row.step.title }}</span>
-          <span v-if="row.step.ms != null && row.step.status !== 'running'" class="ac-ms">{{ dur(row.step.ms) }}</span>
-          <time>{{ time(row.at) }}</time>
-        </p>
-
-        <div v-else-if="row.type === 'steps'" class="ac-grp">
-          <button type="button" class="ac-gh" :aria-expanded="open.has(row.key)" :aria-controls="'g-' + row.key" @click="toggle(row.key)">
-            <Icon :name="row.running ? 'loader' : 'square-terminal'" :size="14" :class="{ spin: row.running }" />
-            <span class="ac-sw">{{ row.steps.length }} steps</span>
-            <span v-if="row.failed" class="ac-bad">{{ row.failed }} failed</span>
-            <time>{{ time(row.at) }}</time>
-            <Icon name="chevron-down" :size="16" class="ac-cv" />
-          </button>
-          <div :id="'g-' + row.key" class="ac-gb" :class="{ 'is-open': open.has(row.key) }" :inert="!open.has(row.key) || undefined">
-            <div>
-              <p v-for="s in row.steps" :key="s.id" :class="['ac-st', s.status]">
-                <Icon :name="s.status === 'running' ? 'loader' : s.status === 'error' ? 'circle-x' : 'check'" :size="14" :class="{ spin: s.status === 'running' }" />
-                <span class="ac-sw" :title="s.out || s.title">{{ s.title }}</span>
-                <span v-if="s.ms != null && s.status !== 'running'" class="ac-ms">{{ dur(s.ms) }}</span>
-                <time>{{ time(s.ts) }}</time>
-              </p>
-            </div>
+    <div class="ac-wrap">
+      <div ref="list" class="ac-list" role="log" aria-live="polite" :aria-label="`Chat with ${name}`" @scroll.passive="onScroll" @wheel.passive="userInput" @touchmove.passive="userInput" @pointerdown.passive="userInput" @keydown="userInput">
+        <div ref="inner" class="ac-in">
+          <Skel v-if="empty && !loaded" :lines="3" class="ac-load" />
+          <div v-else-if="empty" class="ac-none">
+            <p class="ac-nh">{{ filter === "terminal" ? "No terminal activity yet" : "No messages yet" }}</p>
+            <p>{{ filter === "terminal" ? `What ${name} types and runs shows here, live.` : gone && !isRoot ? `${name} is retired and left no messages.` : `Write below to message ${name}.` }}</p>
           </div>
-        </div>
+          <template v-for="{ row, div, first } in rows" :key="rowKey(row)">
+            <p v-if="div" class="ac-day">{{ div }}</p>
 
-        <p v-else class="ac-note">{{ row.text }}</p>
-      </template>
+            <div v-if="row.type === 'msg'" :data-k="row.key" :class="['ac-m', mine(row.m) ? 'out' : 'in', { cont: !first, 'is-new': fresh.has(row.key) }]">
+              <p v-if="first" class="ac-h"><span class="ac-who">{{ who(row.m) }}</span><time>{{ time(row.m.at) }}</time></p>
+              <article class="ac-b">
+                <p class="ac-s"><span class="ac-kind">{{ row.m.kind }}</span><span v-if="ownSubject(row.m)" class="ac-sj">{{ subject(row.m) }}</span><time v-if="!first">{{ time(row.m.at) }}</time></p>
+                <AgentnetChatBody :text="row.m.body" :open="open.has(row.key)" @toggle="toggleBody(row.key)" />
+              </article>
+            </div>
+
+            <div v-else-if="row.type === 'owner'" :data-k="row.key" :class="['ac-m', 'out', 'you', { cont: !first, sending: row.sending, 'is-new': fresh.has(row.key) }]">
+              <p v-if="first" class="ac-h"><span class="ac-who">{{ row.sending ? "You, sending" : "You, in the terminal" }}</span><time>{{ time(row.at) }}</time></p>
+              <article class="ac-b" :title="first ? undefined : time(row.at)">
+                <AgentnetChatBody :text="row.text" :open="open.has(row.key)" @toggle="toggleBody(row.key)" />
+              </article>
+            </div>
+
+            <div v-else-if="row.type === 'assistant'" :data-k="row.key" :class="['ac-m', 'in', { cont: !first, 'is-new': fresh.has(row.key) }]">
+              <p v-if="first" class="ac-h"><span class="ac-who">{{ name }}</span><time>{{ time(row.at) }}</time></p>
+              <article class="ac-b" :title="first ? undefined : time(row.at)">
+                <AgentnetChatBody :text="row.text" :open="open.has(row.key)" @toggle="toggleBody(row.key)" />
+              </article>
+            </div>
+
+            <p v-else-if="row.type === 'step'" :class="['ac-st', row.step.status]">
+              <Icon :name="row.step.status === 'running' ? 'loader' : row.step.status === 'error' ? 'circle-x' : 'square-terminal'" :size="14" :class="{ spin: row.step.status === 'running' }" />
+              <span class="ac-sw" :title="row.step.out || row.step.title">{{ row.step.title }}</span>
+              <span v-if="row.step.ms != null && row.step.status !== 'running'" class="ac-ms">{{ dur(row.step.ms) }}</span>
+              <time>{{ time(row.at) }}</time>
+            </p>
+
+            <div v-else-if="row.type === 'steps'" class="ac-grp">
+              <button type="button" class="ac-gh" :aria-expanded="open.has(row.key)" :aria-controls="'g-' + row.key" @click="toggle(row.key)">
+                <Icon :name="row.running ? 'loader' : 'square-terminal'" :size="14" :class="{ spin: row.running }" />
+                <span class="ac-sw">{{ row.steps.length }} steps</span>
+                <span v-if="row.failed" class="ac-bad">{{ row.failed }} failed</span>
+                <time>{{ time(row.at) }}</time>
+                <Icon name="chevron-down" :size="16" class="ac-cv" />
+              </button>
+              <div :id="'g-' + row.key" class="ac-gb" :class="{ 'is-open': open.has(row.key) }" :inert="!open.has(row.key) || undefined">
+                <div>
+                  <p v-for="s in row.steps" :key="s.id" :class="['ac-st', s.status]">
+                    <Icon :name="s.status === 'running' ? 'loader' : s.status === 'error' ? 'circle-x' : 'check'" :size="14" :class="{ spin: s.status === 'running' }" />
+                    <span class="ac-sw" :title="s.out || s.title">{{ s.title }}</span>
+                    <span v-if="s.ms != null && s.status !== 'running'" class="ac-ms">{{ dur(s.ms) }}</span>
+                    <time>{{ time(s.ts) }}</time>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <p v-else class="ac-note">{{ row.text }}</p>
+          </template>
+        </div>
+      </div>
+      <Transition name="ac-pill">
+        <button v-if="!stick && !empty" type="button" :class="['ac-latest', { has: unseen > 0 }]" @click="stick = true; unseen = 0; toEnd(true)"><Icon name="chevron-down" :size="14" />{{ pill }}</button>
+      </Transition>
     </div>
 
     <div class="ac-live" aria-live="polite">
       <template v-if="working && !gone"><span class="ac-dots" aria-hidden="true"><i /><i /><i /></span>{{ name }} is working</template>
-      <button v-else-if="!stick && !empty" type="button" class="ac-latest" @click="stick = true; toEnd(true)"><Icon name="chevron-down" :size="14" /> Latest</button>
     </div>
 
     <form class="ac-box" :class="{ off: !!off }" @submit.prevent="send">
@@ -192,19 +272,36 @@ const rowKey = (r: Row) => r.key;
 .ac-seg button{flex:1;min-height:36px;padding:0 8px;border:0;border-radius:9px;background:transparent;color:var(--muted);font:600 12.5px/1 var(--body);cursor:pointer;transition:background-color .2s var(--ease),color .2s var(--ease)}
 .ac-seg button.on{background:color-mix(in srgb,var(--ink) 12%,transparent);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.25)}
 .ac-seg button:focus-visible,.ac-gh:focus-visible,.ac-latest:focus-visible{outline:2px solid var(--on);outline-offset:1px}
-.ac-list{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:grid;gap:8px;align-content:start;padding:10px 16px 8px;overflow-anchor:none}
-.ac-none{margin:0;color:var(--muted);font-size:13px}
-.ac-day{margin:6px 0 0;text-align:center;color:var(--muted);font:600 11px/1 var(--body);letter-spacing:.06em;text-transform:uppercase}
-.ac-b{display:grid;gap:3px;max-width:88%;padding:10px 12px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--ink) 4%,transparent)}
-.ac-b.out{justify-self:end;border-color:color-mix(in srgb,var(--on) 40%,var(--line));background:color-mix(in srgb,var(--on) 10%,transparent);border-bottom-right-radius:5px}
-.ac-b.in{justify-self:start;border-bottom-left-radius:5px}
-.ac-b.sending{opacity:.6}
-.ac-h{display:flex;align-items:center;gap:7px;margin:0;font-size:11.5px;line-height:1.3;color:var(--muted)}
-.ac-kind{flex:none;padding:1px 6px;border-radius:6px;background:var(--track);font:600 10.5px/1.5 var(--mono)}
-.ac-who{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.ac-h time,.ac-st time,.ac-gh time{flex:none;font:500 11px/1 var(--mono);color:var(--muted)}
-.ac-s{margin:0;font:650 13px/1.35 var(--body);overflow-wrap:anywhere}
-.ac-t{margin:0;font-size:13px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:14;-webkit-box-orient:vertical;overflow:hidden}
+.ac-wrap{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.ac-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:4px 16px 10px;overflow-anchor:none}
+.ac-in{display:grid;grid-template-columns:minmax(0,1fr);align-content:start}
+.ac-in > .ac-st,.ac-in > .ac-note,.ac-in > .ac-grp{margin-top:8px}
+.ac-in > :first-child{margin-top:6px}
+.ac-load{max-width:70%}
+.ac-none{display:grid;gap:3px;color:var(--muted);font-size:13px;line-height:1.5}
+.ac-none p{margin:0}
+.ac-nh{color:var(--ink);font:650 14px/1.3 var(--body)}
+.ac-day{margin:16px 0 2px;text-align:center;color:var(--muted);font:600 11px/1 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.ac-m{display:grid;grid-template-columns:minmax(0,1fr);gap:4px;margin-top:14px}
+.ac-m.cont{margin-top:3px}
+.ac-m.in{justify-items:start}
+.ac-m.out{justify-items:end}
+.ac-h{display:flex;align-items:baseline;gap:8px;max-width:100%;margin:0;padding:0 4px;font-size:12px;line-height:1.3;color:var(--muted)}
+.ac-who{color:var(--ink);font-weight:600;letter-spacing:.01em;overflow-wrap:anywhere}
+.ac-h time,.ac-s time,.ac-st time,.ac-gh time{flex:none;font:500 11px/1 var(--mono);color:var(--muted)}
+.ac-b{display:grid;grid-template-columns:minmax(0,1fr);gap:5px;max-width:min(92%,640px);padding:9px 12px 10px;border:1px solid var(--line);border-radius:14px;background:color-mix(in srgb,var(--ink) 4%,transparent)}
+.ac-m.in .ac-b{border-bottom-left-radius:5px}
+.ac-m.in.cont .ac-b{border-top-left-radius:5px}
+.ac-m.out .ac-b{border-color:color-mix(in srgb,var(--on) 36%,var(--line));background:color-mix(in srgb,var(--on) 10%,transparent);border-bottom-right-radius:5px}
+.ac-m.out.cont .ac-b{border-top-right-radius:5px}
+.ac-m.sending .ac-b{opacity:.6}
+.ac-s{display:flex;align-items:baseline;gap:7px;margin:0}
+.ac-kind{flex:none;align-self:center;padding:1px 6px;border-radius:6px;background:color-mix(in srgb,var(--ink) 8%,transparent);color:var(--muted);font:600 10.5px/1.5 var(--mono);letter-spacing:.02em}
+.ac-sj{flex:1;font:650 13.5px/1.35 var(--body);overflow-wrap:anywhere}
+.ac-s time{margin-left:auto}
+.ac-m.is-new{animation:acin .28s cubic-bezier(.2,.8,.2,1) both}
+@keyframes acin{from{opacity:0;transform:translateY(8px)}}
+@keyframes acfade{from{opacity:0}}
 .ac-note{margin:0;text-align:center;color:var(--muted);font-size:11.5px}
 .ac-st{display:flex;align-items:center;gap:7px;margin:0;padding:0 2px;min-height:22px;color:var(--muted);font-size:12.5px}
 .ac-st .icon{flex:none}
@@ -226,7 +323,10 @@ const rowKey = (r: Row) => r.key;
 .ac-dots i{width:5px;height:5px;border-radius:50%;background:var(--on);animation:acdot 1.2s var(--ease) infinite}
 .ac-dots i:nth-child(2){animation-delay:.15s}.ac-dots i:nth-child(3){animation-delay:.3s}
 @keyframes acdot{0%,80%,100%{opacity:.25}40%{opacity:1}}
-.ac-latest{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:var(--track);color:var(--ink);font:600 12px/1 var(--body);cursor:pointer}
+.ac-latest{position:absolute;left:50%;bottom:8px;z-index:2;display:inline-flex;align-items:center;gap:5px;min-height:32px;margin-left:0;padding:0 12px 0 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--ink);font:600 12px/1 var(--body);letter-spacing:.01em;white-space:nowrap;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.28);transform:translateX(-50%)}
+.ac-latest.has{border-color:color-mix(in srgb,var(--on) 55%,var(--line));color:var(--on)}
+.ac-pill-enter-active,.ac-pill-leave-active{transition:opacity .18s var(--ease),transform .22s cubic-bezier(.2,.8,.2,1)}
+.ac-pill-enter-from,.ac-pill-leave-to{opacity:0;transform:translate(-50%,8px)}
 
 .ac-box{flex:none;display:grid;gap:6px;padding:8px 16px calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--panel)}
 .ac-kinds{display:flex;flex:1;gap:4px;overflow:hidden}
@@ -243,5 +343,5 @@ const rowKey = (r: Row) => r.key;
 .ac-off{margin:0;color:var(--warn);font-size:12.5px;line-height:1.35}
 .spin{animation:acspin 1.1s linear infinite}
 @keyframes acspin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.spin,.ac-dots i{animation:none}.ac-send,.ac-kinds button,.ac-seg button,.ac-cv,.ac-gb{transition:none}}
+@media (prefers-reduced-motion:reduce){.spin,.ac-dots i{animation:none}.ac-send,.ac-kinds button,.ac-seg button,.ac-cv,.ac-gb{transition:none}.ac-m.is-new{animation:acfade .2s var(--ease) both}.ac-pill-enter-active,.ac-pill-leave-active{transition:opacity .18s var(--ease)}.ac-pill-enter-from,.ac-pill-leave-to{transform:translateX(-50%)}}
 </style>

@@ -101,7 +101,7 @@ function indexNote(d: Database, file: string) {
 
 // ---------- Entire ----------
 /** Agentnet boilerplate that says nothing about the work: the boot line, the task-list rule, delivery lines, the mod note. */
-const NOISE = [/^You are [a-z0-9-]+ on the agentnet\b/i, /^#\d+ \[[a-z]+\] /, /^agentnet: \d+ messages/, /PRIORITY RULE: task management/, /^Messages from other agents arrive/, /^\[(Voice|Chat)/];
+const NOISE = [/^You are [a-z0-9-]+ on the agentnet\b/i, /^#\d+ \[[a-z]+\] /, /^agentnet: \d+ messages/, /PRIORITY RULE: (task management|the plan comes first)/, /^Messages from other agents arrive/, /^\[(Voice|Chat)/];
 /** The prompt without boilerplate lines (delivery lines keep their quoted subject, which names the work). */
 export function cleanPrompt(p: string) {
   return p.split("\n").map((l) => { const m = /^#\d+ \[[a-z]+\] [a-z0-9@-]+: "(.*)"$/.exec(l.trim()); return m ? m[1]! : NOISE.some((r) => r.test(l.trim())) ? "" : l.replace(/^\s*You are [a-z0-9-]+(?: for [^.]+)?\.\s*Boss: [a-z0-9-]+\.\s*(?:Teammates?: [^.]*\.\s*)?(?:Job:\s*)?/i, ""); }).filter((l) => l.trim()).join("\n");

@@ -30,7 +30,9 @@ describe("reduce", () => {
     expect(s.action).toBeNull(); expect(s.lastTool?.ms).toBe(9);
     s = st.reduce(s, { type: "TaskAdded", ts: T0 + 5, data: { text: "write tests" }, source: "mcp" })!;
     s = st.reduce(s, { type: "TaskStarted", ts: T0 + 6, data: { id: 1 }, source: "mcp" })!;
-    expect(s.tasks).toEqual([{ id: 1, text: "write tests", status: "in_progress" }]);
+    expect(s.tasks).toEqual([{ id: 1, text: "write tests", status: "in_progress", startedAt: T0 + 6 }]);
+    s = st.reduce(s, { type: "TaskDone", ts: T0 + 7, data: { id: 1 }, source: "mcp" })!;
+    expect(s.tasks).toEqual([{ id: 1, text: "write tests", status: "done", startedAt: T0 + 6, doneAt: T0 + 7 }]);
     s = st.reduce(s, { type: "StatusReported", ts: T0 + 7, data: { doing: "halfway", progress: 50 }, source: "mcp" })!;
     expect(st.doing(s, T0 + 8)).toBe("halfway");
     s = st.reduce(s, { type: "TurnEnded", ts: T0 + 8, data: { reason: "answer" }, source: "mod" })!;

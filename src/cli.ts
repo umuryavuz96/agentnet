@@ -21,6 +21,7 @@ const HELP = `agentnet: a local network for Claude Code agents
   adopt scan --dir D [--static] | plan --scan ID [--accept all|recommended] | apply --plan ID [--confirm-global] | rollback [RUN] [--force] | runs
                             adopt an existing workspace: scan, preview, apply with a backup, roll back. rollback and runs work with the server down
   status                    health and agent list of the running server
+  login                     print a one-time sign-in link for the web panel (one use, 60 s)
   init [dir] [--start]      first run: check the setup, print the command that starts the director; --start runs it in tmux
   discipline [--day [YYYY-MM-DD]] [--json]   task discipline score per agent and per day; --day also writes the daily snapshot
   doctor                    check bun, tmux, claude, python3, data folder, service
@@ -46,13 +47,22 @@ function loadEnvFile(): void {
 }
 
 const url = () => process.env.AGENTNET_URL ?? `http://127.0.0.1:${PORT}/api/v1/agentnet`;
+const ROOT_TOKEN = () => join(ROOT, "run", "root.token");
+const readToken = (f: string): string => { try { return readFileSync(f, "utf8").trim(); } catch { return ""; } };
+/** The token file the CLI sends. Inside an agent (AGENTNET_TOKEN_FILE set) it is that agent's own token, never root.token:
+ *  an agent that runs `agentnet spawn` must not act as root. Outside an agent: AGENTNET_ROOT_TOKEN_FILE, else run/root.token. */
+const tokenFile = (): string => process.env.AGENTNET_TOKEN_FILE || process.env.AGENTNET_ROOT_TOKEN_FILE || ROOT_TOKEN();
+/** JSON headers plus the bearer above: the server needs a token on every API route. */
+const authed = (): Record<string, string> => { const t = readToken(tokenFile()); return { "content-type": "application/json", ...(t ? { authorization: `Bearer ${t}` } : {}) }; };
 const pluginDir = () => join(REPO, "plugin");
 const version = (): string => JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
 
 async function runScript(script: string, args: string[]): Promise<never> {
   const env: Record<string, string | undefined> = { ...process.env };
-  const defaults = { AGENTNET_HOME: ROOT, AGENTNET_URL: url(), AGENTNET_MOD_DIR: pluginDir(), AGENTNET_BIN: join(REPO, "bin", "agentnet") };
+  const defaults: Record<string, string> = { AGENTNET_HOME: ROOT, AGENTNET_URL: url(), AGENTNET_MOD_DIR: pluginDir(), AGENTNET_BIN: join(REPO, "bin", "agentnet") };
+  if (existsSync(ROOT_TOKEN())) defaults.AGENTNET_ROOT_TOKEN_FILE = ROOT_TOKEN(); // the scripts send it as the bearer
   for (const [k, v] of Object.entries(defaults)) if (env[k] === undefined) env[k] = v;
+  if (env.AGENTNET_TOKEN_FILE) env.AGENTNET_ROOT_TOKEN_FILE = env.AGENTNET_TOKEN_FILE; // inside an agent the scripts carry its own token, not root.token
   const proc = Bun.spawn([join(REPO, "scripts", script), ...args], { stdio: ["inherit", "inherit", "inherit"], env });
   process.exit(await proc.exited);
 }
@@ -71,7 +81,7 @@ async function despawn(args: string[]): Promise<number> {
   const reason = ri >= 0 ? args[ri + 1] : undefined;
   try {
     const r = await fetch(`${url()}/despawn`, {
-      method: "POST", headers: { "content-type": "application/json" },
+      method: "POST", headers: authed(),
       body: JSON.stringify({ agent: name, reason: reason ?? "cli" }), signal: AbortSignal.timeout(5000),
     });
     console.log(await r.text());
@@ -87,10 +97,24 @@ async function planSpawn(args: string[]): Promise<number> {
     body[k] = ["scope", "novelty", "risk"].includes(k) ? Number(v) : k === "project" ? resolve(tilde(v)) : v;
   }
   try {
-    const r = await fetch(`${url()}/plan-spawn`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
+    const r = await fetch(`${url()}/plan-spawn`, { method: "POST", headers: authed(), body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
     console.log(JSON.stringify(await r.json(), null, 2));
     return r.ok ? 0 : 1;
   } catch (e) { console.error(`agentnet: plan-spawn failed: ${(e as Error).message}`); return 1; }
+}
+
+/** `agentnet login`: a one-time sign-in link for the web panel (one use, 60 s), made with run/panel.token. */
+async function login(): Promise<number> {
+  const t = readToken(join(ROOT, "run", "panel.token"));
+  if (!t) { console.error(`agentnet: no panel token in ${join(ROOT, "run")}: start the server once first`); return 1; }
+  try {
+    const r = await fetch(`${new URL(url()).origin}/api/v1/login/code`, { method: "POST", headers: { authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(5000) });
+    const b = await r.json().catch(() => ({})) as { url?: string; expiresIn?: number; detail?: string };
+    if (!r.ok || !b.url) { console.error(`agentnet: login failed (${r.status}): ${b.detail ?? "unknown"}`); return 1; }
+    console.log(b.url);
+    console.error(`one use, valid ${b.expiresIn ?? 60} s`);
+    return 0;
+  } catch (e) { console.error(`agentnet: login failed: ${(e as Error).message}`); return 1; }
 }
 
 async function status(): Promise<number> {
@@ -110,8 +134,8 @@ async function discipline(args: string[]): Promise<number> {
   const di = args.indexOf("--day"), day = di >= 0 && /^\d{4}-\d{2}-\d{2}$/.test(args[di + 1] ?? "") ? args[di + 1] : undefined;
   const written = di >= 0 ? sc.snapshotDiscipline(day) : [], d = sc.disciplineSummary();
   if (args.includes("--json")) { console.log(JSON.stringify({ ...d, written: written.map((r) => r.day) }, null, 1)); return 0; }
-  console.log(`discipline ${d.all ?? "n/a"} over all finished tasks`);
-  for (const r of d.days) console.log(`${r.day}  ${String(r.score ?? "n/a").padStart(3)}  ${String(r.tasks).padStart(4)} tasks  listed ${r.checks.listedFirst ?? "-"}%  started ${r.checks.started ?? "-"}%  on time ${r.checks.onTime ?? "-"}%  no batch ${r.checks.notBatch ?? "-"}%  one at a time ${r.checks.oneAtATime ?? "-"}%`);
+  console.log(`discipline ${d.all ?? "n/a"} over ${d.jobs} closed jobs (${d.steps} steps)`);
+  for (const r of d.days) console.log(`${r.day}  ${String(r.score ?? "n/a").padStart(3)}  ${String(r.jobs).padStart(3)} jobs ${String(r.steps).padStart(4)} steps  work seen ${r.checks.workSeen ?? "-"}%  proof ${r.checks.evidence ?? "-"}%  plan kept ${r.checks.planKept ?? "-"}%  not dropped ${r.checks.notDropped ?? "-"}%  closed ${r.checks.closed ?? "-"}%`);
   if (written.length) console.log(`snapshot written: ${written.map((r) => r.day).join(", ")}`);
   return 0;
 }
@@ -282,7 +306,7 @@ async function adopt(args: string[]): Promise<number> {
   const opt = (n: string) => { const i = rest.indexOf(n); return i >= 0 ? rest[i + 1] : undefined; };
   const base = url().replace(/\/agentnet$/, "") + "/agent-adopt";
   const call = async (path: string, body?: unknown, ms = 30000): Promise<{ status: number; json: any }> => {
-    const r = await fetch(base + path, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+    const r = await fetch(base + path, { method: body === undefined ? "GET" : "POST", headers: authed(), body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(ms) });
     return { status: r.status, json: await r.json().catch(() => ({})) };
   };
   const fail = (r: { status: number; json: any }) => { console.error(`agentnet: adopt failed (${r.status}): ${r.json?.detail ?? r.json?.error ?? "unknown"}`); for (const e of r.json?.errors ?? []) console.error("  - " + e); return 1; };
@@ -350,6 +374,7 @@ async function main(): Promise<number> {
     case "plugin-dir": console.log(pluginDir()); return 0;
     case "serve": {
       const p = Bun.spawn([process.execPath, "run", join(REPO, "src/server.ts")], { stdio: ["inherit", "inherit", "inherit"] });
+      for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => p.kill(sig)); // the server must not outlive the CLI
       return await p.exited;
     }
     case "spawn": return runScript("spawn-agent.sh", rest);
@@ -372,6 +397,7 @@ async function main(): Promise<number> {
       return 0;
     }
     case "status": return status();
+    case "login": return login();
     case "init": return init(rest);
     case "doctor": return doctor();
     case "discipline": return discipline(rest);

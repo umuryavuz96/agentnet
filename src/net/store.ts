@@ -2,6 +2,7 @@
 // single in-process writer that commits events and the fold in the same transaction.
 // Flag: AGENTNET=1 (index.ts mounts nothing without it). Tasks live inside the fold (no separate table: smaller).
 import { db, schema } from "../core/db";
+import { foldJob, type Ask, type Job } from "./jobs";
 
 // The DDL is registered only when the feature is mounted (AGENTNET=1) or a test asks for it: importing this module must
 // never add tables to the live DB (2026-11-07 incident).
@@ -47,7 +48,8 @@ export function ensureSchema() {
 export type Life = "starting" | "live" | "stopping" | "gone" | "failed";
 export type Activity = "working" | "idle" | "waiting" | "blocked";
 export type Source = "spawn" | "mod" | "hook" | "mcp" | "service" | "reconcile";
-export interface Task { id: number; text: string; status: "pending" | "in_progress" | "done" }
+/** startedAt/doneAt: event time of the first TaskStarted and of TaskDone (absent on tasks folded before they were recorded). */
+export interface Task { id: number; text: string; status: "pending" | "in_progress" | "done"; startedAt?: number; doneAt?: number }
 /** Background work an agent runs (in-process subagent, background shell, monitor), posted by the plugin hooks. */
 export type BgKind = "subagent" | "shell" | "monitor";
 export type BgState = "running" | "done" | "failed" | "killed";
@@ -68,7 +70,12 @@ export interface Snapshot {
   action: { tool: string; target: string | null; at: number } | null;
   lastTool: { tool: string; target: string | null; ok: boolean; ms: number | null; at: number } | null;
   reported: { doing: string | null; progress: number | null; phase: string | null; blockedOn: string | null; at: number; turn: number; expired?: boolean; msgAt?: number } | null;
+  /** The old view of the current job's steps (jobs.ts tasksOf): what the card and the old tools read. */
   tasks: Task[];
+  /** Every job of this agent, oldest first; the last one is the current job. Absent on folds from before jobs existed (jobs.ts jobsOf reads those). */
+  jobs?: Job[];
+  /** Follow-up asks: task messages from the boss or root, open until answered with reply_to. */
+  asks?: Ask[];
   /** Background work under this agent; finished rows leave 2 min after they end. Absent on rows folded before this existed. */
   bg?: BgRow[];
   /** Session cron jobs (CronCreate), removed by CronDelete or when the agent goes. Absent on rows folded before this existed. */
@@ -104,7 +111,7 @@ export function reduce(s: Snapshot | null, e: Event): Snapshot | null {
   const rep = n.reported && !n.reported.expired ? { ...n.reported } : null;
   if (rep) {
     const age = at - rep.at;
-    if (e.type === "TaskStarted" || e.type === "TaskDone") rep.expired = true;
+    if (e.type === "TaskStarted" || e.type === "TaskDone" || e.type === "StepClosed" || e.type === "StepActivated") rep.expired = true;
     else if (e.type === "MessageReceived") rep.msgAt ??= at;
     else if ((e.type === "ToolStarted" || e.type === "ToolFinished") && (age > REPORT_FRESH_MS || (rep.msgAt != null && at > rep.msgAt))) rep.expired = true;
     if (rep.blockedOn && (rep.expired || (e.type === "ToolFinished" && d.ok !== false && age > BLOCK_CLEAR_MS))) { rep.blockedOn = null; if (n.state === "blocked") { n.state = "working"; n.stateSince = at; } }
@@ -121,8 +128,6 @@ export function reduce(s: Snapshot | null, e: Event): Snapshot | null {
     case "TurnEnded": n.turn = null; n.action = null; state("idle"); if (num(d.usd) != null) n.cost = num(d.usd); break;
     case "AwaitingInput": state("waiting"); break;
     case "StatusReported": n.reported = { doing: str(d.doing), progress: num(d.progress), phase: str(d.phase), blockedOn: str(d.blockedOn), at, turn: s.turns }; if (n.reported.blockedOn) state("blocked"); break;
-    case "TaskAdded": { const id = num(d.id) ?? (Math.max(0, ...n.tasks.map((t) => t.id)) + 1); if (!n.tasks.some((t) => t.id === id)) n.tasks = [...n.tasks, { id, text: String(d.text).slice(0, 200), status: "pending" }]; break; }
-    case "TaskStarted": case "TaskDone": n.tasks = n.tasks.map((t) => (t.id === num(d.id) ? { ...t, status: e.type === "TaskDone" ? "done" : "in_progress" } : t)); break;
     case "MessageSent": n.lastMsg = { id: num(d.msg_id), dir: "out", peer: String(d.peer), kind: str(d.kind) ?? "info", snippet: String(d.snippet ?? "").slice(0, 120), at }; break;
     case "MessageReceived": n.lastMsg = { id: num(d.msg_id), dir: "in", peer: String(d.peer), kind: str(d.kind) ?? "info", snippet: String(d.snippet ?? "").slice(0, 120), at }; break;
     case "Reported": n.lastReport = { to: String(d.to), at }; break;
@@ -157,6 +162,7 @@ export function reduce(s: Snapshot | null, e: Event): Snapshot | null {
     case "ActivityReconciled": state((str(d.state) as Activity) ?? "idle"); if (n.state === "idle") { n.turn = null; n.action = null; } break;
     default: break;
   }
+  foldJob(n, e); // jobs, steps, asks and the `tasks` view (also the old TaskAdded / TaskStarted / TaskDone)
   return n;
 }
 

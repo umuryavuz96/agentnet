@@ -99,9 +99,10 @@ The parts:
 - **Service**: a small local server (Bun, Hono, SQLite) on `127.0.0.1:3096`.
 - **Web app**: agents map (teams as trees) and cards, chat, tasks, teams, background jobs, decision notes and search,
   scores, usage, hooks, personas, model routing. Stop, close or run a schedule from an agent's panel.
-- **Claude Code plugin**: gives each agent the `mcp__agentnet__*` tools: `send`, `inbox`, `report`, `task_add`,
-  `task_start`, `task_done`, `team_send`, `team_tasks`, `trail_search`, `set_status`. The root agent also gets `spawn`,
-  `despawn`, `list_agents`, `get_status` and `grade`.
+- **Claude Code plugin**: gives each agent the `mcp__agentnet__*` tools: `send`, `inbox`, `report`, `plan_set`,
+  `step_done`, `step_add`, `step_drop`, `job_open`, `team_send`, `team_tasks`, `trail_search`, `set_status` (the older
+  `task_add`, `task_start`, `task_done` still work). The root agent also gets `spawn`, `despawn`, `list_agents`,
+  `get_status`, `grade` and `ask_close`. See [docs/task-discipline.md](docs/task-discipline.md).
 - **CLI**: `bin/agentnet` starts the server, spawns and despawns agents, checks your setup and installs the service.
 
 ## The director flow

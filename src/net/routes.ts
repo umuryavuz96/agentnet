@@ -2,11 +2,12 @@
 // the one hierarchy check, status posts, and root-only spawn/despawn. Mounted only with AGENTNET=1.
 import type { Hono, Context } from "hono";
 import { adoptApplyRoute, adoptFacts, adoptReportRoute } from "./adopt";
-import { chmodSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { db } from "../core/db";
 import { ROOT } from "../core/config";
 import { isLoopback } from "../core/access";
+import { isRootToken, loopbackRoot } from "../core/auth";
 import { audit, logEvent } from "../core/logger";
 import { problem, type Env } from "../core/http";
 import { summarize as summarizeBg, enabled as bgSumEnabled } from "./bgsum";
@@ -18,7 +19,9 @@ import { teamRoutes, sendTeam } from "./teamRoutes";
 import { trailSearch, trailInject, cassReady } from "./trailSearch";
 import { RouteBlocked } from "./autoroute";
 import { planSpawn, type PlanInput } from "./placement";
-import { gradeTask, recordDone } from "./scores";
+import { grade, recordJob } from "./scores";
+import { activeStep, addError, briefSteps, cleanSteps, isCeremony, jobCounts, jobsOf, openAsks, openJob, openSteps, planError, planSummary, PLAN_MAX, STEPS_MAX, type Job, type Origin } from "./jobs";
+import { EVIDENCE_HELP, parseEvidence, verifyEvidence } from "./evidence";
 import { disciplineConfig, gateReason } from "./discipline";
 import { createCheck, listChecks } from "./checks";
 import { hasNoteFields, logTrail, trailConfig, writeNote, type NoteFields } from "./trails";
@@ -51,8 +54,8 @@ export const ADMIN: AgentRow = { id: "@admin", name: "root", gen: 0, job: null, 
 export const PANEL: AgentRow = { ...ADMIN, id: "@panel", name: "admin" };
 /** The sender of a resolved owner check: the person who tapped Works / Not yet. */
 export const OWNER: AgentRow = { ...ADMIN, id: "@owner", name: "owner" };
-/** True when this token belongs to the live root agent. */
-export const rootByToken = (t: string): boolean => byToken(t)?.name === "root";
+/** The live agent that owns this token, or null. */
+export const agentByToken = (t: string): AgentRow | null => byToken(t);
 const byToken = (t: string) => (ensureSchema(), db().query("SELECT * FROM agents WHERE token_hash = ? AND archived_at IS NULL").get(sha(t)) as AgentRow | null);
 /** `root` resolves to the admin pseudo-row while no live root agent exists, so reports and sends to root always land. */
 export const resolveTo = (n: string): AgentRow | null => byName(n) ?? (n === "root" ? ADMIN : null);
@@ -60,7 +63,7 @@ export const byName = (n: string) => (ensureSchema(), db().query("SELECT * FROM 
 
 /** The agent endpoints, listed explicitly: the panel's requireAuth lets only these through to this module's own bearer
  *  check (unknown token = 401 here). snapshot and stream are not listed: they stay behind panel auth. */
-export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|gate|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|adopt\/(facts|report|apply)|agents(\/[a-z0-9-]+(\/(placement|grade))?)?)$/.test(p);
+export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|gate|plan|steps(\/done|\/\d+\/drop)?|jobs|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|adopt\/(facts|report|apply)|agents(\/[a-z0-9-]+(\/(placement|grade|asks\/\d+\/close))?)?)$/.test(p);
 
 // ---------- the one hierarchy check: boss, own reports, teammates under the same boss; root outbound exempt ----------
 export const isRoot = (a: { name: string }) => a.name === "root";
@@ -99,8 +102,8 @@ export function enqueueMessage(from: AgentRow, to: AgentRow, body: string, kind:
   const r = db().run("INSERT INTO messages (from_agent, to_agent, body, kind, subject, reply_to, created_at, held_until, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [from.id, to.id, body, kind, subject, replyTo, now, held ? now + HOLD_MS : null, held ? "held" : "queued"]);
   const id = Number(r.lastInsertRowid);
-  emit({ agent: from.id, type: "MessageSent", data: { msg_id: id, peer: to.name, kind, snippet: snippet(body) }, source: "service", ts: now });
-  if (!held) { if (to.id !== ADMIN.id) emit({ agent: to.id, type: "MessageReceived", data: { msg_id: id, peer: from.name, kind, snippet: snippet(body) }, source: "service", ts: now }); wake(to.id); const live = byName("root"); if (to.id === ADMIN.id && live) wake(live.id); }
+  emit({ agent: from.id, type: "MessageSent", data: { msg_id: id, peer: to.name, kind, snippet: snippet(body), ...(replyTo ? { reply_to: replyTo } : {}) }, source: "service", ts: now }); // reply_to closes the ask it answers (jobs.ts)
+  if (!held) { if (to.id !== ADMIN.id) emit({ agent: to.id, type: "MessageReceived", data: { msg_id: id, peer: from.name, kind, subject, snippet: snippet(body) }, source: "service", ts: now }); wake(to.id); const live = byName("root"); if (to.id === ADMIN.id && live) wake(live.id); }
   for (const f of msgSubs) f(id);
   return { id, state: held ? "held" : "queued" };
 }
@@ -190,7 +193,29 @@ export function retireAgent(a: AgentRow, reason: string, now = Date.now(), kill:
   emit({ agent: a.id, type: "AgentGone", data: { reason }, source: "service", ts: now, dedup: reason === "despawn" ? `despawn:${a.id}` : goneKey(s ?? null, a.id) });
   const closed = reason === "despawn" ? archiveAbandoned(a.name, (n) => isRoot({ name: n })) : [];
   flush();
+  if (reason === "despawn") scoreJob(a); // the despawn closed the open job (jobs.ts): nothing stays open on a gone agent
   return closed;
+}
+/** Write the score row of the agent's last job once it is closed (a second call for the same job changes nothing). */
+function scoreJob(a: AgentRow): Job | null {
+  const s = get(a.id), j = s ? jobsOf(s).at(-1) ?? null : null;
+  if (s && j && j.closedAt != null) recordJob({ id: a.id, name: a.name, model: s.model ?? a.model, soul: s.soul ?? a.soul, project: s.project ?? a.project }, j);
+  return j;
+}
+/** The brief file of a spawn or a job_open: an absolute .md path of at most 200 KB. Anything else reads as empty. */
+export function readBrief(path: string | undefined): string {
+  try { return path && isAbsolute(path) && /\.(md|markdown|txt)$/i.test(path) && statSync(path).size <= 200_000 ? readFileSync(path, "utf8") : ""; } catch { return ""; }
+}
+/** Open a job on an agent: JobOpened, and the plan when there is one (the given steps, else the brief's `## Steps`). Returns what the caller should know. */
+export function startJob(agentId: string, i: { by: string; goal?: string | null; brief?: string | null; steps?: unknown; maxSteps?: unknown }, now = Date.now()): { steps: number; warnings: string[] } {
+  const given = cleanSteps(i.steps), fromBrief = given.length ? [] : briefSteps(readBrief(i.brief ?? undefined)), steps = given.length ? given : fromBrief, warnings: string[] = [];
+  const ms = Number(i.maxSteps), planMax = Number.isInteger(ms) && ms > PLAN_MAX ? Math.min(ms, STEPS_MAX) : null;
+  emit({ agent: agentId, type: "JobOpened", data: { by: i.by, goal: i.goal ?? null, brief: i.brief ?? null, ...(planMax ? { planMax } : {}) }, source: "service", ts: now });
+  if (steps.length > (planMax ?? PLAN_MAX)) warnings.push(`the ${given.length ? "given plan" : "brief"} has ${steps.length} steps and a plan has at most ${planMax ?? PLAN_MAX}: no plan was set, the agent sets it with plan_set (or pass max_steps, up to ${STEPS_MAX})`);
+  else if (steps.length) emit({ agent: agentId, type: "PlanSet", data: { steps, origin: given.length ? "boss" : "brief", by: i.by }, source: "service", ts: now });
+  else if (i.brief) warnings.push("the brief has no `## Steps` section with numbered lines: the agent sets the plan with plan_set");
+  flush();
+  return { steps: warnings.length ? 0 : steps.length, warnings };
 }
 /** A pid worth signalling: an integer above 1 (0, 1 and negatives would reach every process of the user). */
 export const goodPid = (x: unknown): number | null => { const n = Number(x); return typeof x !== "boolean" && x !== null && Number.isInteger(n) && n > 1 ? n : null; };
@@ -229,6 +254,11 @@ const rate = new Map<string, number[]>();
 /** LOW: a token holder can post at most RATE_N writes per minute to /events, /send, /tasks, /report (root is exempt). */
 export const rateOk = (agent: string, now = Date.now()) => { const l = (rate.get(agent) ?? []).filter((t) => now - t < RATE_MS); l.push(now); rate.set(agent, l); return l.length <= RATE_N; };
 export const body = async (c: Context): Promise<Record<string, unknown>> => { try { const t = await c.req.text(); if (t.length > REQ_MAX) return {}; const b = JSON.parse(t); return b && typeof b === "object" ? b as Record<string, unknown> : {}; } catch { return {}; } };
+/** Refuse a plan or report call: the agent reads `detail`, and the refusal is logged on its event log (`Refused`, with the rule) so it can be counted. */
+function refuse(c: Context, a: AgentRow, rule: string, detail: string, status: 404 | 409 | 422 = 409) {
+  if (a.id !== ADMIN.id && get(a.id)) { emit({ agent: a.id, type: "Refused", data: { rule, detail: detail.slice(0, 300) }, source: "service" }); flush(); }
+  return problem(c, status, "Can't do that", detail);
+}
 const viewOf = (s: Snapshot) => ({ ...s, doing: doing(s), progressPct: progressPct(s) });
 
 /** Panel auth (the Chat tab): POST /agentnet/agents/:name/message {body, kind?, subject?} sends as root. 404 unknown, 410 despawned/failed, 422 bad body. */
@@ -266,17 +296,18 @@ export function trailsPanelRoute(api: Hono<Env>) {
 export function agentnetRoutes(api: Hono<Env>) {
   ensureSchema();
   const r = api.basePath("/agentnet") as unknown as Hono<Env & { Variables: { agent: AgentRow } }>;
-  // Every call carries the agent's token (Bearer). Unknown or revoked = 401. A loopback request with no valid token is the root pseudo-agent.
+  // Every call carries a token (Bearer): an agent's own, or run/root.token for root. Unknown or revoked = 401.
   r.use("*", async (c, next) => {
     if (!agentPath(c.req.path)) return next(); // the page routes (snapshot, stream, open, close, close-all) keep the panel auth whatever the mount order
     const h = c.req.header("authorization") ?? "", t = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
     let a = t ? byToken(t) : null;
     if (!a && t && isRevoked(t)) return problem(c, 401, "Unauthorized", "agentnet: revoked agent token"); // a retired agent never comes back as root
-    if (!a && isLoopback(c)) a = ADMIN; // this machine, no token or an unknown one (an old key from the previous server): root
+    if (!a && t && isRootToken(t)) a = ADMIN; // run/root.token
+    if (!a && loopbackRoot() && isLoopback(c)) a = ADMIN; // house flag AGENTNET_LOOPBACK_ROOT=on: this machine, no token or an unknown one, is root
     if (!a) return problem(c, 401, "Unauthorized", "agentnet: unknown or revoked agent token");
     c.set("agent", a); c.set("actor", `agent:${a.name}`);
     if (Number(c.req.header("content-length") ?? 0) > REQ_MAX) return problem(c, 413, "Payload Too Large", "agentnet: body over 64 kB");
-    if (c.req.method === "POST" && /\/(events|send|tasks|report)$/.test(c.req.path) && !isRoot(a) && !rateOk(a.id)) return problem(c, 429, "Too Many Requests", "agentnet: over 300 writes a minute");
+    if (c.req.method === "POST" && /\/(events|send|tasks|report|plan|steps|done|drop)$/.test(c.req.path) && !isRoot(a) && !rateOk(a.id)) return problem(c, 429, "Too Many Requests", "agentnet: over 300 writes a minute");
     await next();
   });
   r.post("/hello", async (c: Ctx) => {
@@ -285,7 +316,8 @@ export function agentnetRoutes(api: Hono<Env>) {
     emit({ agent: a.id, type: "AgentConnected", data: { session, pid: goodPid(b.pid), version: b.version ?? null, model: b.model ?? null, client: b.client ?? "claude-code" }, source: "mod", ts: now, dedup: session ? `hello:${a.id}:${session}:${b.pid ?? ""}:${prev?.life === "gone" ? prev.lifeSince : 0}` : undefined });
     releaseHeld(a.id, now); flush();
     audit(`agent:${a.name}`, "agentnet.hello", a.id, "ok", c.get("trace"));
-    return c.json({ agent: viewOf(get(a.id)!), root: isRoot(a), scan: isScan(a), poll_max_s: POLL_MAX_S });
+    const snap = get(a.id); // null for the root pseudo-row (root.token): it has no card
+    return c.json({ agent: snap ? viewOf(snap) : null, root: isRoot(a), scan: isScan(a), poll_max_s: POLL_MAX_S });
   });
   r.post("/bye", async (c: Ctx) => {
     const a = c.get("agent"), b = await body(c);
@@ -335,48 +367,140 @@ export function agentnetRoutes(api: Hono<Env>) {
     const to = resolveTo(toName);
     if (!to) return problem(c, 404, "Not Found", `no live agent named ${toName}`);
     if (!canSend(a, to)) return problem(c, 403, "Forbidden", gateDenied(a, to) ?? VIA_BOSS);
-    if (kind === "report" && b.state === "done" && !isRoot(a) && a.id !== ADMIN.id && disciplineConfig().blockDoneReport) { // B4: no "done" report while tasks are open
-      const open = (get(a.id)?.tasks ?? []).filter((t) => t.status !== "done");
-      if (open.length) return problem(c, 409, "Can't do that", `agentnet: you cannot report done while ${open.length} task${open.length > 1 ? "s are" : " is"} open (${open.slice(0, 5).map((t) => t.id).join(", ")}). Finish them with mcp__agentnet__task_done first.`);
+    // The done report (or a failed one) closes the job; the report itself is never a step. The plan summary rides along.
+    const snap = get(a.id), job = kind === "report" && snap && !isRoot(a) && a.id !== ADMIN.id ? openJob(snap) : null, closes = !!job && (b.state === "done" || b.state === "failed");
+    if (job && b.state === "done" && disciplineConfig().blockDoneReport) {
+      const open = openSteps(job);
+      if (open.length) return refuse(c, a, "report-open-steps", `agentnet: you cannot report done while ${open.length} step${open.length > 1 ? "s are" : " is"} open (${open.slice(0, 5).map((t) => `${job.id}.${t.n}`).join(", ")}). ${job.legacy ? "Finish them with mcp__agentnet__task_done first." : "Close each with mcp__agentnet__step_done and its proof, or drop it with mcp__agentnet__step_drop and a reason. The report is not a step."}`);
     }
     const k: Kind = kind === "report" ? "report" : kindOf(b.kind);
-    const out = enqueueMessage(a, to, text, k, Number(b.reply_to) || null, subjectOf(b.subject, text));
+    const sent = closes && job && !job.legacy ? `${text}\n\n${planSummary(job, snap?.asks ?? [])}` : text;
+    const out = enqueueMessage(a, to, sent, k, Number(b.reply_to) || null, subjectOf(b.subject, text));
+    if (closes && out.id != null) { emit({ agent: a.id, type: "JobClosed", data: { outcome: b.state === "failed" ? "failed" : "done", reason: String(b.state), msg_id: out.id }, source: "mcp" }); flush(); scoreJob(a); }
     if (kind === "report" && b.state === "done" && hasNoteFields(b)) noteFor(a, text.split("\n")[0]!.slice(0, 160), b);
     if (kind === "report") { emit({ agent: a.id, type: "Reported", data: { to: to.name, msg_id: out.id }, source: "mcp" }); if (b.state) emit({ agent: a.id, type: "StatusReported", data: { doing: text.slice(0, 120), phase: String(b.state), progress: null, blockedOn: b.state === "blocked" ? text.slice(0, 120) : null }, source: "mcp" }); }
     flush();
     if (out.lost) return problem(c, 409, "Conflict", `${to.name} is lost: its tmux session ended. Nothing stored. Respawn it.`, { state: "lost" });
     if (out.state === "gone") return problem(c, 410, "Gone", `${to.name} is gone; nothing stored`);
-    return c.json({ msg_id: out.id, to: to.name, state: out.state });
+    return c.json({ msg_id: out.id, to: to.name, state: out.state, ...(closes && job ? { job_closed: job.id } : {}) });
   };
   r.post("/send", sendRoute("message"));
   r.post("/report", sendRoute("report"));
+  // ---------- the plan (docs/task-discipline.md): plan_set, step_done, step_add, step_drop, job_open ----------
+  const planOut = (id: string, extra: Record<string, unknown> = {}) => { const s = get(id), j = s ? jobsOf(s).at(-1) : undefined, act = activeStep(j ?? null); return { ...(j ? { plan: planSummary(j, s?.asks ?? []), next: act ? `${j.id}.${act.n}: ${act.text}` : j.closedAt == null && j.steps.length ? "every step is closed: send your report (state done) to close the job" : null } : {}), ...extra }; };
+  /** Add one step to an open job that has a plan, by the cap rules. Returns the refusal, or null when it was added. */
+  const addStep = (c: Ctx, by: AgentRow, target: AgentRow, job: Job, text: string, origin: Origin, originMsg: number | null, dedup?: string) => {
+    const err = addError(job, origin, text);
+    if (err) return refuse(c, by, origin === "self" && err.includes("of your own") ? "self-cap" : "step-cap", err);
+    const before = jobCounts(job);
+    emit({ agent: target.id, type: "StepAdded", data: { text, origin, originMsg }, source: "mcp", dedup });
+    // growth warning, once: the moment the added steps pass half of the plan, root hears about it
+    if (!job.legacy && before.added * 2 <= job.plan && (before.added + 1) * 2 > job.plan) { const root = resolveTo("root"); if (root) enqueueMessage(target, root, `The plan of ${target.name} (job ${job.id}) grew by more than half: ${job.plan} steps in the plan, ${before.added + 1} added since. Open a new job (job_open) or re-brief.`, "info", null, `plan of ${target.name} grew by half`); }
+    return null;
+  };
+  r.post("/plan", async (c: Ctx) => { // plan_set: the whole plan of the open job, until the first step is closed
+    const a = c.get("agent"), b = await body(c), steps = cleanSteps(b.steps), snap = get(a.id);
+    if (!snap) return problem(c, 404, "Not Found", "no status yet");
+    const job = openJob(snap), had = jobsOf(snap).length > 0;
+    if (!job && had) return refuse(c, a, "job-closed", "agentnet: your job is closed. A new job is opened by your boss (mcp__agentnet__job_open); a follow-up ask is answered with reply_to and needs no plan.");
+    const err = planError(job, steps);
+    if (err) return refuse(c, a, "plan", err);
+    emit({ agent: a.id, type: "PlanSet", data: { steps, origin: job?.brief ? "brief" : "self", by: a.name }, source: "mcp" }); flush();
+    const chores = steps.filter(isCeremony);
+    const trails = !isRoot(a) ? (await trailInject(a.name, "task_add", steps.join("\n"), a.project ?? undefined, a.spawned_at)).text : "";
+    return c.json(planOut(a.id, { ...(chores.length ? { warnings: [`${chores.map((t) => `"${t}"`).join(", ")} ${chores.length > 1 ? "look" : "looks"} like a chore, not an outcome. The report closes the job by itself and reading or committing is part of a step: adjust the plan (one adjust is allowed) or leave it.`] } : {}), ...(trails ? { trails } : {}) }));
+  });
+  r.post("/steps/done", async (c: Ctx) => { // step_done: close the active step with its proof; the next step becomes active
+    const a = c.get("agent"), b = await body(c), snap = get(a.id), job = snap ? openJob(snap) : null, step = activeStep(job);
+    if (!job || !step) return refuse(c, a, "no-step", job ? "agentnet: no step is open. Every step is closed: send your report (state done) to close the job." : "agentnet: you have no open job with a plan. Set your plan first with mcp__agentnet__plan_set.");
+    const ev = parseEvidence(b.evidence);
+    if ("error" in ev) return refuse(c, a, "evidence", ev.error, 422);
+    if (!ev.length) return refuse(c, a, "evidence", `agentnet: step_done needs proof that step ${job.id}.${step.n} is done. ${EVIDENCE_HELP}.`, 422);
+    const checked = verifyEvidence(ev, { id: a.id, project: snap!.project ?? a.project });
+    emit({ agent: a.id, type: "StepClosed", data: { n: step.n, evidence: checked, note: typeof b.note === "string" ? b.note.slice(0, 300) : null }, source: "mcp" }); flush();
+    const note = hasNoteFields(b) ? noteFor(a, step.text, b) : null, missing = checked.filter((e) => e.ok === false);
+    return c.json(planOut(a.id, { closed: `${job.id}.${step.n}`, evidence: checked, ...(missing.length ? { warnings: [`not found: ${missing.map((e) => `${e.kind} ${e.value}`).join("; ")}. It is stored as given and shown as not verified.`] } : {}), ...(note ? { note } : {}) }));
+  });
+  r.post("/steps", async (c: Ctx) => { // step_add: new scope, after the active step; because = the boss message that asked for it, or "self"
+    const a = c.get("agent"), b = await body(c), snap = get(a.id), job = snap ? openJob(snap) : null, text = cleanSteps([b.text])[0] ?? "";
+    if (!job || !job.steps.length) return refuse(c, a, "no-step", "agentnet: you have no open job with a plan. Set your plan first with mcp__agentnet__plan_set.");
+    const self = b.because == null || /^self$/i.test(String(b.because).trim()), msgId = self ? null : Number(String(b.because).replace(/^#/, ""));
+    if (!self) {
+      const m = Number.isInteger(msgId) ? db().query("SELECT from_agent, to_agent FROM messages WHERE id = ?").get(msgId) as { from_agent: string; to_agent: string } | null : null, from = m ? nameMap().get(m.from_agent) : null;
+      if (!m || m.to_agent !== a.id || (from !== a.boss && from !== "root")) return refuse(c, a, "because", `agentnet: because must be the id of a message to you from your boss or root (or "self"). ${Number.isInteger(msgId) ? `#${msgId} is not one.` : ""}`, 422);
+    }
+    const no = addStep(c, a, a, job, text, self ? "self" : "boss", msgId);
+    if (no) return no;
+    flush();
+    return c.json(planOut(a.id));
+  });
+  r.post("/steps/:n/drop", async (c: Ctx) => { // step_drop: an open step that no longer applies
+    const a = c.get("agent"), b = await body(c), n = Number(c.req.param("n")), snap = get(a.id), job = snap ? openJob(snap) : null, step = job?.steps.find((x) => x.n === n);
+    if (!job || !step || (step.status !== "pending" && step.status !== "active")) return refuse(c, a, "no-step", `agentnet: no open step ${n}.`, 404);
+    const reason = typeof b.reason === "string" ? b.reason.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+    if (!reason) return refuse(c, a, "drop-reason", "agentnet: step_drop needs a reason.", 422);
+    emit({ agent: a.id, type: "StepDropped", data: { n, reason }, source: "mcp" }); flush();
+    return c.json(planOut(a.id));
+  });
+  r.post("/jobs", async (c: Ctx) => { // job_open: the boss or root gives a live agent a new job; the old one must be closed
+    const a = c.get("agent"), b = await body(c), target = typeof b.agent === "string" ? byName(b.agent) : null;
+    if (!target) return problem(c, 404, "Not Found", "no such live agent");
+    if (target.id === a.id || !canTask(a, target)) return problem(c, 403, "Forbidden", gateDenied(a, target) ?? "only the agent's boss or root may open a job on it");
+    const goal = typeof b.goal === "string" ? b.goal.replace(/\s+/g, " ").trim().slice(0, 500) : "", snap = get(target.id);
+    if (!goal) return bad(c, "goal is required: one line that says what done looks like");
+    if (!snap) return problem(c, 404, "Not Found", "no status yet");
+    const open = openJob(snap);
+    if (open) return refuse(c, a, "job-open", `agentnet: job ${open.id} of ${target.name} is still open (${openSteps(open).length} open steps). It closes with the agent's done report; ask for it first.`);
+    const brief = str(b.brief), made = startJob(target.id, { by: a.name, goal, brief, steps: b.steps, maxSteps: b.max_steps });
+    const j = jobsOf(get(target.id)!).at(-1)!;
+    const msg = enqueueMessage(a, target, `New job ${j.id}: ${goal}${brief ? `\nBrief: ${brief}` : ""}\n${j.steps.length ? planSummary(j) : "No plan yet: read the brief and set it with mcp__agentnet__plan_set (at most 7 steps)."}`, "info", null, `new job ${j.id}: ${goal}`.slice(0, 60)); flush();
+    audit(`agent:${a.name}`, "agentnet.job-open", target.id, "ok", c.get("trace"), { job: j.id, steps: made.steps });
+    return c.json({ agent: target.name, job: j.id, steps: made.steps, msg_id: msg.id, ...(made.warnings.length ? { warnings: made.warnings } : {}) }, 201);
+  });
+  r.post("/agents/:name/asks/:id/close", async (c: Ctx) => { // root: an ask that was answered without reply_to, or that no longer matters
+    const a = c.get("agent"); if (!isRoot(a)) return problem(c, 403, "Forbidden", "root only");
+    const t = byName(String(c.req.param("name"))), id = Number(c.req.param("id")), s = t ? get(t.id) : null;
+    if (!t || !s || !openAsks(s).some((x) => x.id === id)) return problem(c, 404, "Not Found", "no such open ask");
+    emit({ agent: t.id, type: "AskClosed", data: { id, by: a.name }, source: "mcp" }); flush();
+    return c.json({ asks: get(t.id)!.asks ?? [] });
+  });
+  // ---------- the old task tools: aliases for one release, so agents that run today do not break ----------
   r.post("/tasks", async (c: Ctx) => { // task_add: to myself, or (boss / root) to a report
     const a = c.get("agent"), b = await body(c);
     const target = typeof b.agent === "string" && b.agent ? byName(b.agent) : a;
     if (!target) return problem(c, 404, "Not Found", "no such agent");
     if (!canTask(a, target)) return problem(c, 403, "Forbidden", gateDenied(a, target) ?? "only the agent, its boss or root may add tasks to it");
-    const titles = (Array.isArray(b.titles) ? b.titles : [b.title]).map((t) => String(t ?? "").trim()).filter(Boolean).slice(0, 20);
+    const titles = cleanSteps(Array.isArray(b.titles) ? b.titles : [b.title]).slice(0, 20);
     if (!titles.length) return bad(c, "title or titles required");
-    const base = Math.max(0, ...(get(target.id)?.tasks.map((t) => t.id) ?? [0]));
-    titles.forEach((text, i) => emit({ agent: target.id, type: "TaskAdded", data: { id: base + i + 1, text }, source: "mcp", dedup: typeof b.op === "string" ? `task:${target.id}:${b.op}:${i}` : undefined }));
+    // A list that was made with the old tools keeps working as it did (no caps), and so does the list of root and of a team member: they have no job that closes.
+    // Everything else goes by the plan rules, so the old names are not a way around them.
+    const snap = get(target.id), job = snap ? openJob(snap) : null, last = snap ? jobsOf(snap).at(-1) : undefined, old = isRoot(target) || target.kind === "member" || !!(job ?? last)?.legacy, op = typeof b.op === "string" ? b.op : null;
+    if (!old && !job && last) return refuse(c, a, "job-closed", `agentnet: the job of ${target.name} is closed. A new job is opened by its boss with mcp__agentnet__job_open; a follow-up ask is answered with reply_to and needs no task.`);
+    if (!old && !job?.steps.length) { // no plan yet: the list is the plan
+      const err = planError(job, titles);
+      if (err) return refuse(c, a, "plan", err);
+      emit({ agent: target.id, type: "PlanSet", data: { steps: titles, origin: a.id === target.id ? "self" : "boss", by: a.name }, source: "mcp", dedup: op ? `task:${target.id}:${op}:plan` : undefined });
+    } else if (!old && job) { // a job with a plan: each title is a step_add (self, or boss when a boss adds it)
+      let j = job;
+      for (const [i, text] of titles.entries()) { const no = addStep(c, a, target, j, text, a.id === target.id ? "self" : "boss", null, op ? `task:${target.id}:${op}:${i}` : undefined); if (no) { flush(); return no; } flush(); j = openJob(get(target.id)!) ?? j; }
+    } else { // a list made with the old tools (or no job yet): as before, no caps
+      const base = Math.max(0, ...(job?.steps.map((t) => t.n) ?? [0]));
+      titles.forEach((text, i) => emit({ agent: target.id, type: "TaskAdded", data: { id: base + i + 1, text }, source: "mcp", dedup: op ? `task:${target.id}:${op}:${i}` : undefined }));
+    }
     flush();
     const trails = target.id === a.id && !isRoot(a) ? (await trailInject(a.name, "task_add", titles.join("\n"), a.project ?? undefined, a.spawned_at)).text : "";
     return c.json({ tasks: get(target.id)?.tasks ?? [], ...(trails ? { trails } : {}) });
   });
-  r.post("/tasks/:id/:op", async (c: Ctx) => {
+  r.post("/tasks/:id/:op", async (c: Ctx) => { // task_start: a no-op on a planned job; task_done: step_done with "none: old tool"
     const a = c.get("agent"), id = Number(c.req.param("id")), op = String(c.req.param("op"));
     if (!["start", "done"].includes(op)) return bad(c, "op must be start or done");
-    const mine = get(a.id)?.tasks ?? [], task = mine.find((t) => t.id === id), dc = disciplineConfig();
+    const snap = get(a.id), job = snap ? openJob(snap) : null, task = (snap?.tasks ?? []).find((t) => t.id === id);
     if (!task) return problem(c, 404, "Not Found", `no task ${id}`);
-    if (op === "done" && dc.strictDone && task.status === "pending" && !isRoot(a) && a.id !== ADMIN.id) return problem(c, 409, "Can't do that", `agentnet: task ${id} was never started. Start it first with mcp__agentnet__task_start, then mark it done.`); // B1
-    if (op === "start" && dc.maxInProgress > 0 && task.status === "pending" && !isRoot(a) && a.id !== ADMIN.id) { // B3: one at a time
-      const busy = mine.filter((t) => t.status === "in_progress");
-      if (busy.length >= dc.maxInProgress) return problem(c, 409, "Can't do that", `agentnet: finish or done task ${busy[0]!.id} first (${dc.maxInProgress === 1 ? "one task at a time" : `at most ${dc.maxInProgress} tasks at a time`}).`);
-    }
-    emit({ agent: a.id, type: op === "start" ? "TaskStarted" : "TaskDone", data: { id }, source: "mcp" }); flush();
     const b = op === "done" ? await body(c) : {};
-    const note = op === "done" && hasNoteFields(b) ? noteFor(a, get(a.id)!.tasks.find((t) => t.id === id)?.text ?? `task ${id}`, b) : null;
-    if (op === "done") recordDone(a, id, b); // scorecard record (agent-score.md); never throws
+    if (job && !job.legacy) { if (op === "done" && task.status !== "done") emit({ agent: a.id, type: "StepClosed", data: { n: id, evidence: [{ kind: "none", value: "old tool", ok: null }], note: null }, source: "mcp" }); }
+    else emit({ agent: a.id, type: op === "start" ? "TaskStarted" : "TaskDone", data: { id }, source: "mcp" });
+    flush();
+    const note = op === "done" && hasNoteFields(b) ? noteFor(a, task.text, b) : null;
     return c.json({ tasks: get(a.id)!.tasks, ...(note ? { note } : {}) });
   });
   r.post("/trail/search", async (c: Ctx) => { // trail_search: FTS5 (notes + Entire) first, cass fills up to 3; compact text for the model
@@ -399,10 +523,12 @@ export function agentnetRoutes(api: Hono<Env>) {
   r.get("/adopt/facts", (c: Ctx) => { if (!isScan(c.get("agent")) && c.get("agent").id !== ADMIN.id) return problem(c, 403, "Forbidden", "setup scan only"); return adoptFacts(c as never); });
   r.post("/adopt/report", async (c: Ctx) => { if (!isScan(c.get("agent")) && c.get("agent").id !== ADMIN.id) return problem(c, 403, "Forbidden", "setup scan only"); return adoptReportRoute(c as never, await body(c)); });
   r.post("/adopt/apply", async (c: Ctx) => { if (!isScan(c.get("agent"))) return problem(c, 403, "Forbidden", "setup scan only"); return adoptApplyRoute(c as never, await body(c)); });
-  /** B2: the mod asks before every work tool. Allowed (200 {allow:true}) or a reason the agent reads. Root, the loopback admin and team members are exempt. */
+  /** The mod asks before every work tool. The gate asks one thing: is there a plan (after the grace time). Allowed (200 {allow:true}) or a reason
+   *  the agent reads. Root, the loopback admin and team members are exempt. A refusal is logged once a minute. */
   r.get("/gate", (c: Ctx) => {
-    const a = c.get("agent"), exempt = isRoot(a) || a.id === ADMIN.id || a.kind === "member";
-    const why = gateReason({ exempt, spawnedAt: a.spawned_at, tasks: get(a.id)?.tasks ?? [], now: Date.now() });
+    const a = c.get("agent"), exempt = isRoot(a) || a.id === ADMIN.id || a.kind === "member", s = get(a.id), now = Date.now();
+    const why = gateReason({ exempt, spawnedAt: a.spawned_at, hasPlan: !!s && jobsOf(s).some((j) => j.steps.length > 0), now });
+    if (why) { emit({ agent: a.id, type: "Refused", data: { rule: "gate", detail: why.slice(0, 200) }, source: "service", dedup: `refused:gate:${a.id}:${Math.floor(now / 60_000)}` }); flush(); }
     return c.json(why ? { allow: false, reason: why } : { allow: true });
   });
   r.post("/status", async (c: Ctx) => { // set_status
@@ -415,12 +541,14 @@ export function agentnetRoutes(api: Hono<Env>) {
   r.post("/events", async (c: Ctx) => {
     const a = c.get("agent"), b = await body(c), list = (Array.isArray(b.events) ? b.events : [b]).slice(0, EVENTS_PER_CALL);
     let n = 0;
+    // The built-in todo list of the session is mirrored only where it was the list already: an open list made with the old tools, root, a team member.
+    // For every other agent it stays private, so it cannot open or grow a plan around the caps.
+    const s0 = get(a.id), mirror = isRoot(a) || a.kind === "member" || !!(s0 && openJob(s0)?.legacy);
     for (const e of list as Record<string, unknown>[]) {
-      if (!EVENT_TYPES.has(String(e.type))) continue;
+      if (!EVENT_TYPES.has(String(e.type)) || (!mirror && /^Task(Added|Started|Done)$/.test(String(e.type)))) continue;
       emit({ agent: a.id, type: String(e.type), data: (e.data ?? {}) as Record<string, unknown>, source: (typeof e.source === "string" ? e.source : "mod") as Source, ts: Number(e.ts) || undefined, dedup: typeof e.dedup === "string" ? `${a.id}:${e.dedup}`.slice(0, 200) : undefined, transient: e.type === "ToolStarted" }); n++;
     }
     flush();
-    for (const e of list as Record<string, unknown>[]) if (e.type === "TaskDone" && Number.isInteger(Number((e.data as Record<string, unknown> | undefined)?.id))) recordDone(a, Number((e.data as Record<string, unknown>).id), null); // tasks done through the mod's TaskUpdate
     return c.json({ accepted: n });
   });
   /** A summary sentence for a background job that has no description, made once per job after its row exists. The row shows the raw command until it arrives. */
@@ -496,8 +624,10 @@ export function agentnetRoutes(api: Hono<Env>) {
       const tm = plan?.team;
       if (tm?.action === "create") createTeam({ id: tm.id, name: tm.id, goal: str(b.goal)?.trim().slice(0, 500) ?? str(b.job), lead: tm.lead ?? undefined, project: plan!.project ?? undefined, members: tm.members });
       else if (tm && getTeam(tm.id)) addMember(tm.id, name); // an unknown team id is ignored: old callers pass agmsg team names
+      // the first job: its plan comes from the brief's `## Steps` (or the given steps); no brief = the agent sets the plan
+      const job1 = kind === "agent" && (str(b.brief) || cleanSteps(b.steps).length) ? startJob(made.id, { by: a.name, goal: str(b.goal)?.trim().slice(0, 500), brief: str(b.brief), steps: b.steps, maxSteps: b.max_steps }) : null;
       audit(`agent:${a.name}`, "agentnet.spawn", made.id, "ok", c.get("trace"));
-      return c.json({ agent: made.id, token_file: made.tokenFile, state: "starting", name, boss: plan?.boss ?? null, team: tm?.id ?? null, model: plan?.model ?? null, effort: plan?.effort ?? null, soul: plan?.soul ?? null, project: plan?.project ?? null, goal: str(b.goal) ?? null, audit: plan?.audit ?? null, compact_window: plan?.compactWindow ?? null, reasons: plan?.reasons ?? [], warnings: plan?.warnings ?? [] }, 201); // M6: spawn.sh launches it with this file
+      return c.json({ plan_steps: job1?.steps ?? 0, plan_warnings: job1?.warnings ?? [], agent: made.id, token_file: made.tokenFile, state: "starting", name, boss: plan?.boss ?? null, team: tm?.id ?? null, model: plan?.model ?? null, effort: plan?.effort ?? null, soul: plan?.soul ?? null, project: plan?.project ?? null, goal: str(b.goal) ?? null, audit: plan?.audit ?? null, compact_window: plan?.compactWindow ?? null, reasons: plan?.reasons ?? [], warnings: plan?.warnings ?? [] }, 201); // M6: spawn.sh launches it with this file
     } catch (e) { return e instanceof RouteBlocked ? problem(c, 409, "Reserve mode", e.message) : bad(c, (e as Error).message); }
   });
   r.post("/agents/:name/placement", async (c: Ctx) => { // spawn.sh after launch: where the pane is ("session:@win.%pane")
@@ -507,13 +637,12 @@ export function agentnetRoutes(api: Hono<Env>) {
     db().run("UPDATE agents SET placement = ? WHERE id = ?", [typeof b.tmux === "string" ? b.tmux.slice(0, 80) : null, t.id]);
     return c.body(null, 204);
   });
-  r.post("/agents/:name/grade", async (c: Ctx) => { // root only: grade a finished task of an agent (docs/agent-score.md)
+  r.post("/agents/:name/grade", async (c: Ctx) => { // root only: grade a closed job of an agent, named by generation and job number (docs/agent-score.md)
     const a = c.get("agent"); if (!isRoot(a)) return problem(c, 403, "Forbidden", "root only");
-    const name = String(c.req.param("name")), out = gradeTask(name, await body(c));
-    if (out === null) return problem(c, 404, "Not Found", `no finished task with that id for ${name}`);
-    if ("error" in out) return bad(c, out.error);
-    audit(`agent:${a.name}`, "agentnet.grade", name, "ok", c.get("trace"), { task_id: out.taskId, grade: out.grade });
-    return c.json({ record: out });
+    const name = String(c.req.param("name")), out = grade(name, await body(c));
+    if ("error" in out) return out.status === 404 ? problem(c, 404, "Not Found", out.error) : bad(c, out.error);
+    audit(`agent:${a.name}`, "agentnet.grade", out.job?.agent_id ?? name, "ok", c.get("trace"), { ...(out.job ? { job: out.job.job } : { task_id: out.record.taskId }), grade: out.record.grade });
+    return c.json(out);
   });
   teamRoutes(r as never, (c) => (c as Ctx).get("agent"));
   r.post("/despawn", async (c: Ctx) => {
@@ -521,7 +650,7 @@ export function agentnetRoutes(api: Hono<Env>) {
     const b = await body(c), t = typeof b.agent === "string" ? byName(b.agent) : null;
     if (!t) return problem(c, 404, "Not Found", "no such live agent");
     if (t.name === "root") return problem(c, 403, "Forbidden", "root cannot be despawned"); // its pid is the main bot's claude
-    const open = (get(t.id)?.tasks ?? []).filter((x) => x.status !== "done"); // B4: warn root, do not block
+    const open = (get(t.id)?.tasks ?? []).filter((x) => x.status !== "done"); // warn root, do not block: the despawn closes the job and drops them
     const closed = retireAgent(t, "despawn");
     audit(`agent:${a.name}`, "agentnet.despawn", t.id, "ok", c.get("trace"), { reason: String(b.reason ?? ""), open_tasks: open.length, ...(closed.length ? { teams_archived: closed.join(",") } : {}) });
     return c.json({ agent: t.id, state: "gone", ...(closed.length ? { teams_archived: closed } : {}), ...(open.length ? { warning: `${t.name} was despawned with ${open.length} open task${open.length > 1 ? "s" : ""}: ${open.map((x) => `${x.id} ${x.text.slice(0, 40)}`).join("; ")}`, open_tasks: open.map((x) => x.id) } : {}) });

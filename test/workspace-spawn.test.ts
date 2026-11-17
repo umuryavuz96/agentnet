@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LOOP } from "./helpers";
+import { LOOP, fetchAsRoot } from "./helpers";
 
 const home = mkdtempSync(join(tmpdir(), "an-wss-"));
 const repo = join(home, "harbor", "ios");
@@ -19,7 +19,7 @@ beforeAll(() => {
 afterAll(() => { for (const k of ENV) { if (old[k] === undefined) delete process.env[k]; else process.env[k] = old[k]; } });
 const { buildApp, makeFetch } = await import("../src/server");
 { const { Database } = await import("bun:sqlite"); const { useDatabase } = await import("../src/core/db"); useDatabase(new Database(":memory:")); (await import("../src/net/store"))._reset(); }
-const f = makeFetch(buildApp());
+const f = await fetchAsRoot(makeFetch(buildApp())); // root.token bearer on every call
 const call = (path: string, body?: unknown) => f(new Request(`http://x${path}`, { method: body ? "POST" : "GET", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }), LOOP);
 const plan = async (b: object) => (await (await call("/v1/admin/plan-spawn", b)).json() as { plan: { name: string; soul: string; project: string; reasons: string[] } }).plan;
 

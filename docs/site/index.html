@@ -26,7 +26,7 @@
 <meta name="twitter:description" content="A local network for Claude Code agents: names, a boss, task lists, messages and a live web view.">
 <meta name="twitter:image" content="https://umuryavuz96.github.io/agentnet/img/og.png">
 <link rel="preload" href="fonts/Figtree.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="site.css?v=4">
+<link rel="stylesheet" href="site.css?v=5">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -41,7 +41,7 @@
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
 }
 </script>
-<script src="site.js?v=4" defer></script>
+<script src="site.js?v=5" defer></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -75,144 +75,295 @@
       </a>
     </nav>
   </div>
+  <div class="prog" aria-hidden="true"></div>
+  <div class="prog" aria-hidden="true"></div>
 </header>
 
 <main id="main">
-  <section class="hero wrap" aria-labelledby="h1">
-    <p class="eyebrow">An org chart for your Claude Code agents</p>
-    <h1 id="h1">Name them. Give them a boss. Watch them work.</h1>
-    <p class="sub">agentnet gives every Claude Code session a name, a boss, a task list and an inbox, and shows the whole team live on your own machine.</p>
-    <div class="cta-row">
-      <a class="btn primary" href="#install"><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Install</a>
-      <a class="text-link" href="https://github.com/umuryavuz96/agentnet">View on GitHub</a>
-    </div>
-    <figure class="shot" data-video="on">
-      <div class="shot-box">
-        <picture>
-          <source media="(max-width: 599px)" srcset="img/agents-390-dark.png" width="390" height="844">
-          <source media="(prefers-color-scheme: light)" srcset="img/agents-1280-light.png" width="1280" height="800">
-          <img src="img/agents-1280-dark.png" width="1280" height="800" decoding="async" fetchpriority="high"
-               alt="The agentnet web app's Agents map: a root agent above a team of two builders, one with a progress bar, and a review team of one.">
-        </picture>
-      </div>
-      <template id="hero-video">
-        <video muted loop playsinline preload="metadata" poster="img/video-poster.png?v=3" aria-label="agentnet launch video">
-          <source src="video/agentnet-launch.webm?v=3" type="video/webm">
-          <source src="video/agentnet-launch.mp4?v=3" type="video/mp4">
-          <track kind="captions" src="video/agentnet-launch.vtt?v=3" srclang="en" label="English" default>
-          <img src="img/agentnet-launch.gif?v=3" alt="agentnet launch video" loading="lazy">
-        </video>
-        <div class="vctl">
-          <button type="button" class="vbtn" data-act="play" aria-label="Play video"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg></button>
-          <button type="button" class="vbtn" data-act="sound" aria-label="Unmute" aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-muted"/></svg><span>Unmute</span></button>
-        </div>
-      </template>
-    </figure>
-  </section>
-
-  <section class="pains" aria-labelledby="pains-h">
-    <div class="wrap">
-      <h2 id="pains-h" class="sr-only">The problem</h2>
-      <ul class="pain-list">
-        <li>You tab through ten terminals to find the one that is stuck.</li>
-        <li>You copy what one session said into the next by hand.</li>
-        <li>A fresh session repeats a choice the last one already made.</li>
-      </ul>
-    </div>
-  </section>
-
-  <section class="wrap block" aria-labelledby="get-h">
-    <h2 id="get-h">What you get</h2>
-    <ul class="cards">
-      <li class="card">
-        <svg class="ic lg" aria-hidden="true"><use href="#i-network"/></svg>
-        <h3>Know who is stuck</h3>
-        <p>A live map of every agent's state, progress and task list.</p>
-        <p class="feat">Live map and task lists</p>
-      </li>
-      <li class="card">
-        <svg class="ic lg" aria-hidden="true"><use href="#i-messages"/></svg>
-        <h3>Stop being the message bus</h3>
-        <p>Agents message each other and report to their boss.</p>
-        <p class="feat">Inbox and reports</p>
-      </li>
-      <li class="card">
-        <svg class="ic lg" aria-hidden="true"><use href="#i-notes"/></svg>
-        <h3>Keep what the last agent decided</h3>
-        <p>Decision notes the next agent can search.</p>
-        <p class="feat">Decision notes (trails)</p>
-      </li>
-    </ul>
-    <p class="trust">Local only. No login. Refuses to listen on a public address.</p>
-  </section>
-
-  <section id="install" class="wrap block" aria-labelledby="how-h" tabindex="-1">
-    <h2 id="how-h">How it works</h2>
-    <p class="lead">You need Claude Code, tmux and Bun, on macOS or Linux. Start from source:</p>
-    <div class="code">
-      <pre tabindex="0" aria-label="Install commands"><code>git clone https://github.com/umuryavuz96/agentnet &amp;&amp; cd agentnet
-bun install
-bun run web:build</code></pre>
-      <button class="copy" type="button" hidden aria-label="Copy commands"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
-    </div>
-    <p>Then start the server, spawn your first agent and open the web app. <a href="https://github.com/umuryavuz96/agentnet#quick-start">All steps</a></p>
-    <p class="note">agentnet starts real Claude Code sessions, so every agent uses your Claude Code usage. The web app shows what each one used.</p>
-  </section>
-
-  <section class="wrap block" aria-labelledby="sec-h">
-    <div class="sec card">
-      <svg class="ic lg" aria-hidden="true"><use href="#i-shield"/></svg>
+  <section class="hero" aria-labelledby="h1">
+    <div class="hero-in">
       <div>
-        <h2 id="sec-h">Security</h2>
-        <ul>
-          <li>Listens on <code>127.0.0.1</code>, so only your machine can reach it.</li>
-          <li>One LAN or tailnet address is opt-in. Public addresses are refused.</li>
-          <li>There is no login, so never expose it to the internet.</li>
-          <li>Only the machine itself or the root agent can start and stop agents.</li>
-          <li>Agent tokens are identity, not a login, kept in a file only you can read.</li>
-        </ul>
-        <p><a href="https://github.com/umuryavuz96/agentnet#security-model">Security model</a></p>
+        <p class="eyebrow">An org chart for your Claude Code agents</p>
+        <h1 id="h1">Name them. Give them a boss. Watch them work.</h1>
+        <p class="sub">agentnet gives every Claude Code session a name, a boss, a task list and an inbox, and shows the whole team live on your own machine.</p>
+        <div class="cta-row">
+          <a class="btn primary" href="#install"><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Install</a>
+          <a class="text-link" href="https://github.com/umuryavuz96/agentnet">View on GitHub</a>
+        </div>
+        <p class="where">Every recording on this page shows demo data.</p>
       </div>
+      <div class="media" style="--pos:50% 0%">
+          <picture><source media="(max-width: 899px)" srcset="video/hero-p-poster.webp"><img class="poster" src="video/hero-d-poster.webp" width="1280" height="800" alt="The agentnet Agents map: a director above teams of agents, each card showing its state and progress." decoding="async" loading="eager" fetchpriority="high"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="The Agents map flips from 2D to a 3D office and back.">
+            <source media="(max-width: 899px)" src="video/hero-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/hero-p.mp4" type="video/mp4">
+            <source src="video/hero-d.webm" type="video/webm">
+            <source src="video/hero-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
     </div>
+    <ul class="pains">
+      <li>You tab through ten terminals to find the one that is stuck.</li>
+      <li>You copy what one session said into the next by hand.</li>
+      <li>A fresh session repeats a choice the last one already made.</li>
+    </ul>
   </section>
 
-  <section class="wrap block" aria-labelledby="faq-h">
-    <h2 id="faq-h">Questions</h2>
-    <div class="faq">
-      <details>
-        <summary>Why not Claude Code subagents or agent teams?</summary>
-        <div class="ans"><p>Subagents and agent teams live inside one Claude Code session. agentnet is the layer outside it: names, inboxes, tasks and decision notes across sessions, so it complements them.</p></div>
-      </details>
-      <details>
-        <summary>Is it safe?</summary>
-        <div class="ans"><p>It listens on <code>127.0.0.1</code> and refuses public addresses. There is no login, so never put it on the internet.</p></div>
-      </details>
-      <details>
-        <summary>Does it cost extra?</summary>
-        <div class="ans"><p>agentnet starts real Claude Code sessions, so every agent uses your Claude Code usage. The web app shows what each one used.</p></div>
-      </details>
-      <details>
-        <summary>Does it run on Windows?</summary>
-        <div class="ans"><p>No. agentnet runs on macOS and Linux.</p></div>
-      </details>
-      <details>
-        <summary>Do I need Server OS?</summary>
-        <div class="ans"><p>No. agentnet works on its own. Support for showing it inside Server OS is coming in a later release.</p></div>
-      </details>
-    </div>
-  </section>
+  <div class="steps" id="features">
+    <nav class="rail" aria-label="Features"><ol></ol></nav>
+    <div class="list">
 
-  <section class="wrap block final" aria-labelledby="final-h">
-    <h2 id="final-h">Start your first agent</h2>
-    <p class="framework">There is no agent loop to write; the agents are real Claude Code sessions.</p>
-    <div class="code">
-      <pre tabindex="0" aria-label="Install commands"><code>git clone https://github.com/umuryavuz96/agentnet &amp;&amp; cd agentnet
+      <section class="step" id="map" data-name="Map" aria-labelledby="h-map">
+        <div class="txt">
+          <h2 id="h-map">See the whole org on one screen.</h2>
+          <p class="lede">The director sits on top, each team has its own region, and reports hang under their lead. You read who works, who waits and who is stuck.</p>
+          <ul class="facts"><li>A message travels along its line as light, so you see who talks to whom.</li><li>Each card shows the state, the progress and the step in hand.</li><li>Pan, zoom and rotate. It fits a phone.</li></ul>
+          <p class="where">Agents</p>
+        </div>
+        <div class="media" style="--pos:30% 20%">
+          <picture><source media="(max-width: 899px)" srcset="video/map-p-poster.webp"><img class="poster" src="video/map-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="The Agents map: teams as regions, one message travelling as light, a card changing state.">
+            <source media="(max-width: 899px)" src="video/map-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/map-p.mp4" type="video/mp4">
+            <source src="video/map-d.webm" type="video/webm">
+            <source src="video/map-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+
+      <section class="step" id="office" data-name="3D office" aria-labelledby="h-office">
+        <div class="txt">
+          <h2 id="h-office">Or watch them at their desks.</h2>
+          <p class="lede">One switch turns the same map into a small 3D office. Every team has a room, and every agent is a person at a desk.</p>
+          <ul class="facts"><li>Agents type while they work and turn to each other when they talk.</li><li>The director has an office of its own, easy to find.</li><li>Drawn in code. There are no assets to fetch.</li></ul>
+          <p class="where">Agents, then 2D | 3D</p>
+        </div>
+        <div class="media" style="--pos:50% 40%">
+          <picture><source media="(max-width: 899px)" srcset="video/office-p-poster.webp"><img class="poster" src="video/office-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="The 3D office: a slow camera move over rooms where agents type and talk.">
+            <source media="(max-width: 899px)" src="video/office-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/office-p.mp4" type="video/mp4">
+            <source src="video/office-d.webm" type="video/webm">
+            <source src="video/office-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+
+      <section class="step" id="plan" data-name="Plan" aria-labelledby="h-plan">
+        <div class="txt">
+          <h2 id="h-plan">Every job has a plan you can read.</h2>
+          <p class="lede">Before it starts, an agent writes a short plan: seven steps at most. You see the plan on its card, in its panel and on the team board.</p>
+          <ul class="facts"><li>A step closes only with proof: a commit, a file, a test run.</li><li>agentnet checks the proof it can and marks the rest as not verified.</li><li>New scope is a new job, so plans stay short.</li></ul>
+          <p class="where">Agents, pick an agent, Now</p>
+        </div>
+        <div class="media" style="--pos:100% 10%">
+          <picture><source media="(max-width: 899px)" srcset="video/plan-p-poster.webp"><img class="poster" src="video/plan-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="An agent panel with its plan; a step turns done and the card progress moves.">
+            <source media="(max-width: 899px)" src="video/plan-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/plan-p.mp4" type="video/mp4">
+            <source src="video/plan-d.webm" type="video/webm">
+            <source src="video/plan-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+
+      <section class="step" id="trail" data-name="Trail" aria-labelledby="h-trail">
+        <div class="txt">
+          <h2 id="h-trail">Follow one agent, step by step.</h2>
+          <p class="lede">The Trail tab draws an agent’s work as one line: each step with its time, the branches it took, and the point where it waits for you.</p>
+          <ul class="facts"><li>The header shows the state, the time in that state, the model and how full its context is.</li><li>Hover a step to peek at what happened there.</li><li>The same line runs on the agent’s card on the map.</li></ul>
+          <p class="where">Agents, pick an agent, Trail</p>
+        </div>
+        <div class="media" style="--pos:100% 10%">
+          <picture><source media="(max-width: 899px)" srcset="video/trail-p-poster.webp"><img class="poster" src="video/trail-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="The Trail tab: new steps arrive on one line and a peek opens on a step.">
+            <source media="(max-width: 899px)" src="video/trail-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/trail-p.mp4" type="video/mp4">
+            <source src="video/trail-d.webm" type="video/webm">
+            <source src="video/trail-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+
+      <section class="step" id="chat" data-name="Chat" aria-labelledby="h-chat">
+        <div class="txt">
+          <h2 id="h-chat">Talk to any agent from the browser.</h2>
+          <p class="lede">Open an agent and write to it. Replies render as clean text with lists and code, and read like a chat, not like a terminal.</p>
+          <ul class="facts"><li>Write as yourself, straight into its session, or as the director.</li><li>Long reports fold, so the thread stays readable.</li><li>No tmux attach and no hunting for the right pane.</li></ul>
+          <p class="where">Agents, pick an agent, Messages</p>
+        </div>
+        <div class="media" style="--pos:100% 70%">
+          <picture><source media="(max-width: 899px)" srcset="video/chat-p-poster.webp"><img class="poster" src="video/chat-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="The Messages tab: a short message is typed and sent, the reply renders with a list and code.">
+            <source media="(max-width: 899px)" src="video/chat-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/chat-p.mp4" type="video/mp4">
+            <source src="video/chat-d.webm" type="video/webm">
+            <source src="video/chat-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+
+      <section class="step" id="teams" data-name="Teams" aria-labelledby="h-teams">
+        <div class="txt">
+          <h2 id="h-teams">Teams with a goal, a channel and a board.</h2>
+          <p class="lede">Put the agents that share a job in a team. The team pane shows its people as a tree, their channel and their shared plans.</p>
+          <ul class="facts"><li>Every team has one written goal that says what done looks like.</li><li>The channel shows who has read each message.</li><li>A team closes by itself when its last agent is closed.</li></ul>
+          <p class="where">Agents, pick a team</p>
+        </div>
+        <div class="media" style="--pos:100% 10%">
+          <picture><source media="(max-width: 899px)" srcset="video/teams-p-poster.webp"><img class="poster" src="video/teams-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="A team pane: People, then Channel, then Plans.">
+            <source media="(max-width: 899px)" src="video/teams-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/teams-p.mp4" type="video/mp4">
+            <source src="video/teams-d.webm" type="video/webm">
+            <source src="video/teams-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+
+      <section class="step" id="waiting" data-name="Waiting for you" aria-labelledby="h-waiting">
+        <div class="txt">
+          <h2 id="h-waiting">Look only when someone needs you.</h2>
+          <p class="lede">Waiting for you lists the reports and questions nobody has answered yet. The count sits in the side rail, so one glance tells you if you can stay away.</p>
+          <ul class="facts"><li>A report with no reply for 10 minutes shows up here.</li><li>Cmd+K opens a command palette: jump to any agent, team or page.</li><li>On a phone the same search sits behind one button.</li></ul>
+          <p class="where">Waiting for you</p>
+        </div>
+        <div class="media" style="--pos:40% 10%">
+          <picture><source media="(max-width: 899px)" srcset="video/waiting-p-poster.webp"><img class="poster" src="video/waiting-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="Two questions wait; Cmd+K opens the palette and jumps to an agent.">
+            <source media="(max-width: 899px)" src="video/waiting-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/waiting-p.mp4" type="video/mp4">
+            <source src="video/waiting-d.webm" type="video/webm">
+            <source src="video/waiting-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+
+      <section class="step" id="search" data-name="Past work" aria-labelledby="h-search">
+        <div class="txt">
+          <h2 id="h-search">Keep what the last agent decided.</h2>
+          <p class="lede">When an agent finishes real work it leaves a decision note: what it chose, what it rejected and why. The next agent searches those notes before it starts.</p>
+          <ul class="facts"><li>Search past work with a few words, as an agent or as you.</li><li>Each hit shows the date, the agent and the files that still exist.</li><li>The Trails page shows how often the notes get used.</li></ul>
+          <p class="where">Search</p>
+        </div>
+        <div class="media" style="--pos:50% 10%">
+          <picture><source media="(max-width: 899px)" srcset="video/search-p-poster.webp"><img class="poster" src="video/search-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="Search past work: a few words typed, hits with date, agent and files, one note open.">
+            <source media="(max-width: 899px)" src="video/search-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/search-p.mp4" type="video/mp4">
+            <source src="video/search-d.webm" type="video/webm">
+            <source src="video/search-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+
+      <section class="step" id="scores" data-name="Cost and scores" aria-labelledby="h-scores">
+        <div class="txt">
+          <h2 id="h-scores">See what each agent cost, and how it worked.</h2>
+          <p class="lede">Usage shows what runs now and which models take the most. Scores puts a grade next to the cost, so cheap and good are easy to tell apart.</p>
+          <ul class="facts"><li>A ranked list of agents by usage, with the model mix.</li><li>A discipline score for how well the plan was kept.</li><li>Best and needs-a-look lists on one screen.</li></ul>
+          <p class="where">Usage, then Scores</p>
+        </div>
+        <div class="media" style="--pos:50% 0%">
+          <picture><source media="(max-width: 899px)" srcset="video/scores-p-poster.webp"><img class="poster" src="video/scores-d-poster.webp" width="1280" height="800" alt="" decoding="async" loading="lazy"></picture>
+          <video muted loop playsinline preload="none" disablepictureinpicture aria-label="The Usage page, then the Scores page with grades next to cost.">
+            <source media="(max-width: 899px)" src="video/scores-p.webm" type="video/webm">
+            <source media="(max-width: 899px)" src="video/scores-p.mp4" type="video/mp4">
+            <source src="video/scores-d.webm" type="video/webm">
+            <source src="video/scores-d.mp4" type="video/mp4">
+          </video>
+          <button class="pp" type="button" hidden aria-label="Pause"><svg class="ic i-pause" aria-hidden="true"><use href="#i-pause"/></svg><svg class="ic i-play" aria-hidden="true"><use href="#i-play"/></svg></button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="rest">
+    <section class="wrap block" aria-labelledby="more-h">
+      <h2 id="more-h">Also new</h2>
+      <ul class="more">
+        <li><b>Model routing</b><span>Each pick shows its score and the reason for the model.</span></li>
+        <li><b>Personas</b><span>A catalog you can filter, with a default per role.</span></li>
+        <li><b>Hooks</b><span>One row per hook. Switch one off, and undo it.</span></li>
+        <li><b>Activity</b><span>Every message and event, filtered by agent.</span></li>
+        <li><b>Director setup</b><span>A full page with steps. No terminal needed.</span></li>
+        <li><b>Offline bar</b><span>Says when the connection was lost, on every page.</span></li>
+      </ul>
+      <p class="trust">Local only. No login. Refuses to listen on a public address.</p>
+    </section>
+
+    <section id="install" class="wrap block" aria-labelledby="how-h" tabindex="-1">
+        <h2 id="how-h">How it works</h2>
+        <p class="lead">You need Claude Code, tmux and Bun, on macOS or Linux. Start from source:</p>
+        <div class="code">
+          <pre tabindex="0" aria-label="Install commands"><code>git clone https://github.com/umuryavuz96/agentnet &amp;&amp; cd agentnet
 bun install
 bun run web:build</code></pre>
-      <button class="copy" type="button" hidden aria-label="Copy commands"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
-    </div>
-    <p><a href="https://github.com/umuryavuz96/agentnet#quick-start">All steps</a> · Homebrew and a signed installer are coming.</p>
-  </section>
+          <button class="copy" type="button" hidden aria-label="Copy commands"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy</span></button>
+        </div>
+        <p>Then start the server, spawn your first agent and open the web app. <a href="https://github.com/umuryavuz96/agentnet#quick-start">All steps</a></p>
+        <p class="note">agentnet starts real Claude Code sessions, so every agent uses your Claude Code usage. The web app shows what each one used.</p>
+      </section>
+
+      <section class="wrap block" aria-labelledby="sec-h">
+        <div class="sec card">
+          <svg class="ic lg" aria-hidden="true"><use href="#i-shield"/></svg>
+          <div>
+            <h2 id="sec-h">Security</h2>
+            <ul>
+              <li>Listens on <code>127.0.0.1</code>, so only your machine can reach it.</li>
+              <li>One LAN or tailnet address is opt-in. Public addresses are refused.</li>
+              <li>There is no login, so never expose it to the internet.</li>
+              <li>Only the machine itself or the root agent can start and stop agents.</li>
+              <li>Agent tokens are identity, not a login, kept in a file only you can read.</li>
+            </ul>
+            <p><a href="https://github.com/umuryavuz96/agentnet#security-model">Security model</a></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="wrap block" aria-labelledby="faq-h">
+        <h2 id="faq-h">Questions</h2>
+        <div class="faq">
+          <details>
+            <summary>Why not Claude Code subagents or agent teams?</summary>
+            <div class="ans"><p>Subagents and agent teams live inside one Claude Code session. agentnet is the layer outside it: names, inboxes, tasks and decision notes across sessions, so it complements them.</p></div>
+          </details>
+          <details>
+            <summary>Is it safe?</summary>
+            <div class="ans"><p>It listens on <code>127.0.0.1</code> and refuses public addresses. There is no login, so never put it on the internet.</p></div>
+          </details>
+          <details>
+            <summary>Does it cost extra?</summary>
+            <div class="ans"><p>agentnet starts real Claude Code sessions, so every agent uses your Claude Code usage. The web app shows what each one used.</p></div>
+          </details>
+          <details>
+            <summary>Does it run on Windows?</summary>
+            <div class="ans"><p>No. agentnet runs on macOS and Linux.</p></div>
+          </details>
+          <details>
+            <summary>Do I need Server OS?</summary>
+            <div class="ans"><p>No. agentnet works on its own. Support for showing it inside Server OS is coming in a later release.</p></div>
+          </details>
+        </div>
+      </section>
+
+    <section class="wrap block final" aria-labelledby="final-h">
+      <h2 id="final-h">Start your first agent</h2>
+      <p class="framework">There is no agent loop to write; the agents are real Claude Code sessions.</p>
+      <p><a class="btn primary" href="#install"><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Install</a> <a class="text-link" href="https://github.com/umuryavuz96/agentnet#quick-start">All steps</a></p>
+      <p class="note">Homebrew and a signed installer are coming. The recordings above use demo data on a scratch install.</p>
+    </section>
+  </div>
 </main>
 
 <footer class="foot">

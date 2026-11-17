@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import type { Context, Hono } from "hono";
 import { problem, type Env } from "../core/http";
 
-const TYPES: Record<string, string> = { ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png" };
-const CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'";
+const TYPES: Record<string, string> = { ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".jpg": "image/jpeg" };
+const CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-ancestors 'self'";
 
 /** Serve web/dist: "/" and "/index.html" → index.html; "/assets/*" → the file (immutable cache, 1 year);
  *  any other GET whose path does not start with "/v1/" or "/api/" → index.html (SPA fallback, no-cache).

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LOOP } from "./helpers";
+import { LOOP, fetchAsRoot } from "./helpers";
 
 const home = mkdtempSync(join(tmpdir(), "an-pl-"));
 process.env.AGENTNET_HOME = home;
@@ -14,7 +14,7 @@ beforeAll(() => {
 afterAll(() => { for (const k of ENV) delete process.env[k]; });
 const { buildApp, makeFetch } = await import("../src/server");
 { const { Database } = await import("bun:sqlite"); const { useDatabase } = await import("../src/core/db"); useDatabase(new Database(":memory:")); (await import("../src/net/store"))._reset(); }
-const f = makeFetch(buildApp());
+const f = await fetchAsRoot(makeFetch(buildApp())); // root.token bearer on every call
 const call = (path: string, body?: unknown, method = body ? "POST" : "GET") => f(new Request(`http://x${path}`, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }), LOOP);
 const plan = async (b: unknown) => ((await (await call("/v1/admin/plan-spawn", b)).json()) as { plan: any }).plan;
 const agents = async () => ((await (await call("/v1/agent/agents?all=1")).json()) as { agents: { name: string }[] }).agents.map((a) => a.name);

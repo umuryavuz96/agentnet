@@ -17,7 +17,7 @@ const NOTE = "Messages from other agents arrive as one line each: `#id [kind] fr
 const obj = (p: Record<string, Json>, required: string[] = []): Json => ({ type: "object", properties: p, required });
 const str = (description: string): Json => ({ type: "string", description });
 const int = (description: string): Json => ({ type: "integer", description });
-/** Optional decision fields on task_done and report state=done: stored as a trail note that later trail searches find. */
+/** Optional decision fields on step_done (task_done) and report state=done: stored as a trail note that later trail searches find. */
 const NOTE_FIELDS: Record<string, Json> = {
   goal: str("decision note: what the task was for, one line"),
   decisions: { type: "array", description: "decision note: what you chose, what you rejected and why", items: { type: "object", properties: { chosen: { type: "string" }, rejected: { type: "string" }, why: { type: "string" } }, required: ["chosen"] } },
@@ -30,11 +30,21 @@ const WORKER_TOOLS: ToolSpec[] = [
     inputSchema: obj({ to: str("agent name"), subject: str("one line, up to 60 characters"), body: str("the message"), kind: { type: "string", enum: ["task", "question", "answer", "report", "info"], description: "default info" }, reply_to: int("the message id this answers") }, ["to", "body"]) },
   { name: "inbox", description: "Read your waiting messages as JSON (id, from, kind, subject, body, reply_to) and mark them read. Call it when a delivery line arrives.", isDeferred: false,
     inputSchema: obj({ limit: int("max messages, default 20"), peek: { type: "boolean", description: "leave them unread" } }) },
-  { name: "report", description: "Report to your boss: a short summary and your state (progress, done, blocked, failed). Use it when a milestone is done or you are stuck.", isDeferred: false,
+  { name: "report", description: "Report to your boss: a short summary and your state (progress, done, blocked, failed). Use it when a milestone is done or you are stuck. state done closes your job: it is refused while a step is open, and the server adds your plan to the report. The report is not a step.", isDeferred: false,
     inputSchema: obj({ summary: str("one short paragraph"), state: { type: "string", enum: ["progress", "done", "blocked", "failed"] }, ...NOTE_FIELDS }, ["summary"]) },
-  { name: "task_add", description: "Add tasks to your live task list (or, as a boss, to one of your reports).", inputSchema: obj({ titles: { type: "array", items: { type: "string" } }, agent: str("a report of yours; default yourself") }, ["titles"]) },
-  { name: "task_start", description: "Mark one of your tasks in progress.", inputSchema: obj({ id: int("task id") }, ["id"]) },
-  { name: "task_done", description: "Mark one of your tasks done. For real work, fill the decision fields (goal, decisions, files, gotchas, result): they become a trail the next agent finds.", inputSchema: obj({ id: int("task id"), ...NOTE_FIELDS }, ["id"]) },
+  { name: "plan_set", description: "Set the plan of your job: at most 7 steps, each an outcome the brief asks for (not 'read the brief', 'commit' or 'report'). Step 1 becomes active by itself. Allowed until your first step is closed, and once more to adjust. A brief with a `## Steps` section gives you the plan already.", isDeferred: false,
+    inputSchema: obj({ steps: { type: "array", items: { type: "string" }, description: "the steps, in order, one line each" } }, ["steps"]) },
+  { name: "step_done", description: "Close your active step with proof; the next step becomes active by itself. evidence is a list of \"kind: value\" lines: commit: <hash> | file: <path> | check: <the PASS line> | shot: <path> | msg: <message id> | none: <why there is no proof>. The server checks what it can and shows the rest as not verified. For real work, fill the decision fields too: they become a trail the next agent finds.", isDeferred: false,
+    inputSchema: obj({ evidence: { type: "array", items: { type: "string" }, description: "proof lines, e.g. [\"commit: 3facbd8\", \"check: bun test 867 pass 0 fail\"]" }, note: str("one line on the outcome, optional"), ...NOTE_FIELDS }, ["evidence"]) },
+  { name: "step_add", description: "Add one step to your plan when the scope grew; it runs after the active step. because is the id of the message from your boss or root that asked for it, or \"self\". A job holds 12 steps at most and 2 of your own; a boss ask that needs no step is closed by answering it with reply_to.", isDeferred: false,
+    inputSchema: obj({ text: str("the step, one line"), because: str("the boss message id (e.g. 6502), or \"self\"") }, ["text", "because"]) },
+  { name: "step_drop", description: "Drop an open step that no longer applies. A reason is required; it shows on your plan and in the report.", isDeferred: false,
+    inputSchema: obj({ n: int("the step number, e.g. 4 for step 1.4"), reason: str("why it is dropped") }, ["n", "reason"]) },
+  { name: "job_open", description: "Boss or root: give one of your live reports a new job when its last job is closed (new scope is a new job, not more steps on the old one). The plan comes from steps, else from the `## Steps` section of the brief, else the agent sets it.",
+    inputSchema: obj({ agent: str("a report of yours"), goal: str("one line: what done looks like"), brief: str("absolute path of the brief .md, optional"), steps: { type: "array", items: { type: "string" }, description: "the plan, at most 7 steps, optional" }, max_steps: int("root only needs this for a long recipe: plan size up to 12") }, ["agent", "goal"]) },
+  { name: "task_add", description: "Old name, kept for running agents: use plan_set (your plan) or step_add (new scope). Adds tasks to your list (or, as a boss, to one of your reports) by the same rules.", inputSchema: obj({ titles: { type: "array", items: { type: "string" } }, agent: str("a report of yours; default yourself") }, ["titles"]) },
+  { name: "task_start", description: "Old name, kept for running agents: not needed any more, the next open step is active by itself.", inputSchema: obj({ id: int("task id") }, ["id"]) },
+  { name: "task_done", description: "Old name, kept for running agents: use step_done, which takes the proof. Marks one of your tasks done. For real work, fill the decision fields (goal, decisions, files, gotchas, result): they become a trail the next agent finds.", inputSchema: obj({ id: int("task id"), ...NOTE_FIELDS }, ["id"]) },
   { name: "team_send", description: "Post to a team channel: every other member gets one delivery, the history stays readable on the team. You must be a member (see team_tasks list for your teams).", isDeferred: false,
     inputSchema: obj({ team: str("team id"), subject: str("one line, up to 60 characters"), body: str("the message"), kind: { type: "string", enum: ["task", "question", "answer", "report", "info"], description: "default info" } }, ["team", "body"]) },
   { name: "team_tasks", description: "The shared team board. action list (default): the team, its tasks and channel; add: new team task (text, optional owner); claim: take a task; start / done: move a task you own (the lead and root may move any).", isDeferred: false,
@@ -49,11 +59,12 @@ const ROOT_TOOLS: ToolSpec[] = [
   { name: "list_checks", description: "Root: owner checks (question, options, agent, state pending|answered, answer, note). Default: pending only.", inputSchema: obj({ state: { type: "string", enum: ["pending", "answered"] } }) },
   { name: "list_agents", description: "Root: every live agent with its status snapshot.", inputSchema: obj({ all: { type: "boolean", description: "include gone agents" } }) },
   { name: "get_status", description: "Root: one agent's status snapshot (and its last events).", inputSchema: obj({ agent: str("agent name"), events: int("how many recent events, default 0") }, ["agent"]) },
-  { name: "spawn", description: "Root: create a new agent record and token (spawn.sh launches it). Name, boss, team and compact window are placed too (see plan_spawn). Picks model, effort and persona when not given; the reply has the audit line. Refused in reserve mode.", inputSchema: obj({ name: str("agent name, e.g. web-dev-1; omit for the next free <role>-N"), role: str("role when the name is omitted"), job: str("what it is for"), goal: str("REQUIRED, 8+ chars: the outcome that means this agent is done (what finished looks like), not what it does"), boss: str("its boss; omit to place by project"), model: str("model alias; omit to have agentnet pick it"), effort: str("effort; omit to have agentnet pick it"), soul: str("persona id; omit to have agentnet pick it"), scope: int("1-5 files/systems touched, default 2"), novelty: int("1-3 new ground, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner's words (expectation keywords)"), project: str("project folder"), team: str("team id to join") }, ["name", "job", "goal"]) },
+  { name: "spawn", description: "Root: create a new agent record and token (spawn.sh launches it). Name, boss, team and compact window are placed too (see plan_spawn). Picks model, effort and persona when not given; the reply has the audit line. Refused in reserve mode.", inputSchema: obj({ name: str("agent name, e.g. web-dev-1; omit for the next free <role>-N"), role: str("role when the name is omitted"), job: str("what it is for"), goal: str("REQUIRED, 8+ chars: the outcome that means this agent is done (what finished looks like), not what it does"), boss: str("its boss; omit to place by project"), model: str("model alias; omit to have agentnet pick it"), effort: str("effort; omit to have agentnet pick it"), soul: str("persona id; omit to have agentnet pick it"), scope: int("1-5 files/systems touched, default 2"), novelty: int("1-3 new ground, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner's words (expectation keywords)"), project: str("project folder"), team: str("team id to join"), brief: str("absolute path of the brief .md: its `## Steps` section (numbered lines, at most 7) becomes the agent's plan"), max_steps: int("plan size for a long recipe, up to 12; default 7") }, ["name", "job", "goal"]) },
   { name: "plan_spawn", description: "Root: where a new agent would land, with NO side effects: next free name, boss, team (joins the team on the same project, or proposes one), model, effort, soul, compact window, and one reason line per decision. spawn uses the same plan for every field you leave out.",
     inputSchema: obj({ job: str("what it is for"), goal: str("the outcome that means it is done (needed by spawn, ignored here)"), project: str("project folder"), role: str("role, else inferred from the job"), name: str("fixed name, else the next free <role>-N"), boss: str("explicit boss"), team: str("explicit team id"), model: str("explicit model"), effort: str("explicit effort"), soul: str("explicit persona id"), scope: int("1-5, default 2"), novelty: int("1-3, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner\'s words") }, ["job"]) },
-  { name: "grade", description: "Root: grade a finished task of an agent (1-5) for its scorecard. rework = root had to ask for a fix on it; owner_rounds = how many back-and-forth rounds the owner needed on the job before it was right (0 = right first time).",
-    inputSchema: obj({ agent: str("agent name"), task_id: int("the agent's task id"), grade: int("1-5"), note: str("short note; a 'rework:' prefix also marks rework"), rework: { type: "boolean", description: "a fix was requested on this task" }, owner_rounds: int("rounds the owner needed, 0 = right first time") }, ["agent", "task_id", "grade"]) },
+  { name: "grade", description: "Root: grade a closed job of an agent (1-5) for its scorecard. Without job and gen it is the newest closed job of the newest run of that name; a wrong one is refused with the list of closed jobs. rework = root had to ask for a fix on it; owner_rounds = how many back-and-forth rounds the owner needed on the job before it was right (0 = right first time).",
+    inputSchema: obj({ agent: str("agent name"), job: int("the job number, e.g. 2 for the agent's second job; default the newest closed one"), gen: int("which run of that name (web-dev-2#3 is gen 3); default the newest"), grade: int("1-5"), note: str("short note; a 'rework:' prefix also marks rework"), rework: { type: "boolean", description: "a fix was requested on this job" }, owner_rounds: int("rounds the owner needed, 0 = right first time"), task_id: int("only for a per-task record from before jobs existed") }, ["agent", "grade"]) },
+  { name: "ask_close", description: "Root: close an open ask of an agent (a boss message it answered without reply_to, or one that no longer matters).", inputSchema: obj({ agent: str("agent name"), id: int("the message id of the ask") }, ["agent", "id"]) },
   { name: "despawn", description: "Root: retire an agent (token revoked, session closed).", inputSchema: obj({ agent: str("agent name"), reason: str("why") }, ["agent"]) },
 ];
 const SCAN_TOOLS: ToolSpec[] = [
@@ -61,9 +72,14 @@ const SCAN_TOOLS: ToolSpec[] = [
   { name: "adopt_report", description: "Setup scan only: submit the findings (again later if the owner asks for changes: the newer report replaces the old one and the plan is reset). Every evidence signal must be a ref from adopt_facts; actions use the ops park-hook, park-mcp, disable-lines, register-souls, manual. Nothing is applied until the owner agrees (adopt_apply or the Apply button).", inputSchema: obj({ summary: str("what you found, 2-3 plain sentences"), findings: { type: "array", description: "findings, riskiest first, max 40", items: { type: "object" } } }, ["summary", "findings"]) },
   { name: "adopt_apply", description: "Setup scan only: apply the setup once the owner has said yes in this chat (go, yes, apply, finalize). Same as the Apply button: backups are kept and Rollback works. Moved lines are found again by themselves. Without a plan the default picks are used. Set ownerAgreed true only after the owner agreed. If it says files outside the workspace change, tell the owner which in plain words and call again with includeGlobal true after they agree. This session closes a moment later.", inputSchema: obj({ ownerAgreed: { type: "boolean", description: "true only after the owner agreed in this chat" }, includeGlobal: { type: "boolean", description: "true when the owner agreed to changes to files in ~/.claude" } }, ["ownerAgreed"]) },
 ];
+/** Tools the work gate never asks about: they only read. */
+const GATE_FREE = new Set(["ToolSearch", "Read", "Grep", "Glob"]);
 /** tool name → method + path (+ body) on the service. */
 const ROUTES: Record<string, (a: Json) => { method: string; path: string; body?: Json }> = {
   send: (a) => ({ method: "POST", path: "/send", body: a }), inbox: (a) => ({ method: "POST", path: "/inbox", body: a }), report: (a) => ({ method: "POST", path: "/report", body: a }),
+  plan_set: (a) => ({ method: "POST", path: "/plan", body: a }), step_done: (a) => ({ method: "POST", path: "/steps/done", body: a }), step_add: (a) => ({ method: "POST", path: "/steps", body: a }),
+  step_drop: (a) => ({ method: "POST", path: `/steps/${Number(a.n)}/drop`, body: { reason: a.reason } }), job_open: (a) => ({ method: "POST", path: "/jobs", body: a }),
+  ask_close: (a) => ({ method: "POST", path: `/agents/${encodeURIComponent(String(a.agent))}/asks/${Number(a.id)}/close` }),
   task_add: (a) => ({ method: "POST", path: "/tasks", body: a }), task_start: (a) => ({ method: "POST", path: `/tasks/${Number(a.id)}/start` }), task_done: (a) => ({ method: "POST", path: `/tasks/${Number(a.id)}/done`, body: a }), // the note fields ride along; the server ignores `id` in the body
   team_send: (a) => ({ method: "POST", path: "/send", body: { to: "team:" + String(a.team), body: a.body, subject: a.subject, kind: a.kind } }),
   team_tasks: (a) => { const t = encodeURIComponent(String(a.team)), act = String(a.action ?? "list"); return act === "list" ? { method: "GET", path: `/teams/${t}` } : act === "add" ? { method: "POST", path: `/teams/${t}/tasks`, body: { text: a.text, owner: a.owner } } : { method: "POST", path: `/teams/${t}/tasks/${Number(a.id)}/${act === "claim" ? "claim" : act === "start" ? "start" : "done"}` }; },
@@ -130,6 +146,15 @@ function bgTool($: $, ev: Json, r: { result?: unknown; deny?: string; isError?: 
     if (id && k) bgMark($, k, BG.kind.get(k) ?? "shell", "killed");
   }
 }
+/** A background shell or monitor ends with a task-notification; its <task-id> and <status> close the bg row. Claude Code
+ *  submits it as a prompt (origin task-notification, idle or into a running turn), not as a session.receive delivery:
+ *  listening only there left every shell row "running" (2026-11-12). Top-level on purpose: the engine refuses a module
+ *  that passes `$` to a nested function (`claude plugin validate plugin`). */
+function bgNotice($: $, text: string) {
+  const id = /<task-id>\s*([^<\s]+)\s*<\/task-id>/.exec(text)?.[1], st = /<status>\s*([a-z_]+)\s*<\/status>/.exec(text)?.[1] ?? "completed";
+  const k = id ? [`bg:${id}`, `sa:${id}`].find((x) => BG.seen.has(x)) : undefined;
+  if (id && k) bgMark($, k, BG.kind.get(k) ?? "shell", st === "completed" ? "done" : st === "killed" || st === "stopped" ? "killed" : "failed");
+}
 function post($: $, events: Json[]) { if (S.token) void api($, "POST", "/events", { events }).catch(() => {}); }
 /** The status line is drawn with a warning triangle whatever we write, so it exists only while something is wrong. */
 function status($: $, text: string | undefined) { const t = text ?? ""; if (t === S.status) return; S.status = t; $.ui.status(text); }
@@ -182,7 +207,7 @@ async function poll($: $) {
 /** Adopt scan phase (env AGENTNET_ADOPT_PHASE=scan, set by the scan command): the director may only read inside the scan roots and use the adopt/task tools. A test keeps DENY equal to src/net/adopt-safe.ts. */
 export const SCAN_DENY_NAMES: RegExp[] = [/^\.env(\..*)?$/i, /\.pem$/i, /\.key$/i, /\.p12$/i, /^id_rsa/i, /^id_ed25519/i, /\.kdbx$/i, /credentials/i, /secret/i, /token/i];
 export const SCAN_DENY_HOME = [".ssh", ".aws", ".gnupg", "Library/Keychains", ".config/gcloud", ".docker/config.json", ".npmrc", ".netrc"];
-const SCAN_OK = new Set(["mcp__agentnet__adopt_facts", "mcp__agentnet__adopt_report", "mcp__agentnet__adopt_apply", "mcp__agentnet__set_status", "mcp__agentnet__task_add", "mcp__agentnet__task_start", "mcp__agentnet__task_done", "ToolSearch"]);
+const SCAN_OK = new Set(["mcp__agentnet__adopt_facts", "mcp__agentnet__adopt_report", "mcp__agentnet__adopt_apply", "mcp__agentnet__set_status", "mcp__agentnet__plan_set", "mcp__agentnet__step_done", "mcp__agentnet__step_add", "mcp__agentnet__step_drop", "mcp__agentnet__task_add", "mcp__agentnet__task_start", "mcp__agentnet__task_done", "ToolSearch"]);
 const norm = (p: string) => { const out: string[] = []; for (const s of p.split("/")) { if (s === "..") out.pop(); else if (s && s !== ".") out.push(s); } return "/" + out.join("/"); };
 /** Null when the call may run during a scan, else the reason. Lexical on purpose: the plugin has no realpath. */
 export function scanGate(tool: string, ev: Json, roots: string[], home: string): string | null {
@@ -239,11 +264,12 @@ export const register: Register = (on) => {
   on("tool.call", async ($, e, next) => {
     const ev = e as unknown as Json, id = String(ev.tool_use_id ?? ""), t = target(ev), t0 = Date.now();
     if (SCAN.on && S.token && !ev.agentId) { const why = scanGate(String(e.tool), ev, SCAN.roots, SCAN.home); if (why) return { deny: why }; }
-    // Work gate (docs/task-discipline.md B2): the service says no while this agent has no task in progress. Task tools, ToolSearch and the inbox are never asked; a service that does not answer lets the call through.
-    if (S.token && !ev.agentId && !String(e.tool).startsWith("mcp__agentnet__") && e.tool !== "ToolSearch" && Date.now() >= S.gateUntil) {
+    // Work gate (docs/task-discipline.md): the service says no while this agent has no plan. The agentnet tools, ToolSearch and the tools that only read
+    // (the agent must be able to read its brief to write the plan) are never asked; a service that does not answer lets the call through.
+    if (S.token && !ev.agentId && !String(e.tool).startsWith("mcp__agentnet__") && !GATE_FREE.has(String(e.tool)) && Date.now() >= S.gateUntil) {
       const g = await api($, "GET", "/gate").catch(() => null);
-      if (g?.ok && g.json?.allow === false) return { deny: String(g.json.reason ?? "agentnet task gate: start a task first") };
-      if (g?.ok) S.gateUntil = Date.now() + 2000; // a task change always goes through the task tools, so a short cache is safe
+      if (g?.ok && g.json?.allow === false) return { deny: String(g.json.reason ?? "agentnet plan gate: set your plan first (mcp__agentnet__plan_set)") };
+      if (g?.ok) S.gateUntil = Date.now() + 2000; // a plan change always goes through the plan tools, so a short cache is safe
     }
     if (!ev.agentId) post($, [{ type: "ToolStarted", data: { tool: e.tool, target: t, tool_use_id: id } }]);
     if (S.token && e.tool === "Agent") { BG.until = Date.now() + 15_000; bgPoll($); } // the subagent exists a moment after this call starts
@@ -256,13 +282,13 @@ export const register: Register = (on) => {
     bgTool($, ev, r as { result?: unknown; deny?: string; isError?: boolean });
     return r;
   });
-  // A background shell or monitor ends with a task-notification row; its <task-id> and <status> close the bg row.
+  // A background shell or monitor ends with a task-notification (bgNotice). Both hooks are kept.
+  on("prompt.submit", async ($, e, next) => {
+    if (S.token && e.origin?.kind === "task-notification") bgNotice($, e.text);
+    return next(e);
+  });
   on("session.receive", async ($, e, next) => {
-    if (S.token && e.origin.kind === "task-notification") {
-      const id = /<task-id>\s*([^<\s]+)\s*<\/task-id>/.exec(e.text)?.[1], st = /<status>\s*([a-z_]+)\s*<\/status>/.exec(e.text)?.[1] ?? "completed";
-      const k = id ? [`bg:${id}`, `sa:${id}`].find((x) => BG.seen.has(x)) : undefined;
-      if (id && k) bgMark($, k, BG.kind.get(k) ?? "shell", st === "completed" ? "done" : st === "killed" || st === "stopped" ? "killed" : "failed");
-    }
+    if (S.token && e.origin.kind === "task-notification") bgNotice($, e.text);
     return next(e);
   });
   on("session.measure", async ($, e, next) => {

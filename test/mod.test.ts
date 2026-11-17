@@ -10,17 +10,17 @@ let n = 0;
 /** Load a fresh copy of the mod (its state is module-level) and a fake host. `route` answers each request. */
 async function host(route: (path: string, calls: string[]) => { ok: boolean; status: number; text: string } | Promise<{ ok: boolean; status: number; text: string }>, claude = "2.1.318") {
   const { register } = await import(`../plugin/hooks/register.ts?m=${++n}`);
-  const logs: string[] = [], handlers: Record<string, H[]> = {}, calls: string[] = [], afters: (() => void)[] = [], tools: string[] = [];
+  const logs: string[] = [], handlers: Record<string, H[]> = {}, calls: string[] = [], bodies: string[] = [], afters: (() => void)[] = [], tools: string[] = [];
   register((name: string, ...rest: unknown[]) => { (handlers[name] ??= []).push(rest.at(-1) as H); });
   const $ = {
     env: { get: async (k: string) => (k === "AGENTNET_TOKEN_FILE" ? tokenFile : null) }, fs: { read: async () => "tok" },
     session: { id: async () => "sid", model: async () => "m", version: async () => ({ version: claude }), append: async () => {} },
     process: { run: async () => ({ stdout: "4242\n" }) }, prompt: { submit: async () => {} }, ui: { status: () => {}, log: (t: string) => { logs.push(t); } }, tool: { register: async (t: { name: string }) => { tools.push(t.name); } },
     clock: { after: (_ms: number, f: () => void) => { afters.push(f); }, sleep: async () => {} },
-    http: { fetch: async (url: string) => { const path = url.replace(/^.*\/agentnet/, "").split("?")[0]!; calls.push(path); return route(path, calls); } },
+    http: { fetch: async (url: string, init?: { body?: string }) => { const path = url.replace(/^.*\/agentnet/, "").split("?")[0]!; calls.push(path); if (path === "/bg" && init?.body) bodies.push(init.body); return route(path, calls); } },
   };
   const fire = (name: string, e: Record<string, unknown> = {}) => (name === "tool.call" ? handlers[name]!.at(-1)! : handlers[name]![0]!)($, e, async (x: unknown) => x); // tool.call: the general handler is registered last
-  return { fire, calls, afters, tools, logs, count: (p: string) => calls.filter((c) => c === p).length };
+  return { fire, calls, bodies, afters, tools, logs, count: (p: string) => calls.filter((c) => c === p).length };
 }
 const ok = (o: unknown = {}) => ({ ok: true, status: 200, text: JSON.stringify(o) });
 const settle = () => Bun.sleep(30);
@@ -102,14 +102,28 @@ describe("B2: the work gate in the mod", () => {
   test("work tools are denied with the service's reason; task tools, ToolSearch and the inbox are never asked", async () => {
     const h = await gateHost(false); await h.fire("session.start"); await settle();
     expect((await call(h, "Bash", { command: "ls" })).deny).toContain("Add your tasks first");
-    await call(h, "ToolSearch"); await call(h, "mcp__agentnet__inbox"); await call(h, "mcp__agentnet__task_add");
+    await call(h, "ToolSearch"); await call(h, "mcp__agentnet__inbox"); await call(h, "mcp__agentnet__task_add"); await call(h, "mcp__agentnet__plan_set");
+    expect((await call(h, "Read")).deny).toBeUndefined(); await call(h, "Grep"); await call(h, "Glob"); // reading is free: the agent reads its brief to write the plan
     expect(h.count("/gate")).toBe(1);
   });
   test("an allow is cached briefly, a task tool call clears the cache, a sub-agent call is not asked, a service that is down lets the call through", async () => {
     const h = await gateHost(true); await h.fire("session.start"); await settle();
-    await call(h, "Read"); await call(h, "Edit"); expect(h.count("/gate")).toBe(1);
+    await call(h, "Bash"); await call(h, "Edit"); expect(h.count("/gate")).toBe(1);
     await h.fire("tool.call", { tool: "Read", tool_use_id: "s", agentId: "sub" }); expect(h.count("/gate")).toBe(1);
     const d = await gateHost("down"); await d.fire("session.start"); await settle();
     expect((await call(d, "Bash")).deny).toBeUndefined();
+  });
+});
+
+describe("background shell rows", () => {
+  test("a task-notification submitted as a prompt closes the shell row (it never arrives as session.receive)", async () => {
+    const h = await host((p) => p === "/hello" ? ok({ root: false }) : p === "/gate" ? ok({ allow: true }) : ok());
+    await h.fire("session.start"); await settle();
+    await h.fire("tool.call", { tool: "Bash", tool_use_id: "u1", run_in_background: true, description: "Wait for the run", command: "sleep 9", result: { backgroundTaskId: "b785n6bzy" } }); await settle();
+    expect(h.bodies.map((b) => JSON.parse(b).items[0].state)).toEqual(["running"]);
+    await h.fire("prompt.submit", { text: "<task-notification>\n<task-id>b785n6bzy</task-id>\n<status>completed</status>\n</task-notification>", origin: { kind: "task-notification" }, wait: false }); await settle();
+    expect(h.bodies.map((b) => JSON.parse(b).items[0]).map((i) => [i.id, i.state])).toEqual([["bg:b785n6bzy", "running"], ["bg:b785n6bzy", "done"]]);
+    await h.fire("prompt.submit", { text: "<task-id>b785n6bzy</task-id>", origin: { kind: "composer" }, wait: false }); await settle();
+    expect(h.bodies).toHaveLength(2); // a typed prompt never closes a row
   });
 });

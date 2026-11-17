@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.6.0
+
+The agentnet API now needs a token or a login by default. Also: a redesigned web app, a 3D office next to a new 2D map, and agents that work from a short plan instead of a growing task list.
+
+**Security**
+
+- Every call to the agentnet API now needs a credential. Before, any program on this machine could call it. On first start the service writes `run/root.token` and `run/panel.token` (mode 0600, in a 0700 folder).
+- Each agent uses its own token, and agent tokens are read-only on the web app's routes.
+- The web app asks you to log in. Run `agentnet login` to get a one-time link (valid 60 seconds, single use); it sets a cookie session. Cookie writes are only accepted from the same origin.
+- Two opt-in flags keep the old open behaviour, one per side: `AGENTNET_LOOPBACK_ROOT=on` (agent routes trust this machine) and `AGENTNET_PANEL_LOGIN=off` (the web app needs no login on this machine). This is not recommended. `GET /v1/health` lists the flags that are on.
+- `agentnet serve` now stops its server when you stop it, so no server is left listening on the port.
+
+**Agents map**
+
+- The 2D map is new. The director sits at the top, each team has its own region, and reports nest under their boss. Lines between agents run as fibers with ports that dock into a socket on each card.
+- Live changes animate in place, and a message travels along the fibers as a light beam.
+- Pan, zoom and rotate the map with the mouse, trackpad or touch.
+- A 2D | 3D switch opens a 3D office: a miniature built in code, with jointed people at their desks, furnished rooms, doors and a city below. People gesture while they talk. Labels never cover each other, a wall sign or a speech bubble, and never get cut by the edge of the view. On a phone the camera frames the room you picked.
+- The map has clear states for loading, slow, down, empty, offline, stale data and a 3D view that could not start.
+
+**Agent and team panels**
+
+- The agent panel has Now, Tasks, Messages, Usage and Trail tabs, an action bar and a Stop button that asks first inside the panel. It pushes the cards aside instead of covering them.
+- The Trail tab shows the agent's steps on a rail with times, branches and gates, and it moves with the live stream. The panel header shows state, time in that state, model, step count and a context ring.
+- The Messages tab reads like a chat and renders safe markdown.
+- The team panel has People, Channel and Tasks tabs. People is a crew tree: members as indented rows under their boss, with live cards and a detail popover. Closed members stay under their last boss.
+- Agent names break at a hyphen, never before the trailing number.
+
+**Jobs and plans**
+
+- An agent now works on a job with a plan of at most 7 steps (12 with steps added later). Each step closes with evidence that the server checks where it can, and the done report closes the job. The Claude Code plugin gives every agent the new tools `plan_set`, `step_done`, `step_add`, `step_drop` and `job_open`, and gives the root agent `ask_close`. The old task tools still work as aliases, so running agents do not break. Tool calls that only read (Read, Grep, Glob, ToolSearch) never wait on the work gate.
+- The plan shows on the agent panel, on the cards and on the team panel.
+- A task message from the boss stays open until it is answered, turned into a step, or closed by the report. Closing an agent closes its open job and records the open steps. `spawn-agent.sh` now asks a new agent for a plan of steps instead of a task list.
+- Every refusal is written to the event log with its rule.
+- Scores and grades are per closed job and per run of a name, so a grade never lands on a later agent with the same name. The root agent's `grade` tool now takes the job and the run instead of a task id. The discipline score has five parts: work seen, proof, plan kept, not dropped, closed. See `docs/task-discipline.md`.
+
+**Pages**
+
+- New layout: a left rail on desktop, tabs with a More sheet on a phone, full width on every screen.
+- Command palette on ⌘K (Ctrl+K), and a search button on a phone.
+- Waiting for you: one page with every report that waits on you, with counts in the rail and tabs.
+- Usage, Scores, Trails, Search past work, Activity, Hooks, Routing, Personas and Settings are all redesigned. Highlights: Usage stays inside the window and names the mode in words; Scores puts the grade next to the cost; Hooks shows one row per hook with an undoable switch and a Backups menu; Routing shows each pick with its score breakdown and lists unsaved rule changes before you save; Activity filters by agent, from or to.
+- Settings has three columns and keeps the theme per device. It shows the data folder, and the reset confirm says what is kept.
+- Director setup is a full page with a step rail and a side panel. The review groups changes by area.
+- One offline bar on every page shows when the connection was lost.
+- Light theme colours for on and off states now reach 4.5:1 contrast.
+
+**Trails**
+
+- Trail stats come from a cache that refreshes in the background, so the page never waits on a slow count. The server recomputes every 5 minutes only while someone watches Trails, and pushes the new figures to the page.
+- Trail search skips sessions from private workspaces. Add your own patterns with `AGENTNET_TRAIL_PRIVATE` (a regex).
+
+**Website**
+
+- The project site is now one feature per scroll step: the map, the 3D office, plans, trails, chat, teams, Waiting for you, past work, and cost and scores. Each step has a short muted recording made with demo data. Only the step in view plays, and reduced motion shows still images without snapping.
+
+**Fixes**
+
+- A finished background shell or monitor now closes its row. Before, it stayed "running" until it went stale.
+- A spawned agent gets 180 seconds to say hello before it counts as failed, so slow starts on a busy machine are no longer killed. Change it with `AGENTNET_HELLO_MS`.
+- The test suite never reaches the real tmux server, so running the tests no longer closes live agents.
+- Spawned agents get the project from the brief's repo, not from the folder they were started in, and use background Bash for long jobs.
+- `GET /v1/health` reports the data folder as `home`, shortened with `~`.
+
 ## 0.5.9
 
 The numbers in agent names stop climbing, and a finished team closes by itself.

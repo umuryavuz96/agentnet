@@ -46,3 +46,68 @@ describe("computeStats", () => {
     expect(s.days.length).toBe(3); expect(s.days.at(-1)).toMatchObject({ searches: 2, injects: 2 });
   });
 });
+
+describe("statsCache", () => {
+  const { statsCache } = require("./trailStats") as typeof import("./trailStats");
+  const empty = computeStats([], () => [], T, 1);
+  const make = (ttl = 300_000) => {
+    let clock = 1000, calls = 0, release: (() => void)[] = [];
+    const c = statsCache({ ttl, now: () => clock, compute: () => { calls++; return new Promise((res) => release.push(() => res(empty))); } });
+    return { c, tick: (ms: number) => { clock += ms; }, calls: () => calls, finish: () => { release.splice(0).forEach((f) => f()); } };
+  };
+  test("first call has no result, starts one compute, never two", async () => {
+    const m = make();
+    expect(m.c.get(14)).toBeNull(); expect(m.c.get(14)).toBeNull();
+    expect(m.calls()).toBe(1);
+    m.finish(); await m.c.idle();
+    expect(m.c.get(14)?.at).toBe(1000);
+  });
+  test("fresh result is served with no recompute", async () => {
+    const m = make(); m.c.get(14); m.finish(); await m.c.idle();
+    m.tick(299_000);
+    expect(m.c.get(14)?.refreshing).toBe(false);
+    expect(m.calls()).toBe(1);
+  });
+  test("stale result is served at once and refreshed once in the background", async () => {
+    const m = make(); m.c.get(14); m.finish(); await m.c.idle();
+    m.tick(301_000);
+    const r = m.c.get(14); m.c.get(14);
+    expect(r?.at).toBe(1000); expect(r?.refreshing).toBe(true);
+    expect(m.calls()).toBe(2);
+    m.finish(); await m.c.idle();
+    expect(m.c.get(14)?.at).toBe(302_000);
+  });
+  test("nothing computes until someone asks", () => { const m = make(); expect(m.calls()).toBe(0); });
+});
+
+describe("statsCache onReady", () => {
+  const { statsCache } = require("./trailStats") as typeof import("./trailStats");
+  test("fires once per finished compute, not on a fresh hit", async () => {
+    const empty = computeStats([], () => [], T, 1);
+    const seen: number[] = [];
+    const c = statsCache({ ttl: 1000, now: () => 5, compute: async () => empty, onReady: (d) => seen.push(d) });
+    c.get(14); await c.idle(); c.get(14); await c.idle();
+    expect(seen).toEqual([14]);
+  });
+});
+
+describe("statsWatch", () => {
+  const { statsWatch, statsCache } = require("./trailStats") as typeof import("./trailStats");
+  function setup() {
+    let t = 1000; const fns: Array<() => void> = []; let cleared = 0, active = 0, runs = 0;
+    const c = statsCache({ ttl: 300_000, now: () => t, compute: async () => { runs++; await new Promise((r) => setTimeout(r, 5)); return computeStats([], () => [], T, 1); } });
+    const w = statsWatch(c, { days: 14, every: 300_000, set: (fn) => { fns.push(fn); active++; return fns.length; }, clear: () => { cleared++; active--; } });
+    return { c, w, tick: () => fns[fns.length - 1]?.(), adv: (ms: number) => { t += ms; }, runs: () => runs, cleared: () => cleared, active: () => active };
+  }
+  test("no subscriber, no recompute", async () => {
+    const s = setup(); await s.c.idle();
+    expect(s.runs()).toBe(0); expect(s.active()).toBe(0);
+  });
+  test("subscriber: first look computes, then one recompute per 5 min tick, one at a time", async () => {
+    const s = setup(); s.w.add("a"); s.w.add("b"); // second client shares the one timer
+    expect(s.active()).toBe(1); await s.c.idle(); expect(s.runs()).toBe(1);
+    s.adv(300_000); s.tick(); s.tick(); // a tick while one is running starts no second one
+    expect(s.c.runs()).toBe(1); await s.c.idle(); expect(s.runs()).toBe(2);
+    s.w.remove("a"); expect(s.active()).toBe(1); s.w.remove("b"); expect(s.active()).toBe(0); expect(s.cleared()).toBe(1);
+  });
+});

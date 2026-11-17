@@ -2,10 +2,12 @@
 // Live Agents page: reads only /api/v1/agentnet/stream (hello + merge patches + gone + msg + ping).
 // Cards are grouped by boss, the grouping is recomputed only when the id:boss:job set changes, a gone card fades out
 // in 200 ms, and a click opens the side panel with the agent's tasks and message threads. AgmsgView stays as it was.
-import { computed, nextTick, onUnmounted, ref, shallowRef, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onUnmounted, ref, shallowRef, watch } from "vue";
 import Icon from "../ui/Icon.vue";
 import AgentnetCard from "../components/AgentnetCard.vue";
-import AgentnetMap from "../components/AgentnetMap.vue";
+import AgentnetFiberMap from "../components/AgentnetFiberMap.vue";
+import MapState from "../components/MapState.vue";
+const Office3D = defineAsyncComponent(() => import("../components/Office3D.vue")); // three.js loads only when 3D is shown
 import AgentnetPanel from "../components/AgentnetPanel.vue";
 import AgentnetTeamPanel from "../components/AgentnetTeamPanel.vue";
 import AgentnetTeamForm from "../components/AgentnetTeamForm.vue";
@@ -15,7 +17,7 @@ import TriageTip from "../components/TriageTip.vue";
 import HookAddSheet from "./HookAddSheet.vue";
 import { net, placing, useAgentnet, useAgentHooks, useTeams, staleSince, layoutKey, pendingChecks, checkUi, windows, windowCall } from "../net";
 import { api, toast } from "../ui/api";
-import { route } from "../router";
+import { route, toHash } from "../router";
 
 const SPAWN_CMD = 'bin/agentnet spawn hello-1 --job "say hello" --goal "hello task done and reported" --boot-prompt "Add one task, mark it done, report to your boss."';
 const copied = ref(false);
@@ -26,10 +28,24 @@ const stop = useAgentnet(), stopTeams = useTeams();
 const mode = ref<"map" | "cards">((() => { try { return localStorage.getItem("anv-mode") === "cards" ? "cards" : "map"; } catch { return "map"; } })());
 watch(mode, (m) => { try { localStorage.setItem("anv-mode", m); } catch { /* not remembered */ } });
 
+// 2D or 3D map, remembered per device. First visit: desktop 3D, phone 2D unless the device is fast; Reduce Motion or Save-Data start in 2D.
+const nav = navigator as Navigator & { connection?: { saveData?: boolean }; deviceMemory?: number };
+const dimDefault = (): "2d" | "3d" => {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches || nav.connection?.saveData) return "2d";
+  const phoneish = matchMedia("(max-width:760px)").matches;
+  return phoneish && !((nav.hardwareConcurrency ?? 4) >= 8 && (nav.deviceMemory ?? 4) >= 4) ? "2d" : "3d";
+};
+const dim = ref<"2d" | "3d">((() => { const q = route.value.query.view; if (q === "2d" || q === "3d") return q; try { const v = localStorage.getItem("anv-dim"); return v === "2d" || v === "3d" ? v : dimDefault(); } catch { return dimDefault(); } })());
+// the hash carries the choice too (#/agents?view=3d): a shared link opens the same view
+const setDim = (d: "2d" | "3d") => { dim.value = d; failed3d.value = null; history.replaceState(null, "", toHash({ page: route.value.page, query: { ...route.value.query, view: d } })); route.value = { page: route.value.page, query: { ...route.value.query, view: d } }; try { localStorage.setItem("anv-dim", d); } catch { /* not remembered */ } };
+watch(() => route.value.query.view, (v) => { if (v === "2d" || v === "3d") dim.value = v; });
+const failed3d = ref<string | null>(null);
+const fail3d = (why: string) => { failed3d.value = why; dim.value = "2d"; }; // not remembered: a later load tries 3D again
+
 const ROOT = "root";
 /** Groups by boss, recomputed only on a layoutKey change (status patches never move a card). */
 const groups = shallowRef<{ boss: string; ids: string[] }[]>([]);
-watch(layoutKey, () => {
+watch(() => layoutKey.value + "|" + [...placing].join(","), () => { // placing too: agents held back while the team list loads must appear when it clears
   const by = new Map<string, string[]>();
   for (const a of Object.values(net.agents)) { if (a.name === ROOT || placing.has(a.name)) continue; /* root has its own Director card; a new agent waits for its team (net.ts placing) */ const b = a.boss ?? ROOT; (by.get(b) ?? by.set(b, []).get(b)!).push(a.id); }
   const name = (id: string) => net.agents[id]?.name ?? id;
@@ -57,8 +73,11 @@ function deepLink() {
 deepLink();
 watch(count, deepLink);
 watch(() => route.value, () => { applied = ""; deepLink(); });
-const setup = ref(false), triageSheet = ref(false), tipN = ref(0);
+const setup = ref(/[?&]setup=1/.test(location.hash)), triageSheet = ref(false), tipN = ref(0);
 const triageAdded = (_r: unknown, name: string) => { toast(`${name} added`); tipN.value++; };
+/** The tab the agent panel opens on when it is opened from a team's Plans tab; any other way in starts on Now. */
+const startTab = ref<"trail" | undefined>();
+watch(sel, (_n, was) => { if (!was?.startsWith("team:")) startTab.value = undefined; });
 const pick = (id: string) => { if (id === ROOT && !rootRow.value) { if (hadRoot.value) void startRoot(true); else setup.value = true; return; } sel.value = sel.value === id ? null : id; };
 // Hook stream only while something draws hooks (the map lane, or the open panel's Hooks section): Chrome allows
 // 6 HTTP/1.1 connections per host, and this page already holds the main SSE plus the shared agentnet stream.
@@ -82,7 +101,7 @@ let returnTo: HTMLElement | null = null;
 watch(sel, (id, prev) => {
   if (id && !prev) { returnTo = document.activeElement as HTMLElement | null; nextTick(() => panel.value?.el?.focus({ preventScroll: true })); }
   if (!id && prev) { const t = returnTo; returnTo = null; if (t?.isConnected) t.focus({ preventScroll: true }); }
-  document.documentElement.style.overflow = id && phone.value ? "hidden" : "";
+  document.documentElement.style.overflow = id && phone.value && !half.value ? "hidden" : "";
 });
 const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && sel.value) { e.preventDefault(); sel.value = null; } };
 // Desktop outside tap: a real tap (not a map pan) outside the panel that is not on another node or card closes it.
@@ -98,7 +117,11 @@ const onPUp = (e: PointerEvent) => {
 addEventListener("keydown", onKey); addEventListener("pointerdown", onPDown, true); addEventListener("pointerup", onPUp, true);
 onUnmounted(() => { removeEventListener("keydown", onKey); removeEventListener("pointerdown", onPDown, true); removeEventListener("pointerup", onPUp, true); document.documentElement.style.overflow = ""; });
 /** Map pixels the open panel covers on the right, so the map can slide the picked node out from under it. */
-const cover = computed(() => (sel.value && !phone.value ? 424 : 0));
+/** Phone + 3D: the sheet is half height with no backdrop, and the office keeps the picked room in view above it (board page 02, v4-phf). */
+const half = computed(() => !!sel.value && phone.value && mode.value === "map" && dim.value === "3d");
+watch(half, (h) => { document.documentElement.toggleAttribute("data-half", h); }, { immediate: true });
+onUnmounted(() => document.documentElement.removeAttribute("data-half"));
+const cover = computed(() => (sel.value && !phone.value ? 452 : 0)); // panel width plus its gap, same as the Cards view push
 const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 // ---- Terminal windows (M8) ----
@@ -137,13 +160,17 @@ const TIP = "Terminal windows on the server Mac";
   <main class="anv">
     <header class="ph anv-h">
       <h1>Agents</h1>
-      <span class="pill anv-pill" :class="net.connected && !staleSince ? 'ok' : 'warn'" role="status">
+      <span v-if="net.lastFrameAt > 0" class="pill anv-pill num" :class="net.connected && !staleSince ? 'ok' : 'warn'" role="status">
         {{ !net.connected ? "Reconnecting…" : staleSince ? `Stale since ${time(staleSince)}` : `${count} live` }}
       </span>
       <button v-if="pendingChecks.length" type="button" class="pill anv-wait" aria-haspopup="dialog" @click="checkUi.id = 0; checkUi.list = true">{{ pendingChecks.length }} waiting for you</button>
       <div class="seg" role="tablist" aria-label="View">
         <button type="button" role="tab" :aria-selected="mode === 'map'" :class="{ on: mode === 'map' }" @click="mode = 'map'"><Icon name="network" :size="14" /> Map</button>
         <button type="button" role="tab" :aria-selected="mode === 'cards'" :class="{ on: mode === 'cards' }" @click="mode = 'cards'"><Icon name="layout-grid" :size="14" /> Cards</button>
+      </div>
+      <div v-if="mode === 'map'" class="seg" role="tablist" aria-label="Map dimension">
+        <button type="button" role="tab" :aria-selected="dim === '2d'" :class="{ on: dim === '2d' }" @click="setDim('2d')">2D</button>
+        <button type="button" role="tab" :aria-selected="dim === '3d'" :class="{ on: dim === '3d' }" @click="setDim('3d')">3D</button>
       </div>
       <button type="button" class="btn sm ghost nt" @click="newTeam = true"><Icon name="plus" :size="15" /> New team</button>
       <button type="button" class="btn sm ghost cl" :disabled="!windows.available || !!windows.busy" :title="windows.available ? `Closes every agent window (${TIP}); agents keep running` : `${TIP} arrive with M8`" @click="closeAll">
@@ -155,9 +182,10 @@ const TIP = "Terminal windows on the server Mac";
     <TriageTip :director="!!rootRow" :refresh="tipN" @add="triageSheet = true" />
     <HookAddSheet :open="triageSheet" template="agentnet-triage" @close="triageSheet = false" @added="triageAdded" />
 
-    <div class="anv-b">
+    <div :class="['anv-b', { pushed: !!sel && !phone, frozen: mode === 'map' && net.lastFrameAt > 0 && !net.connected }]">
       <Transition name="mode" mode="out-in">
-      <AgentnetMap v-if="mode === 'map'" key="map" :selected="sel" :cover="cover" :had-root="hadRoot" @select="pick" />
+      <Office3D v-if="mode === 'map' && dim === '3d'" key="map3" :selected="sel" :cover="cover" :half="half" @select="(id: string) => id && pick(id)" @fail="fail3d" />
+      <AgentnetFiberMap v-else-if="mode === 'map'" key="map" :selected="sel" :cover="cover" :had-root="hadRoot" @select="pick" />
       <section v-else key="cards" class="grid-wrap" aria-label="Live agents">
         <div class="grp">
           <h2>Director</h2>
@@ -183,6 +211,8 @@ const TIP = "Terminal windows on the server Mac";
       </section>
       </Transition>
 
+      <MapState v-if="mode === 'map'" :count="count" :cmd="SPAWN_CMD" :failed3d="dim === '2d' ? failed3d : null" @try3d="setDim('3d')" />
+
       <Teleport to="body"><div v-if="moveAsk" class="mv-scrim" @click.self="moveAsk = false" @keydown.esc="moveAsk = false">
         <div class="mv" role="alertdialog" aria-label="Move the director into an agentnet window?">
           <h3>Move the director into an agentnet window?</h3>
@@ -193,10 +223,9 @@ const TIP = "Terminal windows on the server Mac";
       <Teleport to="body"><AgentnetDirectorSetup v-if="setup" @close="setup = false" /></Teleport>
       <Teleport to="body"><AgentnetTeamForm v-if="newTeam" @close="newTeam = false" @created="(id) => (sel = 'team:' + id)" /></Teleport>
       <Teleport to="body" :disabled="!phone">
-      <Transition name="scrim"><div v-if="sel && phone" class="anv-scrim" aria-hidden="true" @click="sel = null" /></Transition>
-      <Transition :name="phone ? 'sheet' : 'side'">
-        <AgentnetTeamPanel v-if="sel?.startsWith('team:')" ref="panel" :key="'t' + (phone ? 'sheet' : 'side')" :id="sel.slice(5)" :sheet="phone" @close="sel = null" @select="pick" />
-        <AgentnetPanel v-else-if="sel" ref="panel" :key="phone ? 'sheet' : 'side'" :row="selRow" :name="selName" :sheet="phone"
+            <Transition :name="phone ? 'sheet' : 'side'">
+        <AgentnetTeamPanel v-if="sel?.startsWith('team:')" ref="panel" :key="'t' + (phone ? 'sheet' : 'side')" :id="sel.slice(5)" :sheet="phone" @close="sel = null" @select="(id: string, tab?: 'trail') => { startTab = tab; pick(id); }" />
+        <AgentnetPanel v-else-if="sel" ref="panel" :key="phone ? 'sheet' : 'side'" :row="selRow" :name="selName" :sheet="phone" :start-tab="startTab"
           @close="sel = null" @open="selRow && openWin(selRow.name)" @close-win="selRow && closeWin(selRow.name)" />
       </Transition>
       </Teleport>
@@ -204,6 +233,11 @@ const TIP = "Terminal windows on the server Mac";
   </main>
 </template>
 
+<style>
+html[data-half] .side-panel.sheet,html[data-half] .tp.sheet{height:46dvh !important;max-height:46dvh !important}
+/* Chat needs the room: with the Chat tab open the agent sheet goes tall even over the 3D half view. */
+html[data-half] .ap.sheet.chat-on{height:92dvh !important;max-height:92dvh !important}
+</style>
 <style scoped>
 .mv-scrim{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(0,0,0,.45);padding:16px}
 .mv{max-width:420px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px}
@@ -228,9 +262,12 @@ const TIP = "Terminal windows on the server Mac";
 .mode-enter-active,.mode-leave-active{transition:opacity .18s var(--ease)}
 .mode-enter-from,.mode-leave-to{opacity:0}
 .anv-b{flex:1;min-height:0;display:flex;gap:16px;position:relative}
-.grid-wrap{flex:1;min-width:0;overflow-y:auto;padding-bottom:16px}
+.anv-b.frozen :deep(.fm),.anv-b.frozen :deep(.o3){filter:grayscale(1);opacity:.55;pointer-events:none}
+.grid-wrap{flex:1;min-width:0;overflow-y:auto;padding-bottom:16px;transition:margin-right .3s cubic-bezier(.2,.8,.2,1)}
+.anv-b.pushed .grid-wrap{margin-right:452px}
+@media (prefers-reduced-motion:reduce){.grid-wrap{transition:none}}
 .grp{margin-bottom:18px}
-.grp h2{margin:0 0 8px;color:var(--muted);font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.grp h2{margin:0 0 8px;color:var(--muted);font:600 13px/1.2 var(--body)}
 .grp h2 span{margin-left:4px;opacity:.7}
 .an-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));grid-auto-rows:1fr;gap:12px}
 .empty{color:var(--muted)}
@@ -248,7 +285,10 @@ const TIP = "Terminal windows on the server Mac";
 .side-enter-active,.side-leave-active,.sheet-enter-active,.sheet-leave-active{transition:transform .32s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease)}
 .side-enter-from,.side-leave-to{transform:translateX(calc(100% + 24px));opacity:0}
 .sheet-enter-from,.sheet-leave-to{transform:translateY(100%)}
-.anv-scrim{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.5)}
+/* while the side panel slides, its box reaches past the right edge and would widen the page's scroll width. Clip it for that time only.
+   The 20px margin is the page padding, so the panel's shadow paints exactly as before and nothing pops when the slide ends. */
+.anv:has(> .anv-b > .side-enter-active,> .anv-b > .side-leave-active){contain:paint;overflow-clip-margin:20px}
+.anv-scrim{position:fixed;inset:0;z-index:60;background:transparent} /* sheets have no dark backdrop (board page 00); a tap outside still closes */
 .scrim-enter-active,.scrim-leave-active{transition:opacity .22s var(--ease)}
 .scrim-enter-from,.scrim-leave-to{opacity:0}
 @media (max-width:760px){

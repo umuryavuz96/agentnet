@@ -12,6 +12,10 @@ const props = defineProps<{ report: AdoptReport; picks: Picks; busy?: boolean; b
 const emit = defineEmits<{ preview: []; back: []; rescan: [] }>();
 
 const groups = computed(() => groupFindings(props.report.findings));
+const AREA: Record<string, string> = { "coordination-system": "Message system", hook: "Hooks", "mcp-server": "MCP servers", "workspace-instructions": "Instructions", "identity-claim": "Instructions", "agent-definitions": "Agents", "scheduled-runner": "Scheduled runners", other: "Other" };
+const areas = computed(() => { const m = new Map<string, Finding[]>(); for (const f of groups.value.cards) { const a = AREA[f.kind] ?? "Other"; (m.get(a) ?? m.set(a, []).get(a)!).push(f); } return [...m].map(([t, rows]) => ({ t, rows })); });
+const nOff = computed(() => groups.value.cards.filter((f) => props.picks.findings[f.id] === "apply").length);
+const nKeep = computed(() => groups.value.cards.length - nOff.value);
 const files = computed(() => pickedFiles(props.report.findings, props.picks));
 const empty = computed(() => !groups.value.cards.length && !groups.value.manual.length && !groups.value.system.length);
 const open = ref<Record<string, boolean>>({});
@@ -71,23 +75,25 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
 
     <p v-if="empty" class="af-empty" role="status"><Icon name="shield-check" :size="16" /> Nothing in this folder coordinates agents. You can safely continue.</p>
 
+    <section v-for="ar in areas" :key="ar.t" class="af-area" :aria-label="ar.t">
+    <h2 class="af-ah">{{ ar.t }}</h2>
     <ul class="af-list">
-      <li v-for="f in groups.cards" :key="f.id" class="af-card" :class="{ low: f.confidence === 'low' }">
+      <li v-for="f in ar.rows" :key="f.id" class="af-card" :class="{ low: f.confidence === 'low' }">
         <div class="af-top">
           <h3>{{ f.title }}</h3>
           <span class="af-pill" :class="f.confidence">{{ confLabel(f.confidence) }}</span>
         </div>
         <p v-if="f.agents.length" class="af-agents"><span>Agents</span> {{ f.agents.join("  ") }}</p>
         <p v-if="isGlobal(f, report.workspace)" class="af-glob"><Icon name="triangle-alert" :size="14" /> Global: affects all your Claude Code sessions</p>
-        <p class="af-about">{{ f.about }}</p>
         <div class="af-ch" :class="{ kept: !on(f) }" aria-label="What changes">
           <p class="b"><span>Now</span>{{ changeOf(f, base).before }}</p>
           <p class="a"><span>{{ on(f) ? "After" : "If applied" }}</span>{{ changeOf(f, base).after }}<em v-if="!on(f)">You chose to keep it, so nothing changes.</em></p>
         </div>
 
         <template v-if="f.evidence.length">
-          <button type="button" class="af-ev" :aria-expanded="!!open[f.id]" @click="toggle(f.id)"><Icon name="chevron-down" :size="14" class="chev" /> Evidence ({{ f.evidence.length }})</button>
+          <button type="button" class="af-ev" :aria-expanded="!!open[f.id]" @click="toggle(f.id)"><Icon name="chevron-down" :size="14" class="chev" /> Details · evidence ({{ f.evidence.length }})</button>
           <div class="af-x" :class="{ on: open[f.id] }"><ul class="af-in">
+            <li class="ab"><span>{{ f.about }}</span></li>
             <li v-for="e in f.evidence" :key="e.signal + e.path + (e.line ?? '')"><code class="af-loc">{{ loc(e) }}</code><q v-if="e.quote" class="af-q">{{ e.quote }}</q></li>
           </ul></div>
         </template>
@@ -120,6 +126,7 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
         </template>
       </li>
     </ul>
+    </section>
 
     <ul v-if="groups.system.length" class="af-list">
       <li v-for="f in groups.system" :key="f.id" class="af-card sys">
@@ -156,7 +163,8 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
 
     <div class="af-foot">
       <button type="button" class="af-b ghost" @click="emit('back')">Back</button>
-      <button type="button" class="af-b" :disabled="busy" @click="emit('preview')">{{ busy ? "Preparing…" : empty ? "Continue" : hasPicks(report.findings, picks) ? `Preview changes (${files.length} ${files.length === 1 ? "file" : "files"})` : "Preview changes" }}</button>
+      <span class="af-cnt num" aria-live="polite">{{ nOff }} to switch off · {{ nKeep }} kept</span>
+      <button type="button" class="af-b" :disabled="busy" @click="emit('preview')">{{ busy ? "Preparing…" : empty ? "Continue" : "Next: preview" }}</button>
     </div>
   </div>
 </template>
@@ -182,7 +190,7 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
 .af-ch{display:grid;gap:4px;padding:8px 10px;border-radius:10px;background:var(--track);font-size:12.5px;line-height:1.45}
 .af-ch p{margin:0}
 .af-ch span{color:var(--muted);font:600 11px/1.6 var(--body);letter-spacing:.06em;text-transform:uppercase}
-.af-ch .a{color:var(--ink);display:block}.af-ch .a span{display:inline-block;width:60px;margin-right:6px}.af-ch .b{display:block}.af-ch .b span{display:inline-block;width:60px;margin-right:6px}.af-ch em{display:block;margin-left:66px;font-style:normal;color:var(--muted)}.af-ch.kept .a{color:var(--muted)}
+.af-ch .a{color:var(--ink);display:block}.af-ch .a span{display:inline-block;width:84px;margin-right:6px;white-space:nowrap}.af-ch .b{display:block}.af-ch .b span{display:inline-block;width:84px;margin-right:6px}.af-ch em{display:block;margin-left:90px;font-style:normal;color:var(--muted)}.af-ch.kept .a{color:var(--muted)}
 .af-q2{margin:2px 0 0;font:600 13px var(--body)}
 .af-ev{justify-self:start;display:inline-flex;align-items:center;gap:6px;min-height:44px;margin:-6px 0;padding:0 4px;border:0;background:none;color:var(--muted);font:600 12.5px var(--body);cursor:pointer;border-radius:8px}
 .af-ev:hover{color:var(--ink)}
@@ -217,6 +225,10 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
 .af-cmd{display:flex;align-items:center;gap:8px;margin-top:4px;padding:6px 6px 6px 10px;border:1px solid var(--line);border-radius:12px;background:var(--track)}
 .af-cmd code{flex:1;font:12px var(--mono);word-break:break-all;user-select:all}
 .af-cp{flex:none;display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--ink);font:600 12.5px var(--body);cursor:pointer}
+.af-ah{margin:4px 0 -2px;font:700 11.5px/1.2 var(--body);letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.af-area{display:grid;gap:8px}
+.af-cnt{align-self:center;margin:0 auto;color:var(--muted);font:500 12.5px var(--mono)}
+.af-in li.ab{background:none;padding:2px 0;font-size:13px;line-height:1.45}
 .af-foot{display:flex;justify-content:space-between;gap:10px;position:sticky;bottom:0;margin:0 -12px;padding:12px 12px calc(12px + env(safe-area-inset-bottom,0px));background:var(--panel-2);border-top:1px solid var(--line)}
 .af-b{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 18px;border:0;border-radius:12px;background:var(--on);color:#06210f;font:600 13.5px/1 var(--body);cursor:pointer}
 .af-b:disabled{opacity:.35;cursor:default}
@@ -225,6 +237,6 @@ const isSel = (f: Finding, c: { v: string; label: string }) => {
 :global(:root[data-theme="light"] .af-b:not(.ghost)){color:#fff}
 :global(:root[data-theme="light"] .af-opt.sel.prime){color:#fff}
 :global(:root[data-theme="light"] .af-ck[aria-checked="true"] .box){color:#fff}
-@media (max-width:640px){.af-seg{flex-direction:column}.af-opt{width:100%}.af-foot .af-b:not(.ghost){flex:1}}
+@media (max-width:640px){.af-foot{flex-wrap:wrap}.af-cnt{order:-1;flex-basis:100%;text-align:center;margin:0}.af-ch span,.af-ch .a span,.af-ch .b span{width:auto !important;display:block !important}.af-ch em{margin-left:0}.af-seg{flex-direction:column}.af-opt{width:100%}.af-foot .af-b:not(.ghost){flex:1}}
 @media (prefers-reduced-motion:reduce){.af-x,.af-ev .chev,.box,.af-opt{transition:none}}
 </style>

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import type { Env } from "../core/http";
-import { LAN, LOOP } from "../../test/helpers";
+import { LAN, LOOP, asRoot } from "../../test/helpers";
 
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-hooks-"));
 let d = "";
@@ -19,9 +19,10 @@ beforeEach(() => {
 });
 afterEach(() => { delete process.env.AGENTNET_HOOK_TEMPLATES; rmSync(d, { recursive: true, force: true }); });
 
-async function app() {
+/** raw: no token (the refusal checks); else every call carries root.token. */
+async function app(raw = false) {
   const { hooksRoutes } = await import("./hooks");
-  const api = new Hono<Env>(); hooksRoutes(api); const a = new Hono<Env>(); a.route("/api/v1", api); return a;
+  const api = new Hono<Env>(); hooksRoutes(api); const a = new Hono<Env>(); a.route("/api/v1", api); return raw ? a : asRoot(a);
 }
 const send = (method: string, body?: unknown) => ({ method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
 
@@ -138,7 +139,7 @@ test("delete removes a live hook and a parked one; unknown is 404", async () => 
   expect(g.templates.every((t) => t.state === "available")).toBe(true);
 });
 test("new routes are root only", async () => {
-  const a = await app(), fwd = { "Content-Type": "application/json", "X-Forwarded-For": "10.0.0.5" };
+  const a = await app(true), fwd = { "Content-Type": "application/json", "X-Forwarded-For": "10.0.0.5" };
   expect((await a.request("/api/v1/agent-hooks/templates", {}, LAN)).status).toBe(403);
   expect((await a.request("/api/v1/agent-hooks/install", { method: "POST", headers: fwd, body: "{}" }, LOOP)).status).toBe(403);
   expect((await a.request("/api/v1/agent-hooks/abc", { method: "DELETE", headers: fwd }, LOOP)).status).toBe(403);
@@ -248,7 +249,7 @@ test("starter set: one write, one backup, idempotent, skips what is there or can
   expect(again.added).toEqual([]); expect(again.backup).toBeNull(); expect(baks()).toBe(b0 + 1);
   expect((await a.request("/api/v1/agent-hooks/install-set", send("POST", { ids: ["nope"] }), LOOP)).status).toBe(404);
   expect((await a.request("/api/v1/agent-hooks/install-set", send("POST", { ids: "x" }), LOOP)).status).toBe(400);
-  expect((await a.request("/api/v1/agent-hooks/install-set", { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.0.0.5" }, body: "{}" }, LOOP)).status).toBe(403);
+  expect((await (await app(true)).request("/api/v1/agent-hooks/install-set", { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.0.0.5" }, body: "{}" }, LOOP)).status).toBe(403);
   const g = await (await a.request("/api/v1/agent-hooks/templates", {}, LOOP)).json() as { templates: { id: string; state: string; starter: boolean }[] };
   for (const id of j.added) expect(g.templates.find((t) => t.id === id)?.state).toBe("installed");
 });

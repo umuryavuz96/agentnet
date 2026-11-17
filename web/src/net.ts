@@ -7,7 +7,31 @@ import { api, url } from "./ui/api";
 
 export type Life = "starting" | "live" | "stopping" | "gone" | "failed";
 export type Activity = "working" | "idle" | "waiting" | "blocked";
-export interface Task { id: number; text: string; status: "pending" | "in_progress" | "done" }
+export interface Task { id: number; text: string; status: "pending" | "in_progress" | "done"; startedAt?: number; doneAt?: number }
+// ---------- jobs: the unit above the task list (service: src/net/jobs.ts). A job has a goal, a plan of steps and an end. ----------
+export type EvidenceKind = "commit" | "file" | "check" | "shot" | "msg" | "none";
+/** `ok`: what the service could verify; null when it cannot be checked. */
+export interface Evidence { kind: EvidenceKind; value: string; ok: boolean | null }
+export interface Step {
+  n: number; text: string; origin: "brief" | "boss" | "self"; originMsg: number | null; status: "pending" | "active" | "done" | "dropped";
+  /** Added after the plan was set: it does not count in the plan total. */
+  added?: true; after?: number;
+  evidence: Evidence[]; note?: string; /** Why it was dropped. */ reason?: string;
+  /** Still open when the job closed: closed by the service, not by the agent. */
+  unfinished?: true;
+  addedAt: number; activatedAt?: number; closedAt?: number;
+  /** Work tool calls the service saw while the step was active; absent on steps taken over from an old task list. */
+  workCalls?: number;
+}
+export interface Job {
+  id: number; goal: string | null; brief: string | null; openedBy: string; openedAt: number; closedAt: number | null;
+  outcome: "done" | "blocked" | "failed" | "dropped" | null;
+  /** Steps in the plan when it was set: the fixed total. */
+  plan: number; planMax?: number; planSets?: number; /** Planned with the old task tools: a plain list, no proof expected. */ legacy?: true;
+  steps: Step[]; grade?: number | null; gradeNote?: string | null;
+}
+/** A follow-up ask: a task message from the boss or root, open until it is answered. */
+export interface Ask { id: number; from: string; subject: string; at: number; closedAt: number | null; closedBy?: "reply" | "report" | "step" | "root"; step?: number }
 /** One live agent: the service's `Snapshot` fold (server/agentnet/store.ts) plus the precomputed `doing` (stream.ts). */
 export interface AgentRow {
   id: string; name: string; job: string | null; boss: string | null; model: string | null; effort: string | null;
@@ -15,6 +39,8 @@ export interface AgentRow {
   action: { tool: string; target: string | null; at: number } | null;
   reported: { doing: string | null; progress: number | null; phase: string | null; blockedOn: string | null; at: number } | null;
   tasks: Task[];
+  /** Every job of this agent, oldest first; the last one is the current job. Absent on agents folded before jobs existed: read `tasks`. */
+  jobs?: Job[]; asks?: Ask[];
   context: { tokens: number; window: number; pct: number } | null; cost: number | null;
   lastMsg: { dir: "in" | "out"; peer: string; kind: string; snippet: string; at: number } | null;
   doing: string | null; seq: number; progressPct?: number | null;
@@ -74,6 +100,8 @@ export const net = reactive({
   agents: {} as Record<string, AgentRow>,
   messages: [] as Msg[],
   checks: {} as Record<number, Check>,
+  /** Counts `trails-stats-ready` frames: the Trails page reloads its figures when it changes. */
+  trailsReady: 0,
   seq: 0,
   connected: false,
   lastFrameAt: 0,
@@ -87,6 +115,11 @@ function merge(row: Record<string, unknown>, patch: Record<string, unknown>) {
 
 type Frame = { event: string; data: Record<string, unknown> };
 let es: EventSource | null = null;
+let cid = "";
+const topics = new Set<string>();
+const tell = (topic: string, on: boolean) => { if (cid) void api("v1/panel/watch", { method: "POST", body: { cid, topic, on } }).catch(() => {}); };
+/** Tell the server which page this client shows (Trails recomputes only while someone watches). Re-sent after every reconnect. */
+export function watchTopic(topic: string, on: boolean) { if (on) topics.add(topic); else topics.delete(topic); tell(topic, on); }
 let queue: Frame[] = [];
 let raf = 0;
 let users = 0;
@@ -99,6 +132,7 @@ function apply(f: Frame) {
     net.agents = (d.agents ?? {}) as Record<string, AgentRow>;
     net.messages = ((d.messages ?? []) as Msg[]).slice(-MAX_MSGS);
     net.seq = Number(d.seq) || 0;
+    cid = String(d.cid ?? ""); for (const t of topics) tell(t, true);
     net.checks = {}; for (const k of (d.checks ?? []) as Check[]) putCheck(k);
     return;
   }
@@ -111,6 +145,8 @@ function apply(f: Frame) {
     if (row) merge(row, patch); else net.agents[id] = patch as AgentRow;
   } else if (f.event === "gone") {
     delete net.agents[String(d.id)];
+  } else if (f.event === "trails-stats-ready") {
+    net.trailsReady++;
   } else if (f.event === "check") {
     putCheck(d as unknown as Check);
   } else if (f.event === "msg") {
@@ -131,17 +167,21 @@ function enqueue(f: Frame) {
 
 function open() {
   es = new EventSource(url("v1/panel/stream"));
-  for (const ev of ["hello", "agent", "gone", "msg", "check", "ping"]) {
+  for (const ev of ["hello", "agent", "gone", "msg", "check", "trails-stats-ready", "ping"]) {
     es.addEventListener(ev, (e) => { try { enqueue({ event: ev, data: JSON.parse((e as MessageEvent).data) }); } catch { /* malformed frame: ignored */ } });
   }
   es.addEventListener("open", () => { net.connected = true; });
   es.addEventListener("error", () => { // EventSource reconnects by itself (the server re-sends `hello`); a stream closed for good (401, long outage) is reopened
     net.connected = false;
+    // EventSource hides the status: ask the snapshot once; 401 = not signed in, go to the login page.
+    if (es?.readyState === EventSource.CLOSED) void fetch(url("v1/panel/snapshot")).then((r) => { if (r.status === 401) location.assign("/login"); }).catch(() => {});
     if (es?.readyState === EventSource.CLOSED && users > 0) setTimeout(() => { if (users > 0 && es?.readyState === EventSource.CLOSED) reopen(); }, 3_000);
   });
 }
 function close() { es?.close(); es = null; queue = []; if (raf) cancelAnimationFrame(raf); raf = 0; net.connected = false; }
 function reopen() { close(); open(); }
+/** Retry button on the map states: drop the stream and open it again now. */
+export const retryStream = () => { if (users > 0) reopen(); };
 
 // A hidden tab holds no streams: Chrome allows 6 HTTP/1.1 connections per host, and every background tab with an open
 // EventSource eats one. On hide both streams close; on show they reopen and the stream's own `hello` resyncs the map.
@@ -272,13 +312,17 @@ export function useUsage() {
 // ---------- scorecard (GET /agentnet/scores, /agentnet/agents/:name/score): docs/agent-score.md ----------
 export interface SubScores { quality: number | null; firstTimeRight: number | null; efficiency: number | null; reliability: number | null; rework: number | null }
 export interface ScoreBase { tasks: number; graded: number; score: number | null; band: string | null; sub: SubScores; costPerTask: number | null; avgGrade: number | null; avgRounds: number | null }
-/** Task discipline (docs/task-discipline.md): 0-100 plus the share of finished tasks that kept each habit. */
-export interface Discipline { tasks: number; open: number; score: number | null; checks: Record<"listedFirst" | "started" | "onTime" | "notBatch" | "oneAtATime", number | null> }
-export interface DisciplineDay { day: string; score: number | null; tasks: number; open: number; checks: Discipline["checks"]; agents: Record<string, { score: number | null; tasks: number }> }
+/** Task discipline (docs/task-discipline.md): 0-100 plus the share of steps in closed jobs that kept each habit.
+ *  A server from before the job model sends other keys, so every count and check may be missing: the UI shows a dash. */
+export const DISCIPLINE_CHECKS = [["workSeen", "Work seen"], ["evidence", "Proof"], ["planKept", "Plan kept"], ["notDropped", "Not dropped"], ["closed", "Closed"]] as const;
+export type DisciplineChecks = Partial<Record<(typeof DISCIPLINE_CHECKS)[number][0], number | null>>;
+export interface Discipline { jobs?: number; steps?: number; score: number | null; checks?: DisciplineChecks }
+export interface DisciplineDay { day: string; score: number | null; jobs?: number; steps?: number; checks?: DisciplineChecks; agents: Record<string, { score: number | null; jobs?: number }> }
 export interface AgentScoreRow extends ScoreBase { discipline: Discipline; agent: string; role: string; model: string | null; soul: string | null; project: string | null }
 export interface GroupScoreRow extends ScoreBase { key: string }
-export interface ScoresData { discipline: { days: DisciplineDay[]; today: DisciplineDay | null; all: number | null }; at: number; minGraded: number; weights: Record<keyof SubScores, number>; agents: AgentScoreRow[]; byRole: GroupScoreRow[]; byModel: GroupScoreRow[]; bySoul: GroupScoreRow[] }
-export interface ScoreGrade { id: number; task_id: number; text: string; grade: number | null; grade_raw: number | null; penalty: number; note: string | null; rework: boolean; owner_rounds: number | null; done_at: number; graded_at: number | null; cost_usd: number | null }
+export interface ScoresData { discipline: { days: DisciplineDay[]; today: DisciplineDay | null; all: number | null; checks?: DisciplineChecks; jobs?: number; steps?: number }; at: number; minGraded: number; weights: Record<keyof SubScores, number>; agents: AgentScoreRow[]; byRole: GroupScoreRow[]; byModel: GroupScoreRow[]; bySoul: GroupScoreRow[] }
+/** A grade of a closed job (unit "job": agent_id is name#generation) or of an old task (unit "task", with the raw grade and the old penalty). */
+export interface ScoreGrade { id: number; unit?: "job" | "task"; agent_id?: string; job?: number; task_id?: number; text: string; grade: number | null; grade_raw?: number | null; penalty?: number; note: string | null; rework: boolean; owner_rounds: number | null; done_at: number; graded_at: number | null; cost_usd: number | null }
 export interface AgentScore extends ScoreBase { discipline: Discipline; agent: string; role: string; minGraded: number; weights: Record<keyof SubScores, number>; last: ScoreGrade[]; lastAvgRounds: number | null }
 export const scores = reactive({ data: null as ScoresData | null, err: "" });
 let sTimer: ReturnType<typeof setInterval> | undefined;

@@ -37,6 +37,7 @@ async function copy() { try { await navigator.clipboard.writeText(props.plan.rol
             <Icon name="chevron-down" :size="15" class="chev" />
           </button>
           <div :id="'diff-' + i" class="ap-x" :class="{ on: open[i] }"><div class="ap-in">
+            <p class="ap-bk">Backed up first to <code>{{ plan.backupDir }}</code></p>
             <pre class="ap-diff" tabindex="0" :aria-label="'Diff of ' + o.file"><span v-for="(l, j) in parseDiff(o.diff)" :key="j" :class="l.t">{{ l.s || " " }}
 </span></pre>
           </div></div>
@@ -75,6 +76,7 @@ async function copy() { try { await navigator.clipboard.writeText(props.plan.rol
 </template>
 
 <style scoped>
+.ap-bk{margin:0 0 6px;font-size:12px;color:var(--muted)}.ap-bk code{font:12px var(--mono);word-break:break-all}
 .ap{display:grid;gap:14px;min-width:0}
 .ap *{min-width:0}
 .ap-sum{margin:0;font-size:13.5px;line-height:1.45}

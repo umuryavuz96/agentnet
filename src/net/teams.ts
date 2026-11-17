@@ -13,6 +13,12 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 const members = (id: string) => (db().query("SELECT agent FROM team_members WHERE team_id = ? ORDER BY added_at, agent").all(id) as { agent: string }[]).map((r) => r.agent);
 const toTeam = (r: TRow): Team => ({ id: r.id, name: r.name, goal: r.goal, lead: r.lead, project: r.project, created: r.created_at, state: r.state === "archived" ? "archived" : "active", members: members(r.id) });
 
+/** Last known boss of each member, from its newest agents row (despawned rows keep their boss), so a retired member stays under its boss in the crew tree. */
+export function memberBosses(id: string): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const n of members(id)) { const r = db().query("SELECT boss FROM agents WHERE name = ? ORDER BY gen DESC LIMIT 1").get(n) as { boss: string | null } | null; if (r) out[n] = r.boss; }
+  return out;
+}
 export function getTeam(id: string): Team | null { ensureSchema(); const r = db().query("SELECT * FROM teams WHERE id = ?").get(id) as TRow | null; return r ? toTeam(r) : null; }
 export function listTeams(all = false): Team[] { ensureSchema(); return (db().query(`SELECT * FROM teams ${all ? "" : "WHERE state = 'active'"} ORDER BY created_at, id`).all() as TRow[]).map(toTeam); }
 

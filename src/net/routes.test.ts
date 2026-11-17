@@ -75,7 +75,7 @@ describe("hierarchy", () => {
     const r = await j(await call("backend-1", "POST", "/tasks", { titles: ["mine"], op: "op-1" }));
     expect(r.body.tasks.map((t: { text: string }) => t.text)).toEqual(["from boss", "mine"]);
     expect((await j(await call("backend-1", "POST", "/tasks", { titles: ["mine"], op: "op-1" }))).body.tasks).toHaveLength(2); // retry dedup
-    expect((await j(await call("backend-1", "POST", "/tasks/2/start"))).body.tasks[1].status).toBe("in_progress");
+    expect((await j(await call("backend-1", "POST", "/tasks/2/start"))).body.tasks.map((t: { status: string }) => t.status)).toEqual(["in_progress", "pending"]); // the list is a plan now: the server keeps the first open step active, task_start changes nothing
     expect((await call("backend-1", "POST", "/tasks/9/done")).status).toBe(404);
   });
 });
@@ -114,7 +114,8 @@ describe("outbox", () => {
     expect((await call("root", "POST", "/report", { summary: "x" })).status).toBe(422);
   });
   test("root is always addressable: with no live root row the admin pseudo-row takes the message; root reads it under either id", async () => {
-    const loop = (method: string, path: string, body?: unknown) => app.request(`/api/v1/agentnet${path}`, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }, { requestIP: () => ({ address: "127.0.0.1" }) });
+    const rootT = await (await import("../../test/helpers")).rootToken(); // run/root.token = the admin pseudo-row
+    const loop = (method: string, path: string, body?: unknown) => app.request(`/api/v1/agentnet${path}`, { method, headers: { authorization: `Bearer ${rootT}`, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }, { requestIP: () => ({ address: "127.0.0.1" }) });
     // retire the live root row for this test: sends to "root" must still land
     rt.retireAgent(rt.byName("root")!, "exit");
     const r = await j(await call("architect-1", "POST", "/report", { summary: "phase 1 done", state: "done" }));

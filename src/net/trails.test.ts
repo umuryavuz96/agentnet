@@ -71,6 +71,7 @@ describe("cleanPrompt", () => {
   test("drops agentnet boilerplate, keeps delivery subjects and the brief", () => {
     const p = 'You are web-dev-1 on the agentnet (boss: root). Use the agentnet tools.\n#123 [task] root: "Build the Search tab"\nUse the route. PRIORITY RULE: task management comes first.\nMake it fast.';
     expect(tr.cleanPrompt(p)).toBe("Build the Search tab\nMake it fast.");
+    expect(tr.cleanPrompt(p.replace("task management comes first", "the plan comes first"))).toBe("Build the Search tab\nMake it fast.");
     expect(tr.cleanPrompt("You are backend-1. Boss: root. Job: give agents a trail memory.")).toBe("give agents a trail memory.");
   });
 });

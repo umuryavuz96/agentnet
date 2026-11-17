@@ -12,8 +12,9 @@ const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: makeFetch(buil
 afterAll(() => { server.stop(true); });
 const base = `http://127.0.0.1:${server.port}/api/v1`;
 const call = (token: string, method: string, path: string, body?: unknown) =>
-  fetch(`${base}${path}`, { method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${token || ROOT_T}`, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
 let t1 = "";
+const ROOT_T = await (await import("./helpers")).rootToken(); // "" in call() = run/root.token
 
 describe("boot", () => {
   test("spawn returns 201 and a 0600 token file", async () => {
@@ -35,7 +36,7 @@ describe("boot", () => {
   });
   test("stream sends hello first", async () => {
     const ac = new AbortController();
-    const r = await fetch(`${base}/agentnet/stream`, { signal: ac.signal });
+    const r = await fetch(`${base}/agentnet/stream`, { signal: ac.signal, headers: { authorization: `Bearer ${ROOT_T}` } });
     const reader = r.body!.getReader();
     const first = await Promise.race([reader.read(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error("no chunk in 1s")), 1000))]);
     expect(new TextDecoder().decode(first.value)).toContain("event: hello");
@@ -46,12 +47,13 @@ describe("boot", () => {
     expect((db().query("SELECT kind FROM agents WHERE name = 'm-1'").get() as { kind: string }).kind).toBe("member");
   });
   test("unknown route is a problem+json 404", async () => {
-    const r = await fetch(`${base}/nope`);
+    const r = await fetch(`${base}/nope`, { headers: { authorization: `Bearer ${ROOT_T}` } });
     expect(r.status).toBe(404);
     expect(r.headers.get("content-type")).toContain("application/problem+json");
   });
 
   test("real Bun.serve: /v1/admin/spawn with no token over loopback is root (peer survives the path rewrite)", async () => {
+    process.env.AGENTNET_LOOPBACK_ROOT = "on"; // loopback root is a house flag now
     const r = await fetch(`http://127.0.0.1:${server.port}/v1/admin/spawn`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "v1-1" }) });
     expect(r.status).toBe(201);
   });

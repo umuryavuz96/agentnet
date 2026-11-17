@@ -8,7 +8,7 @@ const { Database } = await import("bun:sqlite");
 const { useDatabase } = await import("../src/core/db");
 const st = await import("../src/net/store");
 const { buildApp, makeFetch } = await import("../src/server");
-const { LOOP, LAN } = await import("./helpers");
+const { LOOP, LAN, asRoot, fetchAsRoot } = await import("./helpers");
 
 const dist = mkdtempSync(join(tmpdir(), "an-dist-")), empty = mkdtempSync(join(tmpdir(), "an-empty-"));
 beforeAll(() => {
@@ -22,7 +22,7 @@ afterAll(() => { rmSync(dist, { recursive: true, force: true }); rmSync(empty, {
 describe("web app serving", () => {
   test("index, assets, SPA fallback, refusals", async () => {
     process.env.AGENTNET_WEB_DIR = dist;
-    const app = buildApp();
+    const app = await asRoot(buildApp()); // root.token: an unknown /api/v1 path is 404 once signed in (401 before)
     const r = await app.request("/", {}, LOOP);
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toContain("text/html");
@@ -51,7 +51,7 @@ describe("panel summary", () => {
     st.emit({ agent: "b#1", type: "ActivityReconciled", ts: T + 1, data: { state: "blocked" }, source: "reconcile" });
     st.emit({ agent: "g#1", type: "AgentGone", ts: T + 1, data: { reason: "test" }, source: "service" });
     st.flush();
-    const r = await makeFetch(buildApp())(new Request("http://localhost/v1/panel/summary"), LAN) as Response; // through the v1 rewrite
+    const r = await (await fetchAsRoot(makeFetch(buildApp())))(new Request("http://localhost/v1/panel/summary"), LAN) as Response; // through the v1 rewrite
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ live: 2, working: 1, blocked: 1 });
   });

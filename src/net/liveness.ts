@@ -1,6 +1,6 @@
 // agentnet liveness: for mod agents the connection is the claude pid. Reachable = a poll is open;
 // exists = kill(pid, 0). Gone = bye, or no open poll and the pid dead. Service restart = `recovering` for 10 s from listen,
-// then one pid check per silent agent. No hello within 30 s of spawn = failed. No heartbeat, no `unreachable` state.
+// then one pid check per silent agent. No hello within HELLO_MS (180 s) of spawn = failed. No heartbeat, no `unreachable` state.
 import { logEvent } from "../core/logger";
 import { db } from "../core/db";
 import { emit, flush, live, goneKey, type Snapshot } from "./store";
@@ -8,7 +8,10 @@ import { attachedSessions, sessionOf, realTmux, type Tmux } from "./windows";
 
 /** A director with no pid on record (hello gave none) that has not polled for this long is not running: without it the card would say Idle for hours. */
 export const NO_PID_GONE_MS = 90_000;
-export const RECOVER_MS = 10_000, SWEEP_MS = 1_000, SILENT_MS = 1_000, HELLO_MS = 30_000; // measured: client killed → poll abort at once → gone on the next sweep (~2 s)
+export const RECOVER_MS = 10_000, SWEEP_MS = 1_000, SILENT_MS = 1_000; // measured: client killed → poll abort at once → gone on the next sweep (~2 s)
+/** Spawn-to-hello limit. 30 s failed real spawns on a loaded host (load average 100-300: claude took longer to start, the agent was
+ *  marked failed and the reaper killed its tmux session before it joined). Override with AGENTNET_HELLO_MS. */
+export const HELLO_MS = Number(process.env.AGENTNET_HELLO_MS) > 0 ? Number(process.env.AGENTNET_HELLO_MS) : 180_000;
 const polls = new Map<string, number>();   // agent id -> open polls
 const lastPoll = new Map<string, number>(); // agent id -> when its last poll ended
 let listenedAt = 0, timer: ReturnType<typeof setInterval> | null = null;
@@ -24,7 +27,7 @@ export const isPolling = (agent: string) => (polls.get(agent) ?? 0) > 0;
 /** Pure decision for one agent: what the sweep should emit now, or null. */
 export function decide(s: Snapshot, o: { polling: boolean; lastPoll: number | null; pidAlive: boolean | null; recovering: boolean }, now = Date.now()): { type: "AgentFailed" | "AgentGone"; reason: string } | null {
   if (s.life === "gone" || s.life === "failed") return null;
-  if (s.life === "starting") return !o.recovering && now - s.spawnedAt > HELLO_MS ? { type: "AgentFailed", reason: "no hello within 30 s" } : null;
+  if (s.life === "starting") return !o.recovering && now - s.spawnedAt > HELLO_MS ? { type: "AgentFailed", reason: `no hello within ${Math.round(HELLO_MS / 1000)} s` } : null;
   if (o.polling) return null;
   if (o.recovering) return null;
   const silentFor = now - Math.max(o.lastPoll ?? 0, s.connectedAt ?? 0);

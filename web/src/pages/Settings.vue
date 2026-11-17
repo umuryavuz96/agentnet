@@ -2,13 +2,26 @@
 // Settings. Two sections: Updates (versions, last check, a "Check now" button, the same sheet as the header pill)
 // and the Danger zone, with "Reset director": stop the director, forget its folder and session,
 // and show the first-run setup again. Two-step inline confirm (the Close agent pattern), never a browser confirm().
-import { computed, nextTick, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { themePref, setThemePref, type ThemePref } from "../theme";
+import { officeBlur, setOfficeBlur } from "../office3d/prefs";
 import UpdateSheet from "../components/UpdateSheet.vue";
 import Icon from "../ui/Icon.vue";
 import { api, toast } from "../ui/api";
 import { useUpdate } from "../ui/useUpdate";
 
 const u = useUpdate();
+interface Health { home?: string; version?: string; api?: number; minClientApi?: number; features?: string[] }
+interface Dir { home?: string; tools?: Record<string, boolean>; triage?: string; sessionName?: string; session?: boolean; precheck?: { repos?: number } }
+const health = ref<Health | null>(null), dir = ref<Dir | null>(null);
+onMounted(async () => {
+  try { health.value = await api<Health>("v1/health"); } catch { /* card shows unknown */ }
+  try { dir.value = await api<Dir>("v1/panel/director"); } catch { /* card shows unknown */ }
+});
+const host = location.host;
+const THEMES: ThemePref[] = ["system", "light", "dark"];
+const TRIAGE: Record<string, string> = { ok: "Working", off: "Off" };
+const published = computed(() => { const t = st.value?.published; return t ? new Date(t).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""; });
 const sheetOpen = ref(false), clock = ref(Date.now());
 const tick = setInterval(() => { clock.value = Date.now(); }, 30_000);
 onBeforeUnmount(() => clearInterval(tick));
@@ -37,40 +50,70 @@ async function reset() {
 
 <template>
   <section class="st" aria-labelledby="st-h">
-    <h1 id="st-h">Settings</h1>
-    <h2 class="up-h">Updates</h2>
-    <div class="up">
-      <dl class="up-kv">
-        <div><dt>Current</dt><dd>{{ st ? `v${st.current}` : "…" }}</dd></div>
-        <div><dt>Latest known</dt><dd>{{ st?.latest ? `v${st.latest}` : "unknown" }}<span v-if="available" class="up-new">newer</span></dd></div>
-        <div><dt>Last checked</dt><dd>{{ ago }}</dd></div>
-      </dl>
-      <p v-if="st?.error" class="up-note">Last check failed: {{ st.error }}</p>
-      <p v-if="whyNoCheck" class="up-note">{{ whyNoCheck }}</p>
-      <div class="up-act">
-        <button type="button" class="btn sm" :disabled="u.checking.value || !!whyNoCheck" @click="u.check()"><Icon :name="u.checking.value ? 'loader' : 'rotate-ccw'" :size="15" :class="{ spin: u.checking.value }" />{{ u.checking.value ? "Checking…" : "Check now" }}</button>
-        <button v-if="available" type="button" class="btn sm up-go" @click="openSheet"><Icon name="circle-arrow-up" :size="15" />Update now</button>
+    <header class="st-top"><h1 id="st-h">Settings</h1><span v-if="st" class="st-sub num">v{{ st.current }} · {{ available ? "update ready" : "up to date" }}</span></header>
+    <div class="st-cols">
+      <div class="st-col">
+        <section class="sc" aria-label="Updates">
+          <h2><Icon name="rotate-ccw" :size="15" /> Updates <span class="sc-r">checked {{ ago }}</span></h2>
+          <div class="sc-big"><b class="num">{{ st ? `v${st.current}` : "…" }}</b><span class="up-pill" :class="{ new: available }">{{ available ? `v${st?.latest} is out` : "Up to date" }}</span><span v-if="published && !available" class="sc-m">released {{ published }}</span></div>
+          <p v-if="st?.error" class="sc-note">Last check failed: {{ st.error }}</p>
+          <p v-if="whyNoCheck" class="sc-note">{{ whyNoCheck }}</p>
+          <dl class="kv">
+            <div><dt>Check for new releases<small>AGENTNET_UPDATE_CHECK</small></dt><dd class="mono">{{ st?.checkEnabled ? "On" : "Off" }}</dd></div>
+            <div><dt>Update by itself<small>AGENTNET_AUTO_UPDATE{{ st?.auto?.enabled ? `, at ${String(st.auto.hour).padStart(2, "0")}:00` : "" }}</small></dt><dd class="mono">{{ st?.auto?.enabled ? "On" : "Off" }}</dd></div>
+            <div v-if="st?.mode"><dt>Runs as<small>how agentnet restarts after an update</small></dt><dd class="mono">{{ st.mode }}</dd></div>
+          </dl>
+          <p class="sc-note">These come from the service's environment; changing them needs a restart.</p>
+          <div class="up-act">
+            <button type="button" class="btn sm" :disabled="u.checking.value || !!whyNoCheck" @click="u.check()"><Icon :name="u.checking.value ? 'loader' : 'rotate-ccw'" :size="15" :class="{ spin: u.checking.value }" />{{ u.checking.value ? "Checking…" : "Check now" }}</button>
+            <button type="button" class="btn sm" :class="{ 'up-go': available }" @click="openSheet"><Icon :name="available ? 'circle-arrow-up' : 'file-text'" :size="15" />{{ available ? `Update to v${st?.latest}` : "Release notes" }}</button>
+          </div>
+        </section>
+        <section class="sc" aria-label="Appearance">
+          <h2><Icon name="sliders" :size="15" /> Appearance</h2>
+          <dl class="kv">
+            <div><dt>Theme<small>System follows the Mac or phone setting; saved on this device</small></dt>
+              <dd><div class="seg" role="radiogroup" aria-label="Theme"><button v-for="t in THEMES" :key="t" type="button" role="radio" :aria-checked="themePref === t" @click="setThemePref(t)">{{ t[0].toUpperCase() + t.slice(1) }}</button></div></dd></div>
+            <div><dt>3D office blur<small>Soft blur at the top and bottom of the 3D office, like a photo of a miniature; saved on this device</small></dt>
+              <dd><div class="seg" role="radiogroup" aria-label="3D office blur"><button type="button" role="radio" :aria-checked="officeBlur" @click="setOfficeBlur(true)">On</button><button type="button" role="radio" :aria-checked="!officeBlur" @click="setOfficeBlur(false)">Off</button></div></dd></div>
+            <div><dt>Motion<small>Follows Reduce Motion in the system settings</small></dt><dd class="mono">System</dd></div>
+          </dl>
+        </section>
       </div>
-    </div>
-    <UpdateSheet :open="sheetOpen" :m="u.m.value" :now="clock" :can-check="u.canCheck.value" :checking="u.checking.value"
-      @close="sheetOpen = false" @ask="u.dispatch({ type: 'ask' })" @cancel="u.dispatch({ type: 'cancel' })" @start="u.start()" @check="u.check()"
-      @dismiss="u.dispatch({ type: 'dismiss' })" @reload="reload" />
-    <h2 class="dz-h">Danger zone</h2>
-    <div class="dz">
-      <div class="dz-row">
-        <div class="dz-tx">
-          <b>Reset director</b>
-          <p>Stops the director if it runs, forgets its folder and session, and shows the first-run setup again. Agents, teams, tasks and scores are kept. Conversation files stay on disk.</p>
-        </div>
-        <button ref="askBtn" type="button" class="btn sm danger-ghost" :disabled="busy || confirming" :aria-expanded="confirming" @click="ask"><Icon name="trash" :size="15" /> Reset director</button>
+      <div class="st-col">
+        <section class="sc" aria-label="Service">
+          <h2><Icon name="cpu" :size="15" /> Service <span v-if="health?.features" class="sc-r">{{ health.features.length }} features on</span></h2>
+          <dl class="kv">
+            <div><dt>Version<small>API {{ health?.api ?? "unknown" }}, works with clients from API {{ health?.minClientApi ?? "unknown" }}</small></dt><dd class="mono">{{ health?.version ? `v${health.version}` : "unknown" }}</dd></div>
+            <div><dt>Address<small>The host this page is served from</small></dt><dd class="mono">{{ host }}</dd></div>
+            <div><dt>Data folder<small>Database, settings, logs. AGENTNET_HOME</small></dt><dd class="mono path"><template v-if="health?.home"><template v-for="(part, i) in health.home.split('/')" :key="i"><wbr v-if="i">{{ i ? "/" : "" }}{{ part }}</template></template><template v-else>unknown</template></dd></div>
+            <div v-if="health?.features"><dt>Features</dt><dd class="chips"><span v-for="f in health.features" :key="f" class="chip mono">{{ f }}</span></dd></div>
+          </dl>
+          <p class="sc-note">Read only. Nothing secret is shown here.</p>
+        </section>
       </div>
-      <Transition name="cf">
+      <div class="st-col">
+        <section class="sc" aria-label="Director">
+          <h2><Icon name="user" :size="15" /> Director <span class="sc-r">{{ dir?.session ? "connected" : dir ? "not running" : "" }}</span></h2>
+          <dl class="kv">
+            <div><dt>Runs in<small>{{ dir?.sessionName ? `tmux session ${dir.sessionName}` : "no session" }}</small></dt><dd class="mono">{{ dir?.home ? "~ (home)" : "unknown" }}</dd></div>
+            <div><dt>Prompt triage<small>Sorts each request before work starts</small></dt><dd class="mono">{{ dir?.triage ? (TRIAGE[dir.triage] ?? dir.triage) : "unknown" }}</dd></div>
+            <div v-if="dir?.tools"><dt>Tools on this machine</dt><dd class="chips"><span v-for="(ok, k) in dir.tools" :key="k" class="chip mono" :class="{ no: !ok }"><i />{{ k }}</span></dd></div>
+            <div v-if="dir?.precheck?.repos != null"><dt>Repos it can see<small>Folders with a git repo under its folder</small></dt><dd class="mono num">{{ dir.precheck.repos }}</dd></div>
+          </dl>
+          <div class="up-act"><a class="btn sm" href="#/agents"><Icon name="layout-grid" :size="15" />Open its window</a><a class="btn sm ghost" href="#/agents?setup=1"><Icon name="settings" :size="15" />Setup again</a></div>
+        </section>
+        <section class="sc dz" aria-label="Danger zone">
+          <h2 class="dz-h"><Icon name="triangle-alert" :size="15" /> Danger zone</h2>
+          <p class="sc-note">Reset director stops the director if it runs, forgets its folder and session, and shows the first-run setup again. Agents, teams, tasks and scores are kept. Conversation files stay on disk.</p>
+          <div><button ref="askBtn" type="button" class="btn sm danger-ghost" :disabled="busy || confirming" :aria-expanded="confirming" @click="ask"><Icon name="trash" :size="15" /> Reset director…</button></div>
+          <Transition name="cf">
         <div v-if="confirming" class="cf" role="alertdialog" aria-label="Reset the director?" @keydown.esc.stop="cancel">
           <div class="cf-clip"><div class="cf-in">
             <span class="cf-ic"><Icon name="triangle-alert" :size="18" /></span>
             <div class="cf-tx">
               <b>Reset the director?</b>
-              <p>The director stops now and is forgotten. You will set it up again from the Agents page.</p>
+              <p>The director stops now and its folder and session are forgotten. Kept: agents, teams, tasks, scores and conversation files. You set it up again from the Agents page.</p>
             </div>
             <div class="cf-act">
               <button ref="cancelBtn" type="button" class="btn sm ghost" :disabled="busy" @click="cancel">Cancel</button>
@@ -79,25 +122,48 @@ async function reset() {
           </div></div>
         </div>
       </Transition>
+        </section>
+      </div>
     </div>
+    <UpdateSheet :open="sheetOpen" :m="u.m.value" :now="clock" :can-check="u.canCheck.value" :checking="u.checking.value"
+      @close="sheetOpen = false" @ask="u.dispatch({ type: 'ask' })" @cancel="u.dispatch({ type: 'cancel' })" @start="u.start()" @check="u.check()"
+      @dismiss="u.dispatch({ type: 'dismiss' })" @reload="reload" />
   </section>
 </template>
 
 <style scoped>
-.st{display:grid;gap:14px;align-content:start;max-width:760px;width:100%;margin:0 auto}
-.st h1{margin:0;font:700 22px/1.2 var(--body)}
-.up-h{margin:8px 0 0;color:var(--muted);font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
-.up{display:grid;gap:12px;padding:14px;border:1px solid var(--line);border-radius:16px;background:var(--panel)}
-.up-kv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0}
-.up-kv div{display:grid;gap:3px;min-width:0}
-.up-kv dt{font-size:12px;color:var(--muted)}
-.up-kv dd{margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px;font:600 14.5px/1.3 var(--body)}
-.up-new{padding:1px 8px;border-radius:999px;border:1px solid color-mix(in srgb,var(--on) 55%,transparent);background:var(--on-bg);color:var(--on);font:600 11.5px var(--body)}
+.st{flex:1;min-height:0;display:flex;flex-direction:column;gap:12px;width:100%}
+.st-top{display:flex;align-items:baseline;gap:12px}.st-top h1{margin:0;font:700 22px/1.2 var(--body)}.st-sub{color:var(--muted);font-size:13px}
+.st-cols{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
+.st-col{display:grid;gap:12px;min-width:0}
+.sc{display:grid;gap:10px;padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:var(--panel);min-width:0}
+.sc h2{margin:0;display:flex;align-items:center;gap:8px;font:650 14px var(--body)}.sc-r{margin-left:auto;color:var(--muted);font:400 12px var(--body)}
+.sc-big{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.sc-big b{font:700 26px/1.1 var(--body)}.sc-m{color:var(--muted);font-size:12.5px}
+.up-pill{padding:2px 9px;border-radius:999px;border:1px solid color-mix(in srgb,var(--on) 55%,transparent);background:var(--on-bg);color:var(--on);font:600 11.5px var(--body)}
+.up-pill.new{border-color:var(--warn);color:var(--warn);background:transparent}
+.sc-note{margin:0;font-size:12.5px;line-height:1.45;color:var(--muted)}
+.kv{margin:0;display:grid}.kv>div{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}
+.kv dt{display:grid;gap:2px;min-width:0;font:500 13px var(--body);overflow-wrap:anywhere}.kv dt small{color:var(--muted);font:400 12px/1.35 var(--body)}
+.kv dt:not(:has(small)){flex:none}
+.kv dd{margin:0;text-align:right;min-width:0;overflow-wrap:anywhere}.kv dd.path{overflow-wrap:normal}.mono{font:500 13px var(--mono)}
+.kv dd.chips{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:6px;background:var(--track);font-size:12px}
+.chip i{width:7px;height:7px;border-radius:50%;background:var(--on)}.chip.no i{background:var(--bad)}
+.seg{display:inline-flex;padding:2px;border-radius:10px;background:var(--track)}
+.kv dd:has(.seg){flex:none}.sc a.btn{text-decoration:none}
+.seg button{white-space:nowrap;min-height:34px;padding:0 12px;border:0;border-radius:8px;background:none;color:var(--muted);font:600 12.5px var(--body);cursor:pointer}
+.seg button[aria-checked="true"]{background:color-mix(in srgb,var(--ink) 16%,transparent);color:var(--ink)}
+.seg button:focus-visible{outline:2px solid var(--on);outline-offset:1px}
+.sc.dz{border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}
+.sc .btn{display:inline-flex;align-items:center;gap:6px;min-height:40px;padding-inline:14px}
+@media (max-width:1100px){.st-cols{grid-template-columns:minmax(0,1fr);overflow-y:auto;align-content:start}}
+@media (max-width:1280px) and (min-width:1101px){.st-cols{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.up-newx{padding:1px 8px;border-radius:999px;border:1px solid color-mix(in srgb,var(--on) 55%,transparent);background:var(--on-bg);color:var(--on);font:600 11.5px var(--body)}
 .up-note{margin:0;font-size:13px;line-height:1.45;color:var(--muted)}
 .up-act{display:flex;flex-wrap:wrap;gap:8px}
 .up .btn{display:inline-flex;align-items:center;gap:6px;min-height:38px;padding-inline:14px}
 .up-go{color:var(--on);border-color:color-mix(in srgb,var(--on) 55%,transparent);background:var(--on-bg)}
-.dz-h{margin:8px 0 0;color:var(--bad);font:600 12px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
+.dz-h{margin:8px 0 0;color:var(--bad);font:600 13px/1.2 var(--body)}
 .dz{display:grid;gap:10px;padding:14px;border:1px solid color-mix(in srgb,var(--bad) 40%,var(--line));border-radius:16px;background:var(--panel)}
 .dz-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
 .dz-tx{display:grid;gap:4px;flex:1 1 280px;min-width:0}

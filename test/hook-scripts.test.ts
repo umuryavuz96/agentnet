@@ -80,7 +80,7 @@ describe("task-guard.py", () => {
     const r = call(home);
     const j = JSON.parse(r.out);
     expect(j.hookSpecificOutput.hookEventName).toBe("PostToolUse");
-    expect(j.hookSpecificOutput.additionalContext).toContain("task list is empty");
+    expect(j.hookSpecificOutput.additionalContext).toContain("You have no plan yet");
     expect(call(home).out).toBe("");
     expect(JSON.parse(readFileSync(join(home, "logs", "task-guard.jsonl"), "utf8").trim())).toMatchObject({ agent: "web-dev-1", reason: "empty" });
   });

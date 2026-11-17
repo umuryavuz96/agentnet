@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LOOP } from "./helpers";
+import { LOOP, fetchAsRoot } from "./helpers";
 
 const home = mkdtempSync(join(tmpdir(), "an-goal-"));
 process.env.AGENTNET_HOME = home;
@@ -11,7 +11,7 @@ beforeAll(() => { process.env.AGENTNET_USAGE_FILE = join(home, "usage.json"); pr
 afterAll(() => { for (const k of ENV) delete process.env[k]; process.env.AGENTNET_REQUIRE_GOAL = "0"; }); // the test preload turns the rule off for other files
 const { buildApp, makeFetch } = await import("../src/server");
 { const { Database } = await import("bun:sqlite"); const { useDatabase } = await import("../src/core/db"); useDatabase(new Database(":memory:")); (await import("../src/net/store"))._reset(); }
-const f = makeFetch(buildApp());
+const f = await fetchAsRoot(makeFetch(buildApp())); // root.token bearer on every call
 const call = (path: string, body?: unknown) => f(new Request(`http://x${path}`, { method: body ? "POST" : "GET", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }), LOOP);
 const detail = async (r: Response) => JSON.stringify(await r.json());
 

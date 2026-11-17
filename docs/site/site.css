@@ -7,7 +7,7 @@
   --glass:rgba(24,26,29,.58);--glass-hi:rgba(255,255,255,.07);--glass-edge:rgba(255,255,255,.1);--rim:rgba(255,255,255,.2);--rim-low:rgba(255,255,255,.05);--glass-shadow:rgba(0,0,0,.45);--glow-a:rgba(47,211,138,.16);--glow-b:rgba(70,120,255,.08);--lg-blur:18px;
   --ease:cubic-bezier(.25,.1,.25,1);--spring:cubic-bezier(.2,.8,.2,1);
   --body:"Figtree",-apple-system,"Segoe UI",sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
-  --max:1080px;
+  --max:1080px;--nav:61px;--gut:clamp(16px,4vw,64px);--stage:#0b0c0e;--stage-ink:#c9c9cf;--stage-line:rgba(255,255,255,.12);
   color-scheme:dark;
 }
 @media (prefers-color-scheme:light){
@@ -19,7 +19,7 @@
   }
 }
 *{box-sizing:border-box}
-html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;scroll-padding-top:var(--nav);scroll-snap-type:y mandatory}
 body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 var(--body);overflow-x:hidden}
 a{color:var(--ink);text-decoration-color:color-mix(in srgb,var(--on) 70%,transparent);text-underline-offset:3px}
 a:hover{color:var(--on)}
@@ -48,31 +48,6 @@ p{margin:0 0 12px}
 .nav nav a{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 12px;border-radius:10px;color:var(--muted);text-decoration:none;font-weight:600;font-size:15px}
 .nav nav a:hover{color:var(--ink);background:var(--panel)}
 @media(max-width:359px){.gh-t{display:none}}
-
-/* Hero */
-.hero{padding-top:56px;padding-bottom:24px}
-@media(min-width:768px){.hero{padding-top:96px;text-align:center}}
-.eyebrow{display:inline-block;font:600 13px/1.35 var(--mono);letter-spacing:.04em;color:var(--on);background:var(--on-bg);padding:7px 11px;border-radius:999px;margin-bottom:22px}
-.hero h1{font-size:clamp(36px,7.2vw,68px);font-weight:800;max-width:15ch;letter-spacing:-.03em;line-height:1.04}
-@media(min-width:768px){.hero h1{margin:0 auto}}
-.sub{font-size:clamp(18px,2.2vw,21px);color:var(--muted);max-width:40em;margin:22px 0 30px}
-@media(min-width:768px){.sub{margin:24px auto 34px}}
-.cta-row{display:flex;flex-wrap:wrap;align-items:center;gap:12px 22px}
-@media(min-width:768px){.cta-row{justify-content:center}}
-.btn{display:inline-flex;align-items:center;gap:9px;min-height:48px;padding:0 22px;border-radius:12px;font:700 16px var(--body);text-decoration:none;border:1px solid var(--line);transition:transform .18s var(--spring),background .15s var(--ease)}
-.btn.primary{background:var(--on);color:var(--on-ink);border-color:var(--on)}
-.btn.primary:hover{color:var(--on-ink);transform:translateY(-1px)}
-.text-link{font-weight:600;min-height:44px;display:inline-flex;align-items:center}
-.shot{margin:44px 0 0}
-@media(min-width:768px){.shot{margin-top:64px}}
-.shot-box{aspect-ratio:16/10;width:100%;border-radius:16px;border:1px dashed var(--line);background:linear-gradient(180deg,var(--panel),var(--panel-2));display:grid;place-items:center;color:var(--muted);font:600 14px var(--mono)}
-
-/* Problem strip */
-.pains{border-block:1px solid var(--line);background:var(--panel-2);margin-top:56px}
-.pain-list{list-style:none;margin:0 auto;padding:22px 0;display:grid;gap:14px}
-.pain-list li{position:relative;padding-left:22px;color:var(--muted);font-size:16px}
-.pain-list li::before{content:"";position:absolute;left:0;top:.62em;width:8px;height:8px;border-radius:50%;background:var(--muted);opacity:.6}
-@media(min-width:768px){.pain-list{grid-template-columns:repeat(3,1fr);gap:28px;padding:28px 0}}
 
 /* Sections */
 .block{padding-top:72px}
@@ -127,34 +102,18 @@ p{margin:0 0 12px}
 .credits{margin-top:12px;margin-bottom:0;font-size:13.5px}
 
 @media (prefers-reduced-motion:reduce){
-  html{scroll-behavior:auto}
+  html{scroll-snap-type:none!important}
   *,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}
 }
 .copy[hidden]{display:none}
 #install{scroll-margin-top:76px}
-/* Hero video slot (mounted by site.js when data-video="on") */
-.shot-box{position:relative;overflow:hidden}
-.shot.has-video .shot-box{border-style:solid;background:#000}
-.shot-box video,.shot-box video img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
-.vctl{position:absolute;right:10px;top:10px;display:flex;gap:8px}
-.vbtn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-width:44px;min-height:44px;padding:0 12px;border-radius:999px;border:1px solid rgba(255,255,255,.22);background:rgba(13,13,15,.72);color:#f2f2f3;font:600 14px var(--body);cursor:pointer;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:background .15s var(--ease)}
-.vbtn:hover{background:rgba(13,13,15,.9)}
-.vbtn:focus-visible{outline:3px solid var(--on);outline-offset:2px}
-/* Hero screenshot (real app, demo data). Mobile shows the top of the phone shot in a fixed 4:5 box. */
-.shot-box{border-style:solid;background:var(--panel-2)}
-.shot-box picture,.shot-box picture img{display:block;width:100%;height:100%}
-.shot-box picture img{object-fit:cover;object-position:top center}
-@media(max-width:599px){.shot-box{aspect-ratio:4/5}.shot.has-video .shot-box{aspect-ratio:16/10}}
-.shot figcaption{margin-top:10px;font-size:14px;color:var(--muted);text-align:center}
-.shot.has-video figcaption{display:none}
-
 /* ---- Dark glass (inspired by Glisse, https://github.com/0kzh/glisse, MIT; no code copied) ----
    Everywhere: frosted blur + rim light. Chromium only: an SVG displacement lens on small controls (glass.js).
    Safari and Firefox keep the plain frost. */
 body{background:var(--bg)}
 body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   background:radial-gradient(60vmax 40vmax at 78% -8%,var(--glow-a),transparent 70%),radial-gradient(50vmax 40vmax at 8% 38%,var(--glow-b),transparent 70%),radial-gradient(45vmax 30vmax at 90% 92%,var(--glow-a),transparent 70%)}
-.nav,.btn:not(.primary),.vbtn,.copy,.card,.faq details,.code{
+.nav,.btn:not(.primary),.copy,.card,.faq details,.code{
   background:var(--glass);
   -webkit-backdrop-filter:blur(var(--lg-blur)) saturate(1.6);backdrop-filter:blur(var(--lg-blur)) saturate(1.6);
   border-color:var(--glass-edge);
@@ -162,19 +121,89 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
 .nav{border-bottom:0;box-shadow:inset 0 -1px 0 var(--glass-edge),inset 0 1px 0 var(--rim-low),0 10px 30px -14px var(--glass-shadow)}
 .nav nav a:hover{background:var(--glass-hi)}
 .btn.primary{background:linear-gradient(180deg,color-mix(in srgb,var(--on) 100%,#fff 14%),var(--on));box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 8px 26px -8px color-mix(in srgb,var(--on) 70%,transparent)}
-.btn:active,.vbtn:active,.copy:active{transform:scale(.97)}
-.vbtn{background:var(--glass);color:var(--ink);border:1px solid var(--glass-edge)}
-.vbtn:hover{background:var(--glass-hi)}
-.shot-box{box-shadow:0 30px 80px -30px var(--glass-shadow),0 0 0 1px var(--glass-edge)}
-.pains{background:transparent}
-@media (prefers-color-scheme:light){.vbtn{color:#16161a}}
+.btn:active,.copy:active{transform:scale(.97)}
 /* Chromium lens: the filter id is created in glass.js */
-.lg-refract .btn:not(.primary),.lg-refract .vbtn,.lg-refract .copy{
+.lg-refract .btn:not(.primary),.lg-refract .copy{
   -webkit-backdrop-filter:blur(6px) url(#lg-lens) saturate(1.6);backdrop-filter:blur(6px) url(#lg-lens) saturate(1.6)}
 @media (prefers-reduced-transparency:reduce){
   :root{--glass:var(--panel);--glass-hi:var(--panel-2)}
-  .nav,.btn,.vbtn,.copy,.card,.faq details,.code{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+  .nav,.btn,.copy,.card,.faq details,.code{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
   body::before{display:none}
 }
-@media (prefers-reduced-motion:reduce){.btn:active,.vbtn:active,.copy:active{transform:none}}
+@media (prefers-reduced-motion:reduce){.btn:active,.copy:active{transform:none}}
 .brand .lockup{height:24px;width:auto;display:block}
+
+/* ---- Scroll steps (v5): one feature per screen. Snap is mandatory; a step is never taller than the screen,
+   the closing area is one snap area that scrolls freely inside. ---- */
+
+.prog{position:absolute;left:0;right:0;bottom:0;height:3px;display:flex;gap:3px;padding:0 var(--gut);opacity:0;transition:opacity .2s var(--ease)}
+.prog.on{opacity:1}
+.prog i{flex:1;background:var(--line);border-radius:2px}
+.prog i.cur{background:var(--on)}
+@media(min-width:1100px){.prog{display:none}}
+@media(max-width:399px){.nav nav a{padding:0 8px;font-size:14px}}
+.hero{scroll-snap-align:start;min-height:calc(100svh - var(--nav));display:grid;align-content:center;gap:24px;padding:24px var(--gut) 0}
+.hero-in{display:grid;gap:24px;align-items:center}
+.eyebrow{display:inline-block}
+.hero h1{font-size:clamp(34px,4.6vw,64px);font-weight:800;letter-spacing:-.03em;line-height:1.04;max-width:13ch}
+.sub{font-size:clamp(17px,1.5vw,20px);color:var(--muted);max-width:34em;margin:18px 0 22px}
+.cta-row{display:flex;flex-wrap:wrap;align-items:center;gap:12px 22px}
+.pains{list-style:none;margin:0;padding:16px 0 20px;display:grid;gap:8px;border-top:1px solid var(--line);color:var(--muted);font-size:15px}
+.pains li{margin:0}
+@media(min-width:900px){.hero-in{grid-template-columns:minmax(320px,5fr) 7fr;gap:clamp(32px,4vw,72px)}.pains{grid-template-columns:repeat(3,1fr);gap:28px}}
+@media(max-width:899px){.hero{gap:14px;padding-top:14px}.hero-in{gap:16px}.hero .media{max-height:30svh;width:min(100%,calc(30svh * 1.3334))}.hero h1{font-size:clamp(28px,8vw,36px)}.eyebrow{margin-bottom:12px;font-size:12px}.sub{margin:12px 0 14px;font-size:16px}.pains{display:none}}
+.steps{position:relative}
+@media(min-width:1100px){.steps{display:grid;grid-template-columns:176px minmax(0,1fr);padding-left:var(--gut)}}
+.rail{display:none}
+@media(min-width:1100px){
+  .rail{display:flex;flex-direction:column;justify-content:center;position:sticky;top:var(--nav);height:calc(100svh - var(--nav));align-self:start}
+  .rail ol{list-style:none;margin:0;padding:0;position:relative;border-left:1px solid var(--line)}
+  .rail a{display:flex;align-items:center;height:40px;padding-left:16px;color:var(--muted);text-decoration:none;font-weight:600;font-size:15px;transition:color .15s var(--ease)}
+  .rail a:hover,.rail a[aria-current]{color:var(--ink)}
+  .rail ol::before{content:"";position:absolute;left:-1px;top:0;width:2px;height:40px;background:var(--on);border-radius:2px;transform:translateY(calc(var(--i,0) * 40px));transition:transform .26s var(--spring)}
+}
+.step{scroll-snap-align:start;scroll-snap-stop:always;height:calc(100svh - var(--nav));min-height:0;display:grid;align-content:center;gap:20px;padding:20px var(--gut);overflow:hidden}
+@media(min-width:900px){.step{grid-template-columns:minmax(300px,4fr) 8fr;gap:clamp(32px,4vw,72px);align-items:center;padding-block:32px}}
+.txt h2{font-size:clamp(26px,2.7vw,42px);font-weight:780;letter-spacing:-.02em;line-height:1.08;margin:0}
+.txt .lede{color:var(--muted);font-size:clamp(16px,1.25vw,19px);margin:14px 0 0;max-width:32em}
+.facts{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:9px;font-size:15.5px;max-width:34em}
+.facts li{position:relative;padding-left:20px}
+.facts li::before{content:"";position:absolute;left:0;top:.72em;width:10px;height:2px;background:var(--on);border-radius:1px}
+.where{margin:18px 0 0;font:500 13px var(--mono);color:var(--muted)}
+.js .txt{opacity:0;transform:translateY(12px);transition:opacity .32s var(--ease),transform .32s var(--spring)}
+.js .step.in .txt{opacity:1;transform:none}
+/* The stage stays dark in both themes, because the recordings show the dark app. */
+.media{position:relative;aspect-ratio:4/3;width:100%;border-radius:16px;overflow:hidden;background:var(--stage);color:var(--stage-ink);box-shadow:0 30px 80px -30px var(--glass-shadow),0 0 0 1px var(--glass-edge);order:-1}
+@media(min-width:900px){.media{order:0;aspect-ratio:16/10;justify-self:end;width:min(100%,calc((100svh - var(--nav) - 96px) * 1.6))}.hero .media{width:100%}}
+@media(max-width:899px){.step{gap:14px;padding-block:14px}.media{max-height:42svh;justify-self:center;width:min(100%,calc(42svh * 1.3334))}.facts{display:none}.txt h2{font-size:clamp(23px,6.4vw,30px)}.txt .lede{margin-top:10px;font-size:16px}.where{margin-top:10px}}
+.media .poster,.media video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:var(--pos,50% 0%);display:block}
+.media video{opacity:0;transition:opacity .2s var(--ease)}
+.media.on video{opacity:1}
+.pp{position:absolute;right:10px;bottom:10px;width:44px;height:44px;border-radius:999px;border:1px solid var(--stage-line);background:rgba(13,13,15,.72);color:#f2f2f3;cursor:pointer;display:grid;place-items:center;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.pp[hidden]{display:none}
+.pp .ic{width:18px;height:18px;color:inherit}
+.pp .i-play{display:none}
+.media:not(.playing) .pp .i-play{display:block}
+.media:not(.playing) .pp .i-pause{display:none}
+.rest{scroll-snap-align:start;padding-top:24px}
+.more{list-style:none;margin:0 0 8px;padding:0;display:grid;gap:14px 40px}
+@media(min-width:768px){.more{grid-template-columns:repeat(2,1fr)}}
+.more li{padding-top:14px;border-top:1px solid var(--line)}
+.more b{display:block}
+.more span{color:var(--muted);font-size:15.5px}
+@media (prefers-reduced-motion:reduce){
+  .js .txt{transition:none;transform:none;opacity:1}
+  .rail ol::before,.prog,.media video{transition:none}
+}
+@media(max-width:899px) and (max-height:640px){.hero h1{font-size:27px}.sub{display:none}.eyebrow{margin-bottom:8px}.hero{gap:8px;padding-top:10px}.hero-in{gap:10px}}
+
+/* Restored from the old page: buttons, eyebrow pill, shared gutter for nav, closing area and footer */
+.btn{display:inline-flex;align-items:center;gap:9px;min-height:48px;padding:0 22px;border-radius:12px;font:700 16px var(--body);text-decoration:none;border:1px solid var(--line);transition:transform .18s var(--spring),background .15s var(--ease)}
+.btn.primary{background:var(--on);color:var(--on-ink);border-color:var(--on)}
+.btn.primary:hover{color:var(--on-ink);transform:translateY(-1px)}
+.text-link{font-weight:600;min-height:44px;display:inline-flex;align-items:center}
+.eyebrow{font:600 13px/1.35 var(--mono);letter-spacing:.04em;color:var(--on);background:var(--on-bg);padding:7px 11px;border-radius:999px;margin:0 0 20px}
+.nav .nav-in,.rest .wrap,.foot .wrap{max-width:none;margin:0;padding-inline:var(--gut)}
+.rest .block>*{max-width:760px}
+.rest .block>.more{max-width:1100px}
+.rest .block>.sec{max-width:900px}

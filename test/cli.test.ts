@@ -75,6 +75,31 @@ describe("join", () => {
   });
 });
 
+describe("token choice", () => {
+  const home = () => { const h = tmp("an-data-"); mkdirSync(join(h, "run"), { recursive: true }); writeFileSync(join(h, "run", "root.token"), "ROOT-TOK\n"); writeFileSync(join(h, "run", "panel.token"), "PANEL-TOK\n"); return h; };
+  test("outside an agent the CLI and the scripts send run/root.token", async () => {
+    const f = fake({ "POST /api/v1/agentnet/despawn": () => json({ ok: true }), "POST /api/v1/agentnet/spawn": () => json({ token_file: "/tmp/agentnet-test.token" }) });
+    const h = home();
+    await cli(["despawn", "t-1"], { AGENTNET_HOME: h, AGENTNET_URL: `${f.url}/api/v1/agentnet` });
+    await cli(["join", "t-2", "x"], { AGENTNET_HOME: h, AGENTNET_URL: `${f.url}/api/v1/agentnet` });
+    expect(f.calls.map((c) => c.headers.authorization)).toEqual(["Bearer ROOT-TOK", "Bearer ROOT-TOK"]);
+  });
+  test("inside an agent (AGENTNET_TOKEN_FILE set) neither the CLI nor the scripts pick up root.token", async () => {
+    const f = fake({ "POST /api/v1/agentnet/despawn": () => json({ ok: true }), "POST /api/v1/agentnet/spawn": () => json({ token_file: "/tmp/agentnet-test.token" }) });
+    const h = home(), own = join(h, "own.token"); writeFileSync(own, "AGENT-TOK\n");
+    const env = { AGENTNET_HOME: h, AGENTNET_URL: `${f.url}/api/v1/agentnet`, AGENTNET_TOKEN_FILE: own, AGENTNET_ROOT_TOKEN_FILE: join(h, "run", "root.token") };
+    await cli(["despawn", "t-1"], env);
+    await cli(["join", "t-2", "x"], env);
+    expect(f.calls.map((c) => c.headers.authorization)).toEqual(["Bearer AGENT-TOK", "Bearer AGENT-TOK"]);
+  });
+  test("login asks for a code with run/panel.token and prints the link", async () => {
+    const f = fake({ "POST /api/v1/login/code": () => json({ code: "c", url: "http://h/login?code=c", expiresIn: 60 }) });
+    const r = await cli(["login"], { AGENTNET_HOME: home(), AGENTNET_URL: `${f.url}/api/v1/agentnet` });
+    expect(r.code).toBe(0); expect(r.out.trim()).toBe("http://h/login?code=c");
+    expect(f.calls[0]!.headers.authorization).toBe("Bearer PANEL-TOK");
+  });
+});
+
 describe("despawn / status", () => {
   test("despawn posts body; 403 -> exit 1", async () => {
     const f = fake({ "POST /api/v1/agentnet/despawn": () => json({ ok: true }) });
@@ -199,4 +224,23 @@ describe("adopt", () => {
     const r = await cli(["adopt", "apply", "--plan", "x"], { AGENTNET_URL: `${f.url}/api/v1/agentnet` });
     expect(r.code).toBe(1); expect(r.err).toContain("not the current plan");
   });
+});
+
+describe("serve", () => {
+  // The CLI runs the server as a child: stopping the CLI must stop the server too, or the port stays taken.
+  const listening = async (port: number) => { try { await fetch(`http://127.0.0.1:${port}/v1/health`); return true; } catch { return false; } };
+  const freePort = () => { const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() }); const p = s.port!; s.stop(true); return p; };
+  for (const sig of ["SIGTERM", "SIGINT"] as const) test(`${sig} to agentnet serve stops the server child`, async () => {
+    const port = freePort();
+    const p = Bun.spawn([process.execPath, "run", "src/cli.ts", "serve"], { cwd: REPO, stdout: "ignore", stderr: "ignore",
+      env: { PATH: process.env.PATH ?? "", HOME: tmp("an-home-"), AGENTNET_HOME: tmp("an-data-"), AGENTNET_PORT: String(port), AGENTNET_SWEEP: "0" } });
+    let up = false;
+    for (let i = 0; i < 100 && !up; i++) { up = await listening(port); if (!up) await Bun.sleep(100); }
+    expect(up).toBe(true);
+    p.kill(sig);
+    await p.exited;
+    let down = false;
+    for (let i = 0; i < 50 && !down; i++) { down = !(await listening(port)); if (!down) await Bun.sleep(100); }
+    expect(down).toBe(true);
+  }, 20_000);
 });

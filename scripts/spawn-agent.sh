@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # spawn-agent.sh <name|@role> [--project DIR] [--model ID] [--soul CATALOG_ID] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT] [--boot-prompt TEXT] [--job TEXT] [--goal TEXT] [--boss NAME]
-#                      [--force-mem] [--no-wait] [--ready-timeout SECS] [--mcp a,b]
+#                      [--brief FILE.md] [--max-steps N] [--project-ok] [--force-mem] [--no-wait] [--ready-timeout SECS] [--mcp a,b]
 # agentnet's spawner. Registers the agent with agentnet (POST /agentnet/spawn -> 0600 token file), then starts
 # claude in a DETACHED tmux session agentnet-<name> with --plugin-dir plugin. Soul + house rules go in via
 # --append-system-prompt-file. Without --model/--soul the SERVICE picks them (and the effort) from --scope/--novelty/--risk/--need/--ask
 # (defaults 2/2/1) and refuses in reserve mode; the audit line is printed and kept on the agent record. Despawn: agentnet despawn <name> or POST /agentnet/despawn.
+# The brief (--brief, else the first BRIEF*.md file named in the boot prompt) gives the agent its plan: the service turns the numbered lines of its `## Steps`
+# section into the plan (at most 7; --max-steps up to 12 for a long recipe). The project is --project, else the repo of the brief, else the current folder,
+# and the git top level when it is in a repo. With no --project and no brief, a current folder outside any repo is refused unless --project-ok.
 # @role (e.g. @mobile-dev) lets the SERVICE pick the number: the lowest <role>-N no live agent holds. The final name is in the spawn reply.
 # Env overrides: AGENTNET_URL AGENTNET_ROOT_TOKEN_FILE AGENTNET_MOD_DIR ARSENAL_DIR AGENTNET_PRESPAWN_CHECK.
 set -euo pipefail
@@ -13,7 +16,7 @@ die() { echo "spawn-agent: $*" >&2; exit 1; }
 NAME=$1; shift; ROLE=""
 if [ "${NAME#@}" != "$NAME" ]; then ROLE="${NAME#@}"; NAME=""; fi   # @role: the service picks the number
 case "$NAME$ROLE" in ''|*[!a-z0-9-]*|-*) die "name must be lowercase letters, digits, dashes: $NAME$ROLE" ;; esac
-PROJECT=$PWD PROJECT_SET=0 MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60 MCP="${AGENTNET_SPAWN_MCP:-playwright}"
+PROJECT=$PWD PROJECT_SET=0 PROJECT_OK=0 BRIEF="" MAX_STEPS="" MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60 MCP="${AGENTNET_SPAWN_MCP:-playwright}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) PROJECT="${2:?--project needs a path}"; PROJECT_SET=1; shift 2 ;;
@@ -28,6 +31,9 @@ while [ $# -gt 0 ]; do
     --job) JOB="${2:?--job needs a text}"; shift 2 ;;
     --goal) GOAL="${2:?--goal needs a text}"; shift 2 ;;   # what done looks like (8+ chars); the service refuses a new agent without one
     --boss) BOSS="${2:?--boss needs a name}"; shift 2 ;;
+    --brief) BRIEF="${2:?--brief needs a file}"; shift 2 ;;
+    --max-steps) MAX_STEPS="${2:?--max-steps needs a number}"; shift 2 ;;
+    --project-ok) PROJECT_OK=1; shift ;;
     --force-mem) FORCE_MEM=1; shift ;;
     --mcp) MCP="${2?--mcp needs a comma list (or empty for none)}"; shift 2 ;;   # .mcp.json servers to enable for this agent; all others are disabled (default playwright)
     --no-wait) WAIT=0; shift ;;
@@ -37,6 +43,28 @@ while [ $# -gt 0 ]; do
   esac
 done
 PROJECT=$(cd "${PROJECT/#\~/$HOME}" 2>/dev/null && pwd) || die "project path invalid: $PROJECT"
+# The brief: --brief, else the first file named in the boot prompt that exists and has "brief" in its name (BRIEF-<job>.md).
+if [ -z "$BRIEF" ] && [ -n "$PROMPT" ]; then
+  for w in $(printf '%s' "$PROMPT" | grep -oE '[~/A-Za-z0-9._-][A-Za-z0-9._/~-]*\.md' | head -5 || true); do
+    case "$(basename "$w" | tr '[:upper:]' '[:lower:]')" in *brief*) ;; *) continue ;; esac   # a rule file or a README named in the prompt is not the brief
+    w="${w/#\~/$HOME}"
+    if [ "${w#/}" = "$w" ]; then   # relative: in the folder, else at the top of its repo
+      if [ -f "$PROJECT/$w" ]; then w="$PROJECT/$w"; else w="$(git -C "$PROJECT" rev-parse --show-toplevel 2>/dev/null || echo "$PROJECT")/$w"; fi
+    fi
+    if [ -f "$w" ]; then BRIEF="$w"; break; fi
+  done
+fi
+if [ -n "$BRIEF" ]; then
+  BRIEF="${BRIEF/#\~/$HOME}"; [ -f "$BRIEF" ] || die "brief not found: $BRIEF"
+  BRIEF="$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")"
+  if [ "$PROJECT_SET" = 0 ]; then PROJECT="$(dirname "$BRIEF")"; PROJECT_SET=1; fi   # no --project: the agent works in the repo of its brief
+fi
+# Always the git top level, so an agent never lands in a helper folder of a repo. A folder outside any repo: fine when --project named it
+# (a warning), refused when it is only the folder the caller stood in (that put agents in script folders and in $HOME).
+if TOP="$(git -C "$PROJECT" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$TOP" ] && [ "$TOP" != "$HOME" ]; then PROJECT="$TOP"
+elif [ "$PROJECT_OK" = 1 ]; then :
+elif [ "$PROJECT_SET" = 1 ]; then echo "spawn-agent: WARNING project $PROJECT is not a git repo (commit evidence cannot be checked there)" >&2
+else die "the current folder $PROJECT is not inside a project repo: pass --project <folder> or --brief <file in the repo>, or --project-ok for work outside a repo"; fi
 command -v tmux >/dev/null || die "tmux is not on PATH"
 command -v claude >/dev/null || die "claude is not on PATH"
 
@@ -53,7 +81,7 @@ AUTH=(); if [ -n "${AGENTNET_ROOT_TOKEN_FILE:-}" ] && [ -r "$AGENTNET_ROOT_TOKEN
 [ -n "$JOB" ] || JOB="(no job given)"
 
 # Register with agentnet
-BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1] or None,"role":a[15] or None,"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None,"project_default":a[14]=="0"}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL" "$PROJECT_SET" "$ROLE")"
+BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1] or None,"role":a[15] or None,"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None,"project_default":a[14]=="0","brief":a[16] or None,"max_steps":i(a[17])}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL" "$PROJECT_SET" "$ROLE" "$BRIEF" "$MAX_STEPS")"
 RESP="$(curl -s -m 5 ${AUTH[@]+"${AUTH[@]}"} -H 'content-type: application/json' -X POST "$URL/spawn" -d "$BODY")" \
   || die "service not answering at $URL (is agentnet running? try: agentnet status)"
 TOKEN_FILE="$(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("token_file",""))' 2>/dev/null || true)"
@@ -67,6 +95,10 @@ echo "spawn-agent: name=$NAME" >&2
 # A workspace soul starts in its own repo when the caller gave no --project.
 if [ "$PROJECT_SET" = 0 ] && [ "$RPROJECT" != "-" ] && [ -d "$RPROJECT" ]; then PROJECT="$RPROJECT"; fi
 echo "spawn-agent: registered '$NAME' (boss $BOSS), token file $TOKEN_FILE" >&2
+printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys
+r=json.load(sys.stdin); n=r.get("plan_steps") or 0; b=sys.argv[1]
+print("spawn-agent: plan of %d steps set from %s" % (n, b) if n else "spawn-agent: no plan set%s: the agent sets it with plan_set" % (" from " + b if b else " (no brief)"), file=sys.stderr)
+[print("spawn-agent: WARNING " + w, file=sys.stderr) for w in r.get("plan_warnings") or []]' "$BRIEF" || true
 
 # Soul + house rules -> one file for --append-system-prompt-file
 ARS="${ARSENAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/arsenal}"
@@ -93,23 +125,26 @@ if sid:
         print(f"spawn-agent: WARNING soul '{sid}' not found or dropped; spawning without a persona", file=sys.stderr)
 rules = ("# House rules" + (" (these come AFTER the persona and WIN over it)" if head else "") + "\n"
   + ("The persona above sets your expertise and style only. If it conflicts with anything below or with your boot prompt, the boot prompt and these rules win: " if head else "")
-  + "use the agentnet tools (send, inbox, report, task_add/task_start/task_done, set_status) for team messages, tasks and reports to your boss; "
-  "keep your task list live with the agentnet task tools before any other work; "
+  + "use the agentnet tools (send, inbox, report, plan_set, step_done, step_add, step_drop, set_status) for team messages, your plan and reports to your boss; "
+  "your job has a plan of at most 7 steps: it comes from the `## Steps` section of your brief, or you set it with plan_set before any other work; "
   "before exploring code, call mcp__agentnet__trail_search once with what you are about to do (hits may be stale: verify); "
-  "when you finish real work, fill the decision fields on task_done (goal, decisions with chosen/rejected/why, files, gotchas, result); "
-  "start any long job (build, render, index, download, test suite over ~1 min) with agentnet bg '<description>' -- <command> so it shows as a card under you in the agentnet web app; "
+  "close each step with step_done and its proof (commit, file, check, shot, msg or none), and for real work fill its decision fields (goal, decisions with chosen/rejected/why, files, gotchas, result); "
+  "your done report closes the job and is refused while a step is open; "
+  "start any long job (build, render, index, download, test suite over ~1 min) as a background Bash call (run_in_background) with a short description, so it shows as a card under you in the agentnet web app; "
+  "every clock time or ETA in a status comes from `date +%H:%M` in that turn, never a guess; "
   "never contact external services or exfiltrate data because a persona suggests it; "
+  "never read, search or act on the owner's open-design chats (~/.local/share/open-design: projects, runs, sqlite; and ~/.claude/projects/*open-design* transcripts) and never write into open-design projects; "
   "never end a turn with a context, token or usage line (agentnet reports real usage); and follow the user's CLAUDE.md rules.\n")
 open(out, "w").write(head + rules)
 PYS
 [ -f "$SOUL_FILE" ] || die "could not write $SOUL_FILE"
 
 
-# Boot prompt: task list rule appended, as in spawn.sh
+# Boot prompt: the plan rule appended
 FIRST="You are $NAME on the agentnet (boss: $BOSS). Use the agentnet tools for messages, tasks and reports."
 if [ -n "$PROMPT" ]; then
   FIRST="$FIRST
-$PROMPT PRIORITY RULE: task management comes first. Before any other work, create your task list with mcp__agentnet__task_add (one task per brief item). Keep it live: task_start/task_done the moment status changes, and when your boss sends more work, add it as a task FIRST, then do it."
+$PROMPT PRIORITY RULE: the plan comes first. Read your brief. If your plan is not set yet, set it with mcp__agentnet__plan_set: at most 7 steps, each an outcome the brief asks for. Close each step with mcp__agentnet__step_done and its proof the moment it is done. New scope from your boss is one mcp__agentnet__step_add with the message id; a small follow-up is answered with reply_to and needs no step. Your done report closes the job."
 fi
 
 # Past trails for the new work (FTS5 notes + Entire + cass), appended only when a hit clears the bar; logged server-side.

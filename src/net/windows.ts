@@ -27,7 +27,11 @@ exit 0
 `;
 
 export interface Tmux { run: (args: string[]) => { code: number; out: string } }
-const tmuxBin = () => Bun.which("tmux");
+/** True inside `bun test`: the entry file is a test file. NODE_ENV alone is not enough, a shell can export its own value. */
+export const underTest = () => process.env.NODE_ENV === "test" || /\.(test|spec)\.[cm]?[jt]sx?$/.test(Bun.main);
+/** Under `bun test` the real tmux server is never touched: a test that despawns "mobile-dev-1" must not close a live
+ *  agent of that name. Tests that need tmux pass their own Tmux. */
+const tmuxBin = () => underTest() ? null : Bun.which("tmux");
 export const realTmux: Tmux = { run: (args) => { const t = tmuxBin(); if (!t) return { code: 127, out: "" }; const p = Bun.spawnSync([t, ...args]); return { code: p.exitCode, out: new TextDecoder().decode(p.stdout) }; } };
 
 const sessionExists = (s: string, t: Tmux) => t.run(["has-session", "-t", `=${s}`]).code === 0;

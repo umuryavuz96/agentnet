@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { bearer, problem, type Env } from "./http";
-import { rootByToken } from "../net/routes";
+import { agentByToken } from "../net/routes";
+import { hasSession, isPanelToken, isRootToken, isWriteMethod, panelLoginOff, sameOrigin } from "./auth";
 
 /** Peer address from Bun.serve: Hono passes the Bun server as c.env. null when unknown (app.request() without env) = not loopback. */
 export function peerOf(c: Context): string | null {
@@ -56,9 +57,37 @@ export function bindOk(host: string): boolean {
   return l === "::1" || l.startsWith("fd7a:115c:a1e0:");
 }
 
-/** For root-only routes outside the agent router (config writes in phase 5b): loopback peer, or Bearer = the live root agent's token. Else 403. */
-export const rootOnly: MiddlewareHandler<Env> = async (c, next) => {
+/** The caller of a panel route: "token" (panel.token, root.token or the live root agent's token), "agent" (another live agent's
+ *  token), "session" (a valid login cookie), "loopback" (house flag AGENTNET_PANEL_LOGIN=off, this machine), or null. */
+export type Cred = "token" | "agent" | "session" | "loopback" | null;
+export function panelCred(c: Context): Cred {
   const t = bearer(c);
-  if (!isLoopback(c) && !(t && rootByToken(t))) return problem(c, 403, "Forbidden", "root only");
+  if (t) {
+    if (isPanelToken(t) || isRootToken(t)) return "token";
+    const a = agentByToken(t);
+    if (a) return a.name === "root" ? "token" : "agent";
+  }
+  if (hasSession(c)) return "session";
+  if (panelLoginOff() && isLoopback(c)) return "loopback";
+  return null;
+}
+
+/** Panel auth on the api app: agent paths go on to their own token check (routes.ts); every other route needs a credential. */
+export const requireAuth = (agentOwned: (path: string) => boolean): MiddlewareHandler<Env> => async (c, next) => {
+  if (agentOwned(c.req.path)) return next();
+  const k = panelCred(c);
+  if (!k) return problem(c, 401, "Unauthorized", "agentnet: sign in (run `agentnet login`) or send a token");
+  if (k === "session" && isWriteMethod(c.req.method) && !sameOrigin(c)) return problem(c, 403, "Forbidden", "cross-site write refused");
+  if (k === "agent" && isWriteMethod(c.req.method)) return problem(c, 403, "Forbidden", "agent tokens are read-only on panel routes");
+  c.set("auth", k);
   await next();
+};
+
+/** Panel writes: a panel or root token; a login cookie from the same origin; or, with AGENTNET_PANEL_LOGIN=off only, this machine. Else 403. */
+export const rootOnly: MiddlewareHandler<Env> = async (c, next) => {
+  const k = c.get("auth") ?? panelCred(c);
+  if (k === "token" || k === "loopback") return next();
+  if (panelLoginOff() && isLoopback(c)) return next();
+  if (k === "session" && sameOrigin(c)) return next();
+  return problem(c, 403, "Forbidden", k === "session" ? "cross-site write refused" : "root only");
 };

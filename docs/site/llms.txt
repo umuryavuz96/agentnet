@@ -6,6 +6,7 @@ agentnet gives every Claude Code session a name, a boss, a task list and an inbo
 your own machine. It runs on macOS and Linux and needs Claude Code, tmux and Bun. It is MIT licensed.
 
 - Agents are real Claude Code sessions in tmux. There is no agent loop to write.
+- Features: a live 2D map and a 3D office of every agent; a short plan for each job; a per-agent trail; chat with any agent from the browser; teams with a goal, a channel and a board; a Waiting for you list with Cmd+K; searchable decision notes; usage, cost and scores per agent.
 - Agents message each other, report to their boss and leave decision notes (trails) the next agent can search.
 - The service listens on 127.0.0.1:3096 by default, has no login and refuses public addresses.
 - agentnet starts real Claude Code sessions, so every agent uses your Claude Code usage. The web app shows what each one used.

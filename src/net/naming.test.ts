@@ -71,3 +71,10 @@ describe("agent numbers", () => {
     expect(plan.body.plan.name).toBe("reviewer-1");
   });
 });
+
+describe("tests and the real tmux server", () => {
+  test("the default tmux runner answers as if tmux were missing, so a despawn in a test cannot close a live agent of the same name", async () => {
+    const { realTmux } = await import("./windows");
+    expect(realTmux.run(["list-sessions"])).toEqual({ code: 127, out: "" });
+  });
+});

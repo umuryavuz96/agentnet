@@ -8,7 +8,10 @@ import { db } from "../core/db";
 import { ROOT } from "../core/config";
 import { cleanPrompt, firstPrompt, format, inject, reindex, search, terms, type InjectResult, type Resolver, type TrailHit } from "./trails";
 
-export const CASS_BIN = process.env.CASS_BIN ?? join(homedir(), ".local", "bin", "cass");
+/** Sessions the owner runs in open-design (its project folders under .local/share/open-design) are private: never returned to agents.
+ *  Matches the workspace path and Claude Code's transcript slug of it. Extra patterns: AGENTNET_TRAIL_PRIVATE (regex). */
+const PRIVATE_SESSION_RE = new RegExp(["[./-]local[/-]share[/-]open-design", process.env.AGENTNET_TRAIL_PRIVATE].filter(Boolean).join("|"));
+export const CASS_BIN =process.env.CASS_BIN ?? join(homedir(), ".local", "bin", "cass");
 export const cassDataDir = () => join(ROOT, "data", "cass");
 /** cass loads a .env from its cwd and parents (dotenvy): run it from a dir outside ~ so ~/.env never enters its process. */
 const CASS_CWD = "/private/tmp/cass-cwd";
@@ -95,6 +98,7 @@ async function cassRun(ts: string[], n: number, repo?: string): Promise<TrailHit
     const seen = new Set<string>(), res: TrailHit[] = [];
     for (const h of hits) {
       const src = h.source_path ?? ""; if (!src || seen.has(src)) continue; seen.add(src); // one hit per session
+      if (PRIVATE_SESSION_RE.test(src) || PRIVATE_SESSION_RE.test(h.workspace ?? "")) continue; // owner's own design chats stay out of agents' reach
       const snippet = plain(h.snippet ?? "").slice(0, 300), title = titleOf(src, plain(h.title ?? "")) || snippet.slice(0, 120);
       const low = `${title} ${snippet}`.toLowerCase();
       res.push({ id: `cass:${basename(src)}:${h.line_number ?? 0}`, kind: "cass", repo: h.workspace ?? "", date: h.created_at ? new Date(h.created_at).toISOString().slice(0, 10) : "",

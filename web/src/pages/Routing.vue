@@ -3,6 +3,8 @@
 // (the same file scripts/pick-model.sh reads), and the recent decisions it logged. Save checks every value on the
 // server, backs the file up and writes it atomically; the 90% reserve cannot be set lower.
 import { ref, computed, onMounted, onUnmounted } from "vue";
+import { route, toHash } from "../router";
+import { pickCounts } from "../pickCounts";
 import { api, ago, toast } from "../ui/api";
 import Icon from "../ui/Icon.vue";
 import BentoCard from "../ui/BentoCard.vue";
@@ -48,12 +50,16 @@ async function saveCw() {
   catch (e) { cwErr.value = (e as Error).message; } finally { cwSaving.value = false; }
 }
 async function load() { try { data.value = await api<Res>("v1/panel/routing"); } catch (e) { err.value = (e as Error).message; } }
+/** One bar saves both: the routing file, then (own endpoint) the compact window. */
 async function save() {
-  if (!dirty.value.length || saving.value) return; saving.value = true; err.value = "";
-  try { data.value = await api<Res>("v1/panel/routing", { method: "PUT", body: { changes: Object.fromEntries(dirty.value.map((p) => [p, draft.value[p]])) } }); draft.value = {}; toast("Routing saved"); }
-  catch (e) { err.value = (e as Error).message; } finally { saving.value = false; }
+  if ((!dirty.value.length && !cwDirty.value) || saving.value) return; saving.value = true; err.value = "";
+  try {
+    if (dirty.value.length) { data.value = await api<Res>("v1/panel/routing", { method: "PUT", body: { changes: Object.fromEntries(dirty.value.map((p) => [p, draft.value[p]])) } }); draft.value = {}; }
+    if (cwDirty.value) await saveCw();
+    if (cwErr.value) err.value = cwErr.value; else toast("Routing saved");
+  } catch (e) { err.value = (e as Error).message; } finally { saving.value = false; }
 }
-const discard = () => { draft.value = {}; err.value = ""; };
+const discard = () => { draft.value = {}; err.value = ""; cwErr.value = ""; if (cw.value) cwFill(cw.value); };
 let poll: ReturnType<typeof setInterval>; onMounted(() => { load(); loadCw(); poll = setInterval(load, 60_000); }); onUnmounted(() => clearInterval(poll));
 /** The four-step track: normal up to careful, careful up to eco, eco up to reserve, reserve to 100. Fill per step follows usagePct. */
 const steps = computed(() => {
@@ -116,20 +122,87 @@ const roleRows = (l: Field[]) => {
   const ord = (f: Field) => ["points", "writes", "light"].findIndex((k) => f.path.includes(k));
   return [...m.entries()].map(([role, fields]) => ({ role, hint: fields.find((f) => f.hint)?.hint, fields: fields.sort((a, b) => ord(a) - ord(b)) }));
 };
+/** Six open groups in three columns (board 10, Rules at 1920). */
+const COLS = [[["Scoring"], ["Expectation points", "Expectation words"], ["Risk floors"]], [["Usage modes"]], [["Roles"], ["Score bands"]]];
+const cols = computed(() => { const m = new Map(groups.value); return COLS.map((c) => c.map((s) => s.filter((g) => m.has(g)).map((g) => [g, m.get(g)!] as [string, Field[]])).filter((s) => s.length)); });
+const secTitle = (sec: [string, Field[]][]) => (sec[0][0] === "Scoring" ? "Score points per step" : sec[0][0] === "Expectation points" ? "Expectation" : sec[0][0] === "Risk floors" ? "Risk floors and compact window" : sec[0][0]);
+const show = (v: unknown): string => (Array.isArray(v) ? (v.length && typeof v[0] === "object" ? `${v.length} bands` : `${v.length} words`) : typeof v === "boolean" ? (v ? "on" : "off") : String(v));
+const nChg = computed(() => dirty.value.length + (cwDirty.value ? 1 : 0));
+const dirtyText = computed(() => [...dirty.value.map((p) => { const f = data.value?.fields.find((x) => x.path === p); return f ? `${lab(f).toLowerCase()} ${show(f.value)} to ${show(draft.value[p])}` : p; }), ...(cwDirty.value ? [`compact window ${cw.value?.default ?? ""} to ${cwDef.value}k`] : [])].join(", "));
 const wide = (l: Field[]) => l.some((f) => f.type === "bands" || f.type === "string[]");
 const changes = (l: Field[]) => l.filter((f) => dirty.value.includes(f.path)).length;
 const when = (ts: string) => ago(Date.parse(ts) / 1000);
 const MODE_NOTE: Record<string, string> = { normal: "Full rubric: every agent gets the model its score says.", careful: "One effort level lower; Fable falls back to Opus unless asked for.", eco: "Builders max Sonnet, light roles Haiku, one team of at most three agents.", reserve: "No new heavy work. Chat and light checks only." };
+
+/** Picks (default) and Rules are two views of one page: #/routing and #/routing?view=rules. */
+const view = computed(() => (route.value.query.view === "rules" ? "rules" : "picks"));
+function setView(v: "picks" | "rules") { route.value = { page: "routing", query: v === "rules" ? { view: "rules" } : {} }; history.replaceState(null, "", toHash(route.value)); }
+const RANK = ["haiku", "sonnet", "opus", "fable"], ERANK = ["low", "medium", "high", "xhigh", "max"];
+const bandList = computed(() => ((data.value?.fields.find((f) => f.path === "bands")?.value ?? []) as Band[]));
+const bandIdx = (score: number | null) => (score == null ? -1 : bandList.value.findIndex((b) => b.max_score === null || score <= b.max_score));
+interface Pick { id: string; d: Decision; band: Band | null; changed: boolean; owner: boolean; tag: string }
+const picks = computed<Pick[]>(() => (data.value?.decisions ?? []).map((d) => {
+  const band = bandList.value[bandIdx(d.score)] ?? null, owner = /explicit:/.test(d.reason);
+  const changed = !!band && (band.model !== d.model || band.effort !== d.effort);
+  const lowerModel = !!band && RANK.indexOf(d.model) < RANK.indexOf(band.model);
+  const tag = owner ? `owner asked ${d.model}` : changed ? `${d.mode} ${lowerModel ? "capped" : "lowered effort"}` : "";
+  return { id: d.ts + d.agent, d, band, changed, owner, tag };
+}));
+const cnt = computed(() => pickCounts(picks.value));
+const openPick = ref<string | null>(null);
+const pickedPick = computed(() => picks.value.find((p) => p.id === openPick.value) ?? null);
+const fval = (p: string) => data.value?.fields.find((f) => f.path === p)?.value;
+/** Eco is the only mode with a model ceiling: builders max Sonnet, effort max medium (both read from the saved rules). */
+const ceiling = computed(() => (data.value?.mode.mode === "eco" ? { model: String(fval("usage.modes.eco.builder_max_model") ?? "sonnet"), effort: String(fval("usage.modes.eco.max_effort") ?? "medium") } : null));
+const ceilText = computed(() => (ceiling.value ? `eco ceiling: ${ceiling.value.model}, ${ceiling.value.effort}` : ""));
+const above = (b: Band) => !!ceiling.value && (RANK.indexOf(b.model) > RANK.indexOf(ceiling.value.model) || (RANK.indexOf(b.model) === RANK.indexOf(ceiling.value.model) && ERANK.indexOf(b.effort) > ERANK.indexOf(ceiling.value.effort)));
+/** Ladder rows, top band first; the ceiling line is drawn above the first step that is not struck. */
+const bandRows = computed(() => {
+  const bl = bandList.value; let seenOk = false;
+  const rows = bl.map((b, i) => {
+    const lo = i === 0 ? null : (bl[i - 1].max_score ?? 0) + 1;
+    const range = b.max_score === null ? `${lo} +` : lo === null ? `up to ${b.max_score}` : lo === b.max_score ? `${lo}` : `${lo} to ${b.max_score}`;
+    return { model: b.model, effort: b.effort, range, struck: above(b), n: picks.value.filter((p) => bandIdx(p.d.score) === i).length, ceilingAbove: false };
+  }).reverse();
+  for (const r of rows) { if (!r.struck && !seenOk && ceiling.value) { r.ceilingAbove = rows.some((x) => x.struck); seenOk = true; } }
+  return rows;
+});
+/** Score sum rebuilt from the log line ("scope4 nov2 risk1 mobile-dev+1 expect:normal") and the saved point steps. */
+const pickedSum = computed(() => {
+  const d = pickedPick.value?.d; if (!d) return { rows: [] as { l: string; v: string }[] };
+  const n = (re: RegExp) => { const m = d.reason.match(re); return m ? Number(m[1]) : null; };
+  const sg = (v: number) => (v >= 0 ? "+" : "−") + Math.abs(v);
+  const scope = n(/scope(\d)/), nov = n(/nov(\d)/), risk = n(/risk(\d)/), role = d.reason.match(/\b([a-z][a-z0-9-]*)([+-]\d+)\b/), ex = d.reason.match(/expect:(\w+)/)?.[1];
+  const rows: { l: string; v: string }[] = [];
+  if (scope != null) rows.push({ l: `Scope ${scope} (files and systems)`, v: sg((scope - 1) * Number(fval("points.scope_step") ?? 1)) });
+  if (nov != null) rows.push({ l: `Novelty ${nov}`, v: sg((nov - 1) * Number(fval("points.novelty_step") ?? 2)) });
+  if (risk != null) rows.push({ l: `Risk ${risk}`, v: sg(risk * Number(fval("points.risk_step") ?? 2)) });
+  if (role) rows.push({ l: `Role ${role[1]}`, v: sg(Number(role[2])) });
+  if (ex) rows.push({ l: `Expectation: ${ex}`, v: sg(Number(fval("expect." + ex) ?? 0)) });
+  return { rows };
+});
+function modeRule(d: Decision) {
+  const at = d.usage != null ? ` at ${Math.round(d.usage)}%` : "";
+  if (d.mode === "normal") return `Normal mode${at}: the score picks the model as it is.`;
+  const note = MODE_NOTE[d.mode] ?? "";
+  return `${d.mode[0].toUpperCase() + d.mode.slice(1)} mode${at}: ${note[0]?.toLowerCase() ?? ""}${note.slice(1)}`;
+}
 </script>
 
 <template>
-  <div class="page">
-    <header class="ph"><h1>Routing</h1></header>
-    <section class="ar" aria-label="Model routing">
-      <p v-if="data?.error" class="ar-err" role="alert">{{ data.error }}</p>
-      <p v-if="!data && err" class="ar-err" role="alert">{{ err }}</p>
-      <div class="bento bento-auto">
-        <BentoCard v-if="data" size="F" :title="`Mode ${data.mode.mode}, ${Math.round(data.mode.usagePct)}% used`" flat>
+  <div class="page rp" :class="{ pk: !!pickedPick && view === 'picks' }">
+    <header class="ph">
+      <div class="rp-ttl"><h1>Routing</h1><span v-if="data" class="rp-meta num">{{ data.mode.mode }} · {{ Math.round(data.mode.usagePct) }}% used</span></div>
+      <div class="rp-seg" role="tablist" aria-label="View">
+        <button type="button" role="tab" :aria-selected="view === 'picks'" @click="setView('picks')">Picks</button>
+        <button type="button" role="tab" :aria-selected="view === 'rules'" @click="setView('rules')">Rules<span v-if="dirty.length" class="rp-dot" aria-label="unsaved changes" /></button>
+      </div>
+    </header>
+    <p v-if="data?.error" class="ar-err" role="alert">{{ data.error }}</p>
+    <p v-if="!data && err" class="ar-err" role="alert">{{ err }}</p>
+    <section v-if="view === 'picks'" class="rp-picks" aria-label="Model picks">
+      <div class="rp-left">
+        <BentoCard v-if="data" title="Mode now" flat>
           <template #control><span v-if="data.mode.override" class="ar-tag">reserve override on</span></template>
           <div class="rt-wrap">
             <div class="rt" role="meter" aria-label="Usage and routing mode" :aria-valuenow="Math.round(data.mode.usagePct)" aria-valuemin="0" aria-valuemax="100" :aria-valuetext="`${Math.round(data.mode.usagePct)} percent used, mode ${data.mode.mode}; careful from ${data.mode.thresholds.careful}, eco from ${data.mode.thresholds.eco}, reserve from ${data.mode.thresholds.reserve}`">
@@ -144,46 +217,64 @@ const MODE_NOTE: Record<string, string> = { normal: "Full rubric: every agent ge
           <p class="ar-note">{{ MODE_NOTE[data.mode.mode] }}<template v-if="data.mode.pace"> Raised one step because {{ data.mode.pace }}.</template></p>
           <template #foot><span class="ar-lock2"><Icon name="lock" :size="12" /> Reserve from {{ data.mode.thresholds.reserve }}% is a fixed rule and cannot be set lower.</span> Source {{ data.mode.source }}.</template>
         </BentoCard>
-
-        <BentoCard v-if="data" size="F" title="Recent decisions" flat>
-          <div class="sh-w">
-            <div class="sh-t">Model picks, last {{ data.decisions.length }}</div>
-            <div v-if="share.filter((x) => x.n).length > 1" class="sh" role="img" :title="`${data.decisions.length} of ${data.decisions.length}`" :aria-label="'Model share of the last ' + data.decisions.length + ' decisions: ' + share.map((x) => `${x.k} ${x.n}`).join(', ')">
-              <i v-for="x in share.filter((y) => y.n)" :key="x.k" :class="'m-' + x.k" :style="{ flex: x.n + ' 1 0' }" />
-            </div>
-            <ul class="sh-k"><li v-for="x in share" :key="x.k" :class="{ zero: !x.n }"><i :class="'m-' + x.k" /><span>{{ x.k }}</span><b class="num">{{ x.n }}</b></li></ul>
-          </div>
-          <div class="ar-dec" role="list" aria-label="Recent routing decisions" tabindex="0">
-            <p v-if="!data.decisions.length" class="ar-h">– Nothing logged yet.</p>
-            <div v-for="d in data.decisions" :key="d.ts + d.agent" class="ar-d" role="listitem" :class="{ bad: d.status !== 'ok' }" :title="d.reason">
-              <span class="ar-da"><b>{{ d.agent || "—" }}</b><small v-if="d.job" :title="d.job">{{ d.job }}</small></span>
-              <span class="ar-dm">
-                <span class="ar-pill"><i :class="'m-' + d.model" />{{ d.model }}</span>
-                <span class="ar-pill dim">{{ d.effort }}</span>
-                <span class="num ar-ds">score {{ d.score ?? "—" }}</span>
-                <span class="ar-pill" :class="{ diff: d.mode !== data.mode.mode }">{{ d.mode }}</span>
+        <section v-if="data && bandRows.length" class="rp-card rp-lad" aria-label="Score to model">
+          <h2>Score to model, and what {{ data.mode.mode }} allows</h2>
+          <ul>
+            <template v-for="(r, i) in bandRows" :key="i">
+              <li v-if="r.ceilingAbove" class="rp-ceil"><span>{{ ceilText }}</span></li>
+              <li class="rp-st"><span class="num rp-rg">{{ r.range }}</span><span class="rp-bar" :class="{ cut: r.struck }">{{ r.model }} · {{ r.effort }}</span><span class="rp-cn">{{ r.n ? r.n + " of the last " + picks.length : "none lately" }}</span></li>
+            </template>
+          </ul>
+          <p v-if="ceilText" class="rp-ft">Struck-through steps are above the {{ data.mode.mode }} ceiling, so they run lower unless the owner names a model.</p>
+        </section>
+      </div>
+      <section class="rp-card rp-list" aria-label="Last picks">
+        <h2>Last {{ picks.length }} picks: <b>{{ cnt.mode }}</b> changed by the mode, <b>{{ cnt.owner }}</b> named by the owner, <b>{{ cnt.kept }}</b> kept their band</h2>
+        <p v-if="data && !picks.length" class="rp-ft">Nothing logged yet.</p>
+        <ul class="rp-rows" role="list">
+          <li v-for="p in picks" :key="p.id" :class="{ on: openPick === p.id }">
+            <button type="button" :aria-expanded="openPick === p.id" :aria-label="`${p.d.agent}: why it got ${p.d.model} ${p.d.effort}`" @click="openPick = openPick === p.id ? null : p.id">
+              <span class="rp-l1"><b>{{ p.d.agent || "unknown" }}</b><span class="rp-sc num">score {{ p.d.score ?? "n/a" }}</span><span class="rp-sc num">{{ p.d.mode }}<template v-if="p.d.usage != null"> · {{ Math.round(p.d.usage) }}%</template></span><span class="rp-when num">{{ when(p.d.ts) }}</span></span>
+              <span class="rp-l2">
+                <template v-if="p.changed && p.band"><s class="rp-was">{{ p.band.model }} · {{ p.band.effort }}</s><Icon name="arrow-right" :size="13" /></template>
+                <span class="rp-ran"><i :class="'m-' + p.d.model" />{{ p.d.model }} · {{ p.d.effort }}</span>
+                <span v-if="p.tag" class="rp-tag" :class="{ own: p.owner }">{{ p.tag }}</span>
               </span>
-              <span class="ar-dt num">{{ when(d.ts) }}</span>
-              <span class="ar-sr">Reason: {{ d.reason }}</span>
-            </div>
-          </div>
-        </BentoCard>
-
-        <BentoCard v-for="[g, list] in groups" :key="g" :size="fullW(g) ? 'F' : 'L'" :title="g" flat head-click class="ar-grp" :class="{ shut: isShut(g, list) }" @head="toggle(g)">
-          <template #control>
-            <span class="ar-sum hd">{{ summary(g, list) }}</span>
-            <span v-if="changes(list)" class="ar-cc num"><i class="ar-dot" />{{ changes(list) }} changed</span>
-            <button type="button" class="ar-tg" :aria-expanded="!isShut(g, list)" :aria-label="`${g}: ${isShut(g, list) ? 'expand' : 'collapse'}`" @click="toggle(g)"><Icon name="chevron-down" :size="16" class="ar-chev" /></button>
-          </template>
-          <p v-if="isShut(g, list)" class="ar-sum bd">{{ summary(g, list) }}</p>
-          <div class="ar-gb"><div class="ar-gi" :inert="isShut(g, list) || undefined">
+            </button>
+          </li>
+        </ul>
+      </section>
+      <aside v-if="pickedPick" class="rp-pane" aria-label="Why this pick">
+        <header><span class="rp-eb"><Icon name="sliders" :size="14" /> Pick · {{ when(pickedPick.d.ts) }}</span><button type="button" class="rp-x" aria-label="Close" @click="openPick = null"><Icon name="circle-x" :size="18" /></button></header>
+        <h2>Why {{ pickedPick.d.agent }} got {{ pickedPick.d.model }} · {{ pickedPick.d.effort }}</h2>
+        <ul v-if="pickedSum.rows.length" class="rp-sum">
+          <li v-for="r in pickedSum.rows" :key="r.l"><span>{{ r.l }}</span><b class="num">{{ r.v }}</b></li>
+          <li class="tot"><span>Score</span><b class="num">{{ pickedPick.d.score ?? "n/a" }}</b></li>
+        </ul>
+        <p v-else class="rp-ft">This pick has no score breakdown in its log line.</p>
+        <ol class="rp-steps">
+          <li><i>1</i><span>Score {{ pickedPick.d.score ?? "n/a" }} falls in the band for <code>{{ pickedPick.band ? pickedPick.band.model + " · " + pickedPick.band.effort : "unknown" }}</code>.</span></li>
+          <li><i>2</i><span>{{ modeRule(pickedPick.d) }}</span></li>
+          <li class="last"><i>3</i><span>Ran as <code>{{ pickedPick.d.model }} · {{ pickedPick.d.effort }}</code>.</span></li>
+        </ol>
+        <div class="rp-acts"><a class="rp-btn" :href="'#/agents?agent=' + encodeURIComponent(pickedPick.d.agent)"><Icon name="arrow-right" :size="14" /> Open {{ pickedPick.d.agent }}</a><button type="button" class="rp-btn" @click="setView('rules')"><Icon name="sliders" :size="14" /> See the rules</button></div>
+      </aside>
+    </section>
+    <section v-else class="ar rp-rules" :class="{ bar: nChg || err }" aria-label="Model routing rules">
+      <div class="rr">
+        <div v-for="(col, ci) in cols" :key="ci" class="rr-col">
+          <section v-for="sec in col" :key="sec[0][0]" class="rr-g" :aria-label="secTitle(sec)">
+            <h2>{{ secTitle(sec) }}<span v-if="sec.some(([, l]) => changes(l))" class="ar-cc num"><i class="ar-dot" />{{ sec.reduce((n, [, l]) => n + changes(l), 0) }} changed</span></h2>
+            <div v-for="[g, list] in sec" :key="g" class="rr-s">
+              <h3 v-if="sec.length > 1">{{ g.replace("Expectation ", "") }}</h3>
+              <div class="ar-gi">
             <table v-if="isRoles(g)" class="ar-rt"><thead><tr><th>Role</th><th>Points</th><th>Writes code</th><th>Light role</th></tr></thead>
               <tbody><tr v-for="r in roleRows(list)" :key="r.role" :class="{ changed: r.fields.some((f) => dirty.includes(f.path)) }">
                 <th scope="row" :title="r.hint">{{ r.role }}</th>
                 <td v-for="f in r.fields" :key="f.path">
                   <div v-if="f.type === 'int' || f.type === 'float'" class="ar-step">
                     <button type="button" :aria-label="`${r.role} points less`" :disabled="f.min !== undefined && cur(f) <= f.min" @click="bump(f, -1)">−</button>
-                    <input type="number" inputmode="decimal" :aria-label="`${r.role} points`" :min="f.min" :max="f.max" :value="cur(f)" @change="typed(f, $event)" />
+                    <input :key="cur(f)" class="roll" type="number" inputmode="decimal" :aria-label="`${r.role} points`" :min="f.min" :max="f.max" :value="cur(f)" @change="typed(f, $event)" />
                     <button type="button" :aria-label="`${r.role} points more`" :disabled="f.max !== undefined && cur(f) >= f.max" @click="bump(f, 1)">+</button>
                   </div>
                   <button v-else type="button" class="sw" role="switch" :aria-checked="!!cur(f)" :aria-label="`${r.role}: ${f.label.split(':').pop()?.trim()}`" @click="set(f, !cur(f))"></button>
@@ -193,9 +284,10 @@ const MODE_NOTE: Record<string, string> = { normal: "Full rubric: every agent ge
             <div v-for="f in sec.fields" :key="f.path" class="ar-row" :class="{ changed: dirty.includes(f.path), wide: f.type === 'bands' || f.type === 'string[]' }">
               <div class="ar-l"><label :for="'f-' + f.path" class="ar-lt">{{ lab(f) }}</label><p v-if="f.hint" class="ar-h">{{ f.hint }}</p><p v-if="f.locked" class="ar-lock"><Icon name="lock" :size="11" /> {{ f.locked }}</p></div>
               <div class="ar-c">
-                <div v-if="f.type === 'int' || f.type === 'float'" class="ar-step">
+                <div v-if="f.path === 'usage.modes.reserve.min_pct'" class="ar-fix"><Icon name="lock" :size="13" /> fixed at <b class="num">{{ cur(f) }}%</b></div>
+                <div v-else-if="f.type === 'int' || f.type === 'float'" class="ar-step">
                   <button type="button" aria-label="Less" :disabled="f.min !== undefined && cur(f) <= f.min" @click="bump(f, -1)">−</button>
-                  <input :id="'f-' + f.path" type="number" inputmode="decimal" :min="f.min" :max="f.max" :step="f.type === 'float' ? 0.05 : 1" :value="cur(f)" @change="typed(f, $event)" />
+                  <input :key="cur(f)" class="roll" :id="'f-' + f.path" type="number" inputmode="decimal" :min="f.min" :max="f.max" :step="f.type === 'float' ? 0.05 : 1" :value="cur(f)" @change="typed(f, $event)" />
                   <button type="button" aria-label="More" :disabled="f.max !== undefined && cur(f) >= f.max" @click="bump(f, 1)">+</button>
                 </div>
                 <button v-else-if="f.type === 'bool'" :id="'f-' + f.path" type="button" class="sw" role="switch" :aria-checked="!!cur(f)" :aria-label="lab(f)" @click="set(f, !cur(f))"></button>
@@ -218,17 +310,11 @@ const MODE_NOTE: Record<string, string> = { normal: "Full rubric: every agent ge
               </div>
             </div>
             </div>
-          </div></div>
-        </BentoCard>
-
-        <BentoCard v-if="cw" size="F" title="Auto-compact window" flat head-click class="ar-grp" :class="{ shut: cwShut && !cwDirty }" @head="cwShut = !cwShut">
-          <template #control>
-            <span class="ar-sum hd">Default {{ cwDef }}k · {{ cwRoles.length }} {{ cwRoles.length === 1 ? "override" : "overrides" }}</span>
-            <span v-if="cwDirty" class="ar-cc num"><i class="ar-dot" />changed</span>
-            <button type="button" class="ar-tg" :aria-expanded="!(cwShut && !cwDirty)" :aria-label="`Auto-compact window: ${cwShut ? 'expand' : 'collapse'}`" @click="cwShut = !cwShut"><Icon name="chevron-down" :size="16" class="ar-chev" /></button>
-          </template>
-          <p v-if="cwShut && !cwDirty" class="ar-sum bd">Default {{ cwDef }}k · {{ cwRoles.length }} {{ cwRoles.length === 1 ? "override" : "overrides" }}</p>
-          <div class="ar-gb"><div class="ar-gi" :inert="(cwShut && !cwDirty) || undefined">
+          </div>
+            </div>
+            <div v-if="ci === 0 && sec[0][0] === 'Risk floors' && cw" class="rr-s">
+              <h3>Auto-compact window</h3>
+              <div class="ar-gi">
             <p class="ar-h cw-note">Each new agent compacts its context at this size, so the context card divides by it. Changes apply to new spawns only; agents already running keep the window they started with. <span class="num">{{ cw.min }} to {{ cw.max }}</span>.</p>
             <div class="ar-row">
               <div class="ar-l"><label for="cw-def" class="ar-lt">Default window</label><p class="ar-h">Used by every role without an override. The AGENT_COMPACT_WINDOW variable still wins at spawn.</p></div>
@@ -253,20 +339,18 @@ const MODE_NOTE: Record<string, string> = { normal: "Full rubric: every agent ge
                 <button type="button" class="ar-add" :disabled="cwRoles.length >= 20" @click="cwRoles = [...cwRoles, { role: '', k: cwDef }]">+ Add override</button>
               </div>
             </div>
-            <div class="cw-foot">
-              <span v-if="cwErr" class="ar-sm bad" role="alert">{{ cwErr }}</span>
-              <button type="button" class="ar-b" :disabled="cwSaving || !cwDirty" @click="cw && cwFill(cw)">Discard</button>
-              <button type="button" class="ar-b go" :disabled="cwSaving || !cwDirty" @click="saveCw">{{ cwSaving ? "Saving…" : "Save window" }}</button>
+            <p v-if="cwErr" class="ar-sm bad" role="alert">{{ cwErr }}</p>
+          </div>
             </div>
-          </div></div>
-        </BentoCard>
+          </section>
+        </div>
       </div>
 
       <Transition name="ar-bar">
-        <div v-if="dirty.length || err" class="ar-save" role="region" aria-label="Unsaved changes">
-          <span class="ar-sm" :class="{ bad: err }">{{ err || `${dirty.length} change${dirty.length > 1 ? "s" : ""} not saved` }}</span>
+        <div v-if="nChg || err" class="ar-save" role="region" aria-label="Unsaved changes">
+          <span class="ar-sm" :class="{ bad: err }">{{ err || `${nChg} change${nChg > 1 ? "s" : ""}: ${dirtyText}` }}</span>
           <button type="button" class="ar-b" :disabled="saving" @click="discard">Discard</button>
-          <button type="button" class="ar-b go" :disabled="saving || !dirty.length" @click="save">{{ saving ? "Saving…" : "Save" }}</button>
+          <button type="button" class="ar-b go" :disabled="saving || !nChg" @click="save">{{ saving ? "Saving…" : "Save" }}</button>
         </div>
       </Transition>
     </section>
@@ -307,6 +391,7 @@ const MODE_NOTE: Record<string, string> = { normal: "Full rubric: every agent ge
 .ar-gb{display:grid;grid-template-rows:1fr;transition:grid-template-rows .26s cubic-bezier(.2,.8,.2,1)}
 .ar-grp.shut .ar-gb{grid-template-rows:0fr}
 .ar-gi{overflow:hidden;min-height:0}
+.ar-grp.shut .ar-gi{visibility:hidden;transition:visibility 0s .26s}
 .ar-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 0;border-top:1px solid var(--line)}
 .ar-gi > .ar-row:first-child{border-top:0}
 .ar-row.wide{flex-direction:column;align-items:stretch;gap:8px}
@@ -378,10 +463,98 @@ const MODE_NOTE: Record<string, string> = { normal: "Full rubric: every agent ge
 .ar-sm{flex:1;font:500 13px var(--body)}
 .ar-b{min-height:44px;padding:0 16px;border-radius:9px;border:1px solid var(--line);background:none;color:var(--ink);font:600 13px var(--body);cursor:pointer}
 .ar-b.go{background:var(--ink);color:var(--bg);border-color:var(--ink)}.ar-b:disabled{opacity:.5;cursor:default}
-.ar-bar-enter-active,.ar-bar-leave-active{transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .2s}
+.ar-bar-enter-active,.ar-bar-leave-active{transition:transform .2s cubic-bezier(.2,.8,.2,1),opacity .2s}
 .ar-bar-enter-from,.ar-bar-leave-to{transform:translateY(16px);opacity:0}
 @media (max-width:700px){.ar-d{grid-template-columns:minmax(0,1fr) auto;row-gap:4px;padding:8px 0}.ar-dm{grid-column:1/-1;grid-row:2;display:flex;align-items:center;flex-wrap:wrap;gap:8px}.ar-dt{grid-column:2;grid-row:1}.ar-row:not(.wide){flex-wrap:wrap}.ar-sum.hd{display:none}}
 @media (min-width:701px){.ar-sum.bd{display:none}}
 @media (max-width:420px){.ar-row:not(.wide){flex-direction:column;align-items:stretch;gap:8px}.ar-row:not(.wide) .ar-c{flex:none}}
 @media (prefers-reduced-motion:reduce){.ar-gb,.rt-b i,.rt-w i,.ar-bar-enter-active,.ar-bar-leave-active,.ar-chev{transition:none;animation:none}}
+
+.rp{flex:1;min-height:0;gap:12px}
+.rp-ttl{display:flex;align-items:baseline;gap:12px}.rp-meta{color:var(--muted);font-size:13px}.num{font-variant-numeric:tabular-nums}
+.rp-seg{display:inline-flex;padding:3px;border-radius:10px;border:1px solid var(--line);background:var(--panel)}
+.rp-seg button{all:unset;box-sizing:border-box;position:relative;min-height:38px;padding:0 16px;display:inline-flex;align-items:center;border-radius:8px;font:600 13px var(--body);color:var(--muted);cursor:pointer}
+.rp-seg button[aria-selected="true"]{background:var(--track);color:var(--ink)}
+.rp-seg button:focus-visible,.rp-rows button:focus-visible,.rp-x:focus-visible,.rp-btn:focus-visible{outline:2px solid var(--on);outline-offset:2px}
+.rp-dot{width:7px;height:7px;border-radius:50%;background:var(--warn);margin-left:6px}
+.rp-picks{flex:1;min-height:0;display:grid;grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(300px,440px) minmax(0,1fr);gap:12px}
+.pk .rp-picks{grid-template-columns:minmax(280px,380px) minmax(0,1fr) 420px}
+.rp-left{display:flex;flex-direction:column;gap:12px;min-height:0;overflow-y:auto}
+.rp-card{padding:14px 16px;border-radius:14px;border:1px solid var(--line);background:var(--panel);min-width:0}
+.rp-card h2{margin:0 0 10px;font:600 12.5px/1.4 var(--body);color:var(--muted)}.rp-card h2 b{color:var(--ink)}
+.rp-lad ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.rp-st{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:10px;align-items:center;font:500 12px var(--mono)}
+.rp-rg{color:var(--muted)}
+.rp-bar{padding:4px 8px;border-radius:6px;background:var(--track);font:500 12px var(--mono)}
+.rp-bar.cut{text-decoration:line-through;color:var(--muted);background:repeating-linear-gradient(135deg,var(--track) 0 6px,transparent 6px 12px)}
+.rp-cn{color:var(--muted);font:400 12px var(--body)}
+.rp-ceil{border-top:2px dashed var(--warn);color:var(--warn);font:600 11.5px var(--body);text-align:right;padding-top:2px}
+.rp-ft{margin:8px 0 0;color:var(--muted);font:400 12.5px/1.45 var(--body)}
+.rp-list{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.rp-rows{list-style:none;margin:0;padding:0;overflow-y:auto;flex:1;min-height:0}
+.rp-rows li{border-top:1px solid var(--line)}.rp-rows li.on{background:var(--track);box-shadow:inset 3px 0 0 var(--ink)}
+.rp-rows button{all:unset;box-sizing:border-box;display:grid;gap:6px;width:100%;padding:12px 8px 12px 12px;cursor:pointer}
+.rp-l1{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.rp-l1 b{font:600 14px var(--body);overflow-wrap:anywhere}
+.rp-sc{color:var(--muted);font:400 12.5px var(--body)}.rp-when{margin-left:auto;color:var(--muted);font:400 12.5px var(--body)}
+.rp-l2{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font:500 12px var(--mono)}
+.rp-was{color:var(--muted)}
+.rp-ran{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:6px;background:var(--track)}
+.rp-ran i{width:8px;height:8px;border-radius:50%}
+.rp-tag{padding:2px 8px;border-radius:6px;font:600 11.5px var(--body);color:var(--warn);box-shadow:inset 0 0 0 1px var(--warn)}
+.rp-tag.own{color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+.rp-pane{min-height:0;overflow-y:auto;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--panel);display:grid;gap:12px;align-content:start}
+.rp-pane header{display:flex;align-items:center;justify-content:space-between;color:var(--muted);font:500 12.5px var(--body)}
+.rp-eb{display:inline-flex;align-items:center;gap:6px}
+.rp-x{all:unset;display:grid;place-items:center;width:44px;height:44px;margin:-8px -8px -8px 0;border-radius:10px;color:var(--muted);cursor:pointer}
+.rp-pane h2{margin:0;font:700 18px/1.3 var(--body);overflow-wrap:anywhere}
+.rp-sum{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.rp-sum li{display:flex;justify-content:space-between;gap:10px;padding:9px 12px;font:400 13px var(--body);color:var(--muted);border-top:1px solid var(--line)}.rp-sum li:first-child{border-top:0}
+.rp-sum li.tot{background:var(--track);color:var(--ink);font-weight:600}.rp-sum b{color:var(--ink)}
+.rp-steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.rp-steps li{display:flex;gap:10px;font:400 13px/1.45 var(--body)}
+.rp-steps i{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--muted);font:600 11px var(--body);font-style:normal}
+.rp-steps li.last i{background:var(--ink);color:var(--panel);box-shadow:none}
+.rp-steps code{font:500 12px var(--mono);padding:1px 6px;border-radius:5px;background:var(--track)}
+.rp-acts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:8px}
+.rp-btn{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 10px;border-radius:10px;box-shadow:inset 0 0 0 1px var(--line);font:600 13px var(--body);color:var(--ink);cursor:pointer;white-space:nowrap;min-width:0}
+.ar.rp-rules{flex:1;min-height:0;overflow:hidden;padding-bottom:12px}
+@media (max-width:1100px){.rp-picks,.pk .rp-picks{grid-template-columns:minmax(0,1fr) minmax(0,1.3fr)}.pk .rp-picks{grid-template-columns:minmax(0,1fr) 360px}.pk .rp-left{display:none}}
+@media (max-width:760px){
+  .rp-picks,.pk .rp-picks{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+  .rp-left{overflow:visible}.rp-lad{display:none}.pk .rp-left{display:flex}
+  .rp-pane{position:fixed;left:8px;right:8px;bottom:calc(68px + env(safe-area-inset-bottom));max-height:58vh;z-index:25;box-shadow:0 -8px 28px rgba(0,0,0,.35)}
+}
+
+.rr{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.rr-col{min-height:0;overflow-y:auto;display:grid;gap:12px;align-content:start}
+.rr-g{padding:14px 16px;border-radius:14px;border:1px solid var(--line);background:var(--panel);min-width:0}
+.rr-g h2{margin:0 0 6px;display:flex;align-items:center;justify-content:space-between;gap:8px;font:650 14px var(--body)}
+.rr-s h3{margin:10px 0 0;color:var(--muted);font:600 11.5px var(--body);text-transform:capitalize}
+.rr .ar-gi{overflow:visible}
+.rr .ar-row{padding:7px 0}
+.rr .ar-h{display:none}
+.rr .ar-row.wide .ar-h{display:block}
+.ar-fix{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;box-shadow:inset 0 0 0 1px var(--lock);color:var(--lock);font:600 13px var(--body)}
+.ar-step input.roll{animation:rr-roll .2s cubic-bezier(.2,.8,.2,1)}
+@keyframes rr-roll{from{transform:translateY(6px);opacity:0}to{transform:none;opacity:1}}
+.ar-save .ar-sm{overflow-wrap:anywhere}
+.rr .ar-chips,.rr .ar-row.wide .ar-c{min-width:0;max-width:100%}.rr .ar-chips input{min-width:0;width:110px;max-width:100%}.rr-g,.rr-s{min-width:0;overflow-x:clip}
+.rr .ar-gi,.rr .ar-sec.gen{display:block}
+.rr .ar-lt{text-transform:none}
+.rr .ar-sec h3{text-transform:none;letter-spacing:0;margin:10px 0 0}
+.rr .ar-row{padding:3px 0;gap:10px}.rr .ar-step button,.rr .ar-step input{height:30px}.rr-g{padding:12px 14px}.rr-col{gap:10px}
+.rr .ar-step input{width:48px}.rr .ar-rt th,.rr .ar-rt td{padding:3px 6px}
+.rr .ar-lock{display:none}
+.rr .ar-rt .ar-step button,.rr .ar-rt .ar-step input{height:28px}.rr .ar-rt .ar-step button{width:28px}.rr .ar-rt .ar-step input{width:38px}
+.rr .ar-rt .sw{transform:scale(.85)}.rr .ar-rt th,.rr .ar-rt td{padding:1px 6px}
+.rr .ar-band{gap:6px;padding:6px}@media (min-width:1101px){.rr .ar-band{flex-wrap:nowrap}.rr .ar-seg.sm{flex-wrap:nowrap}}.rr .ar-bl{width:auto;font-size:11px}.rr .ar-band input{width:40px;height:28px}.rr .ar-inf{width:40px}
+.rr .ar-seg.sm button{min-height:26px;padding:0 5px;font-size:11px}.rr .ar-bands .ar-x{padding:0 7px}
+.rr .cw-note{display:none}.rr .ar-bands{gap:5px}
+.rr .ar-h{display:none!important}
+.rr .ar-gi:has(.ar-sec ~ .ar-sec) .ar-sec:not(.gen) .ar-row{flex-direction:column;align-items:flex-start;gap:4px;padding:5px 0}
+.rr .ar-gi:has(.ar-sec ~ .ar-sec) .ar-sec:not(.gen) .ar-seg{flex-wrap:wrap}
+.rr .ar-gi:has(.ar-sec ~ .ar-sec) .ar-sec:not(.gen) .ar-seg button{min-height:26px;padding:0 8px}
+@media (min-width:1101px){.ar.rp-rules{position:relative;padding-bottom:0}.ar.rp-rules .ar-save{position:absolute;left:0;right:0;bottom:0;margin:0}.ar.rp-rules.bar .rr-col{padding-bottom:78px}}
+@media (max-width:1100px){.rr{grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;overflow-y:auto}.rr-col{overflow:visible}}
+@media (prefers-reduced-motion:reduce){.ar-step input.roll{animation:none}.ar-bar-enter-active,.ar-bar-leave-active{transition:opacity .2s}.ar-bar-enter-from,.ar-bar-leave-to{transform:none}}
 </style>

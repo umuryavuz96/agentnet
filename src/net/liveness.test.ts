@@ -14,10 +14,11 @@ const snap = (over: Partial<import("./store").Snapshot>) => ({ ...st.reduce(null
 beforeEach(() => { useDatabase(new Database(":memory:")); st._reset(); lv._reset(); });
 
 describe("decide", () => {
-  test("starting: failed only after 30 s without hello", () => {
-    expect(lv.decide(snap({}), { polling: false, lastPoll: null, pidAlive: null, recovering: false }, T0 + 29_000)).toBeNull();
-    expect(lv.decide(snap({}), { polling: false, lastPoll: null, pidAlive: null, recovering: false }, T0 + 31_000)).toEqual({ type: "AgentFailed", reason: "no hello within 30 s" });
-    expect(lv.decide(snap({}), { polling: false, lastPoll: null, pidAlive: null, recovering: true }, T0 + 31_000)).toBeNull(); // C: the restart grace comes first
+  test("starting: failed only after 180 s without hello (slow start on a loaded host is not a failure)", () => {
+    expect(lv.decide(snap({}), { polling: false, lastPoll: null, pidAlive: null, recovering: false }, T0 + 31_000)).toBeNull();
+    expect(lv.decide(snap({}), { polling: false, lastPoll: null, pidAlive: null, recovering: false }, T0 + 179_000)).toBeNull();
+    expect(lv.decide(snap({}), { polling: false, lastPoll: null, pidAlive: null, recovering: false }, T0 + 181_000)).toEqual({ type: "AgentFailed", reason: "no hello within 180 s" });
+    expect(lv.decide(snap({}), { polling: false, lastPoll: null, pidAlive: null, recovering: true }, T0 + 181_000)).toBeNull(); // C: the restart grace comes first
   });
   test("live: an open poll or a live pid keeps it; a dead pid after 1 s of silence is gone", () => {
     const s = snap({ life: "live", connectedAt: T0, pid: 5 });

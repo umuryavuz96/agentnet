@@ -53,3 +53,16 @@ export function buildRows(msgs: Msg[], items: FeedItem[], filter: Filter): Row[]
   flush();
   return out;
 }
+
+/** A run breaks after this gap, so an old header never covers a new thought. */
+export const RUN_MS = 5 * 60_000;
+/** Who a bubble row speaks as; null for rows that are not bubbles (steps, notes). */
+export function speaker(r: Row): string | null {
+  return r.type === "msg" ? `m:${r.m.from}>${r.m.to}` : r.type === "owner" ? "you" : r.type === "assistant" ? "agent" : null;
+}
+/** Runs of bubbles from one speaker: `first` carries the header, `last` closes the run. A run ends on another speaker,
+ *  any row between (step, note), a new day (`day` gives the day key) or a gap over RUN_MS. */
+export function runs(rows: Row[], day: (t: number) => string): { first: boolean; last: boolean }[] {
+  const joins = (a: Row | undefined, b: Row | undefined) => !!a && !!b && speaker(a) !== null && speaker(a) === speaker(b) && b.at - a.at <= RUN_MS && day(a.at) === day(b.at);
+  return rows.map((r, i) => (speaker(r) === null ? { first: false, last: false } : { first: !joins(rows[i - 1], r), last: !joins(r, rows[i + 1]) }));
+}

@@ -1,6 +1,6 @@
 {
   "name": "agentnet",
-  "version": "0.5.9",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "A local network for Claude Code agents: names, a boss, task lists, messages and a live web view of who is doing what.",
@@ -26,9 +26,12 @@
     "web:check": "vue-tsc --noEmit -p web/tsconfig.json"
   },
   "dependencies": {
+    "dompurify": "3.4.18",
     "hono": "4",
-    "vue": "3",
-    "lucide-vue-next": "^1.0.0"
+    "lucide-vue-next": "^1.0.0",
+    "marked": "18.2.1",
+    "three": "0.170.0",
+    "vue": "3"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

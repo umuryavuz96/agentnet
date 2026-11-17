@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
 import type { Env } from "../core/http";
-import { LAN, LOOP } from "../../test/helpers";
+import { LAN, LOOP, asRoot } from "../../test/helpers";
 
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-bgjobs-"));
 const { safeFile, tailLines, listOutputs, progressOf, kindOf, jobDetail, bgjobRoutes } = await import("./bgjobs");
@@ -62,7 +62,7 @@ test("job detail: status from exit file, ids are validated", () => {
 test("routes: list, detail, file, missing", async () => {
   const { root, out } = fixture(); const folder = join(root, "bgjobs"); process.env.AGENTNET_BGJOBS = folder; mkdirSync(folder);
   writeFileSync(join(folder, "j2.json"), JSON.stringify({ id: "j2", owner: null, pid: 999999, desc: "d", started: Date.now(), outputs: [out] }));
-  const api = new Hono<Env>(); bgjobRoutes(api);
+  const api = await asRoot(new Hono<Env>()); bgjobRoutes(api);
   expect(((await (await api.request("/bgjobs")).json()) as { id: string }[]).map((j) => j.id)).toEqual(["j2"]);
   expect((await api.request("/bgjobs/j2")).status).toBe(200);
   expect((await api.request("/bgjobs/nope")).status).toBe(404);
@@ -74,6 +74,7 @@ test("routes: list, detail, file, missing", async () => {
 test("output file route is root only: forwarded or LAN peers get 403, loopback root gets the file", async () => {
   const { out } = fixture(); const bg = tmp(); process.env.AGENTNET_BGJOBS = bg;
   writeFileSync(join(bg, "j1.json"), JSON.stringify({ id: "j1", desc: "x", started: 1, outputs: [out] }));
+  process.env.AGENTNET_PANEL_LOGIN = "off"; // the loopback guard under test now exists only behind this house flag
   const api = new Hono<Env>(); bgjobRoutes(api); const a = new Hono<Env>(); a.route("/api/v1", api);
   const u = "/api/v1/bgjobs/j1/file?path=a.png";
   expect((await a.request(u, { headers: { "X-Forwarded-For": "10.0.0.5" } }, LOOP)).status).toBe(403);

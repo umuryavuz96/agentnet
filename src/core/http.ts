@@ -2,7 +2,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { fromTraceparent, logEvent, traceparent, type Trace } from "./logger";
 
-export type Env = { Variables: { trace: Trace; actor: string } };
+export type Env = { Variables: { trace: Trace; actor: string; auth?: "token" | "agent" | "session" | "loopback" } };
 
 /** RFC 9457 problem details. */
 export function problem(c: Context, status: number, title: string, detail?: string, extra?: Record<string, unknown>) {
@@ -30,5 +30,5 @@ export const bearer = (c: Context) => {
   return h.startsWith("Bearer ") ? h.slice(7).trim() : (c.req.query("token") ?? "");
 };
 
-/** agentnet has no login. Agent routes check their own token (routes.ts). Kept so moved callers and tests compile. */
-export const requireAuth = (_open: (path: string) => boolean): MiddlewareHandler<Env> => async (_c, next) => { await next(); };
+/** Panel auth lives in access.ts (it needs the agent table and the login sessions); re-exported for old callers. */
+export { requireAuth } from "./access";

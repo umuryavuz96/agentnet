@@ -64,7 +64,7 @@ def main():
         st = {"calls": 0, "last_update": T0, "last_remind": 0, "used_tool": False}
     st["calls"] += 1
     tool = d.get("tool_name") or ""
-    if tool in TASK_TOOLS or tool.startswith("mcp__agentnet__task_"):
+    if tool in TASK_TOOLS or tool.startswith(("mcp__agentnet__task_", "mcp__agentnet__plan_", "mcp__agentnet__step_")):
         st.update(used_tool=True, last_update=T0)
     tasks = []
     try:
@@ -83,9 +83,10 @@ def main():
     msg = None
     if why and T0 - st["last_remind"] > GAP_SEC:
         st["last_remind"] = T0
-        msg = (f"[task-guard] Your task list is {'empty' if why == 'empty' else 'stale (no update for 15+ min)'}. "
-               "Create one task per brief item and keep the status live with mcp__agentnet__task_add / task_start / "
-               "task_done. Do it now, then continue.")
+        msg = ("[task-guard] You have no plan yet. Set it with mcp__agentnet__plan_set: at most 7 steps, the outcomes "
+               "your brief asks for. Do it now, then continue." if why == "empty" else
+               "[task-guard] Your plan is stale (no update for 15+ min). Close the active step with "
+               "mcp__agentnet__step_done and its proof when it is done, or report to your boss if you are stuck.")
         log({"agent": agent, "reason": why, "calls": st["calls"]})
     tmp = sp + ".tmp"
     with open(tmp, "w") as f:

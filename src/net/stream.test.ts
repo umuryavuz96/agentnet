@@ -37,7 +37,8 @@ test("snapshot and stream need no agent token; frames carry id and data.prev; go
   await app.request("/api/v1/agentnet/send", { method: "POST", headers: { authorization: `Bearer ${root.token}`, "content-type": "application/json" }, body: JSON.stringify({ to: "w-1", body: "hi" }) });
   await app.request("/api/v1/agentnet/bye", { method: "POST", headers: { authorization: `Bearer ${w.token}`, "content-type": "application/json" }, body: JSON.stringify({ reason: "exit" }) });
   await readUntil(6);
-  await app.request("/api/v1/agentnet/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ to: "root", body: "admin to root: no agent row on either side" }) }, { requestIP: () => ({ address: "127.0.0.1" }) });
+  const rootT = await (await import("../../test/helpers")).rootToken(); // run/root.token = the admin pseudo-row
+  await app.request("/api/v1/agentnet/send", { method: "POST", headers: { authorization: `Bearer ${rootT}`, "content-type": "application/json" }, body: JSON.stringify({ to: "root", body: "admin to root: no agent row on either side" }) }, { requestIP: () => ({ address: "127.0.0.1" }) });
   await readUntil(7);
   const frames = parse();
   expect(frames.slice(0, 6).map((f) => f.event)).toEqual(["hello", "agent", "msg", "agent", "agent", "gone"]); // msg comes from the send itself, before the sender's row patch

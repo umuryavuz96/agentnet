@@ -66,7 +66,7 @@ paths:
           description: OK
   /v1/agent/gate:
     get:
-      summary: "agent work gate: {allow:true} or {allow:false, reason}. The mod asks before each work tool; refused while the agent has no task in progress (root, members and the first 2 minutes after spawn are exempt)"
+      summary: "agent work gate: {allow:true} or {allow:false, reason}. The mod asks before each work tool; refused while the agent has no plan (root, members and the grace time after spawn are exempt). A refusal is written to the agent's event log"
       responses:
         "200":
           description: OK
@@ -111,6 +111,42 @@ paths:
       summary: agent tasks {id} {op}
       responses:
         "200":
+          description: OK
+  /v1/agent/plan:
+    post:
+      summary: "agent plan_set: the whole plan of the open job. Body {steps: string[]}, at most 7 (or the job's max_steps). Allowed until the first step is closed, with one adjust. Step 1 becomes active. A step that reads like a chore is a warning, not a refusal"
+      responses:
+        "200":
+          description: OK
+  /v1/agent/steps:
+    post:
+      summary: "agent step_add: new scope, placed after the active step. Body {text, because}: because is the id of a message from the boss or root, or self. Refused at 12 steps in the job and at the third step of the agent's own"
+      responses:
+        "200":
+          description: OK
+  /v1/agent/steps/done:
+    post:
+      summary: "agent step_done: close the active step; the next one becomes active. Body {evidence: string[], note?}. Each evidence line is kind: value with kind commit | file | check | shot | msg | none. Refused without evidence; evidence the server cannot find is stored as not verified"
+      responses:
+        "200":
+          description: OK
+  /v1/agent/steps/{n}/drop:
+    parameters:
+      - name: n
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "agent step_drop: drop an open step. Body {reason}. Refused without a reason"
+      responses:
+        "200":
+          description: OK
+  /v1/agent/jobs:
+    post:
+      summary: "agent job_open: the boss or root opens a new job on a live agent. Body {agent, goal, brief?, steps?, max_steps?}. Refused while the agent's job is still open (it closes with the done report)"
+      responses:
+        "201":
           description: OK
   /v1/agent/agents:
     get:
@@ -278,6 +314,23 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/admin/agents/{name}/asks/{msg}/close:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: msg
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "admin close an open ask of an agent (a boss message that was answered without reply_to); root only"
+      responses:
+        "200":
+          description: OK
   /v1/admin/agents/{name}/grade:
     parameters:
       - name: name
@@ -286,7 +339,7 @@ paths:
         schema:
           type: string
     post:
-      summary: admin agents {name} grade
+      summary: "admin grade a closed job of an agent. Body {grade 1-5, note?, rework?, owner_rounds?, job?, gen?}. Without job and gen: the newest closed job of the newest generation of that name. A wrong job or gen is 404 and lists the closed jobs"
       responses:
         "200":
           description: OK
@@ -299,6 +352,12 @@ paths:
   /v1/panel/stream:
     get:
       summary: panel stream
+      responses:
+        "200":
+          description: OK
+  /v1/panel/watch:
+    post:
+      summary: panel watch (tell the stream which page this client shows)
       responses:
         "200":
           description: OK

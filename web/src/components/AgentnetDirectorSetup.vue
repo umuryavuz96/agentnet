@@ -11,7 +11,7 @@ import AgentnetAdoptPreview from "./AgentnetAdoptPreview.vue";
 import AgentnetAdoptAfter from "./AgentnetAdoptAfter.vue";
 import { net } from "../net";
 import { api, toast } from "../ui/api";
-import { defaultPicks, type AdoptPlan, type AdoptState, type Launch, type Picks, type Precheck } from "../adopt";
+import { defaultPicks, pickedFiles, shortPath, type AdoptPlan, type AdoptState, type Launch, type Picks, type Precheck } from "../adopt";
 import { adoptApply, adoptCancel, adoptPlan, adoptScan, adoptState } from "../adoptApi";
 
 const emit = defineEmits<{ close: [] }>();
@@ -27,15 +27,20 @@ let resuming = true;
 const cur = ref<Key>("folder"), startedAt = ref(0), now = ref(Date.now());
 
 const isAdopt = computed(() => mode.value === "adopt");
-const steps = computed<{ k: Key; t: string }[]>(() => [
-  { k: "folder", t: "Project folder" }, { k: "type", t: "Setup type" },
-  ...(isAdopt.value ? [{ k: "scan" as Key, t: "Scan" }, { k: "review" as Key, t: "Review" }, { k: "preview" as Key, t: "Preview" }, { k: "apply" as Key, t: "Apply" }] : [{ k: "start" as Key, t: "Start the director" }]),
-  { k: "ready", t: "Director ready" }, { k: "hooks", t: "Starter hooks" },
+// Board 13: a fixed count per path. Adopt 5 (folder and type, scan and review, preview and apply, start, ready), Clean 3 (folder and type, start, ready).
+// `cur` keeps the finer internal keys; each rail step groups some of them.
+type G = "folder" | "review" | "apply" | "start" | "ready";
+const GROUP: Record<Key, G> = { folder: "folder", type: "folder", scan: "review", review: "review", preview: "apply", apply: "apply", start: "start", ready: "start", hooks: "ready" };
+const steps = computed<{ k: G; t: string; h: string }[]>(() => [
+  { k: "folder", t: "Folder and type", h: "Where it works, Clean or Adopt" },
+  ...(isAdopt.value ? [{ k: "review" as G, t: "Scan and review", h: "Read-only scan, you pick per item" }, { k: "apply" as G, t: "Preview and apply", h: "Every file backed up first" }] : []),
+  { k: "start", t: "Start the director", h: "tmux, Claude Code, hello" }, { k: "ready", t: "Ready", h: "Optional: starter hooks" },
 ]);
-const idx = (k: Key) => steps.value.findIndex((x) => x.k === k);
-const num = (k: Key) => idx(k) + 1;
-const state = (k: Key): "done" | "on" | "todo" => (k === "hooks" ? (cur.value === "hooks" ? "on" : "todo") : idx(k) < idx(cur.value) ? "done" : k === cur.value ? "on" : "todo");
-const pct = computed(() => Math.round((Math.min(idx(cur.value), steps.value.length - 2) / (steps.value.length - 2)) * 100));
+const gcur = computed(() => GROUP[cur.value]);
+const idx = (k: G) => steps.value.findIndex((x) => x.k === k);
+const state = (k: G): "done" | "on" | "todo" => (idx(k) < idx(gcur.value) ? "done" : k === gcur.value ? "on" : "todo");
+const stepNo = computed(() => idx(gcur.value) + 1);
+const pct = computed(() => Math.round((idx(gcur.value) / (steps.value.length - 1)) * 100));
 
 const root = computed(() => Object.values(net.agents).find((a) => a.name === "root" && a.life === "live"));
 const rootLive = computed(() => !!root.value);
@@ -152,7 +157,6 @@ onMounted(async () => {
 function onDoc(e: KeyboardEvent) {
   if (!el.value || el.value.contains(document.activeElement)) return;
   if (e.key === "Escape") emit("close");
-  else if (e.key === "Tab") { e.preventDefault(); el.value.querySelector<HTMLElement>("button:not([disabled])")?.focus(); }
 }
 /** The button that opened the window gets focus back when it closes (keyboard users must not land on <body>). */
 let opener: HTMLElement | null = null;
@@ -183,6 +187,7 @@ function modeKey(e: KeyboardEvent) {
   nextTick(() => el.value?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')?.focus());
 }
 function typeNext() { go(mode.value === "adopt" ? "scan" : "start"); }
+const TOOLS = computed(() => (info.value ? (["bun", "claude", "tmux", "python3"] as const).map((k) => ({ k, ok: info.value!.tools[k] })) : []));
 
 /** Drop the scan and plan. `back` = the user pressed Back (return to the scan step); otherwise the folder changed under it. */
 async function discard(back = true) { try { await adoptCancel(); } catch { /* nothing running */ } plan.value = null; await refreshAd(); if (back) go("scan"); else if (["scan", "review", "preview"].includes(cur.value)) cur.value = "type"; }
@@ -237,62 +242,82 @@ async function start(retry = false) {
 }
 function trap(e: KeyboardEvent) {
   if (e.key === "Escape") { e.stopPropagation(); emit("close"); return; }
-  if (e.key !== "Tab" || !el.value) return;
-  const f = [...el.value.querySelectorAll<HTMLElement>('button:not([disabled]),input,a[href],[tabindex="0"]')].filter((x) => x.offsetParent && getComputedStyle(x).visibility !== "hidden" && !(x.getAttribute("role") === "radio" && x.tabIndex < 0));
-  if (!f.length) return;
-  const first = f[0], last = f[f.length - 1];
-  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 }
 
 const lead = computed(() => !isAdopt.value || !["scan", "review", "preview", "apply"].includes(cur.value) ? "The director is the one Claude Code session you talk to. It starts the other agents and shows up at the top of the map." : "agentnet reads your workspace first, then asks before it changes anything. Every change is backed up and can be undone.");
-const sum = (k: Key) => k === "folder" ? dir.value : k === "type" ? (isAdopt.value ? "Adopt my workspace" : "Clean") : k === "scan" ? (ad.value?.report ? `${ad.value.report.findings.length} findings` : "") : k === "review" ? "choices saved" : k === "preview" ? "plan ready" : k === "apply" ? "applied" : k === "start" ? "started" : k === "ready" ? "connected" : "";
-const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.value));
+const sumKey = (g: G): Key => ({ folder: "type", review: "review", apply: "apply", start: "ready", ready: "hooks" } as Record<G, Key>)[g];
+const sum = (k: Key) => k === "folder" ? dir.value : k === "type" ? (dir.value + " · ") + (isAdopt.value ? "Adopt my workspace" : "Clean") : k === "scan" ? (ad.value?.report ? `${ad.value.report.findings.length} findings` : "") : k === "review" ? "choices saved" : k === "preview" ? "plan ready" : k === "apply" ? "applied" : k === "start" ? "started" : k === "ready" ? "connected" : "";
+
+const SIDE: Record<G, { reads: string; changes: string; shows: string }> = {
+  folder: { reads: "Only the folder you pick: CLAUDE.md, ~/.claude, git repos, agent definitions, tmux, tools. Read-only.", changes: "Nothing.", shows: "What the check found, and which path fits." },
+  review: { reads: "This folder, its repos and ~/.claude (settings, rules). Never .env, keys or tokens.", changes: "Nothing until you apply. Each finding needs your Keep or Switch off.", shows: "Findings grouped by area, each with Today and After." },
+  apply: { reads: "The plan you approved.", changes: "Only the files in the preview. Every file is backed up first and the run rolls back if a step fails.", shows: "Files that change, the backup folder, the rollback command." },
+  start: { reads: "The terminal of the director session.", changes: "Starts a tmux session with Claude Code and the agentnet plugin. Answers Claude Code's first-run questions you approved.", shows: "Real stages and the last terminal lines. Waits up to 90 s, then shows what went wrong." },
+  ready: { reads: "Nothing.", changes: "Nothing. Starter hooks are optional.", shows: "Your director is live. Talk to it in its terminal." },
+};
+const pfiles = computed(() => (ad.value?.report ? pickedFiles(ad.value.report.findings, picks.value) : []));
+const small = matchMedia("(max-width:760px)").matches;
+/** Esc closes like the X; after an apply it asks first, since the director is already starting. */
+function onEsc() { if (applied.value && !up.value && !confirm("Setup was applied and the director is starting. Close this page?")) return; emit("close"); }
+const side = computed(() => SIDE[gcur.value]);
 </script>
 
 <template>
-  <div class="ds-scrim" @click.self="emit('close')">
-    <div ref="el" class="ds" :class="{ wide }" role="dialog" aria-modal="true" aria-label="Set up your director" @keydown="trap">
-      <div class="ds-h"><h2>Set up your director</h2><span class="ds-cnt num" aria-live="polite">Step {{ Math.min(num(cur), steps.length - 1) }} of {{ steps.length - 1 }}</span><button type="button" class="ds-x" aria-label="Close" @click="emit('close')"><Icon name="x" :size="20" /></button></div>
-      <div class="ds-rail" role="progressbar" aria-label="Setup progress" :aria-valuenow="pct" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: pct + '%' }" /></div>
-      <p class="ds-lead">{{ lead }}</p>
-      <p v-if="missing.length" class="ds-warn" role="status"><Icon name="triangle-alert" :size="15" /> Not found on this Mac: {{ missing.join(", ") }}. Run <code>agentnet doctor</code> for the fix.</p>
-
-      <ol class="ds-steps">
-        <li v-for="s in steps" :key="s.k" :class="['ds-s', state(s.k), { opt: s.k === 'hooks' }]" :aria-current="state(s.k) === 'on' ? 'step' : undefined">
-          <div class="ds-sh"><i class="ds-n"><Icon v-if="state(s.k) === 'done'" name="check" :size="14" class="pop" /><template v-else>{{ s.k === 'hooks' ? '+' : num(s.k) }}</template></i><b>{{ s.t }}</b><span v-if="state(s.k) === 'done'" class="ds-sum">{{ sum(s.k) }}</span><span v-else-if="s.k === 'hooks'" class="ds-opt">optional</span></div>
-          <div class="ds-x2"><div class="ds-in">
-
-            <!-- folder -->
-            <template v-if="s.k === 'folder'">
+  <div ref="el" class="ds" role="region" aria-label="Set up your director" @keydown.esc.stop="onEsc">
+    <header class="ds-h">
+      <h2>Set up your director</h2>
+      <span class="ds-cnt num" aria-live="polite">Step {{ stepNo }} of {{ steps.length }} · {{ isAdopt ? "Adopt" : "Clean" }}</span>
+      <button type="button" class="ds-x" aria-label="Close" @click="emit('close')"><Icon name="x" :size="20" /></button>
+    </header>
+    <div class="ds-seg" role="progressbar" aria-label="Setup progress" :aria-valuenow="pct" aria-valuemin="0" aria-valuemax="100"><i v-for="(g, i) in steps" :key="g.k" :class="{ on: i <= idx(gcur) }" /></div>
+    <p v-if="missing.length" class="ds-warn" role="status"><Icon name="triangle-alert" :size="15" /> Not found on this Mac: {{ missing.join(", ") }}. Run <code>agentnet doctor</code> for the fix.</p>
+    <div class="ds-grid">
+      <nav class="ds-rail" aria-label="Setup steps">
+        <ol>
+          <li v-for="(g, i) in steps" :key="g.k" :class="['rs', state(g.k)]" :aria-current="state(g.k) === 'on' ? 'step' : undefined">
+            <i class="ds-n"><Icon v-if="state(g.k) === 'done'" name="check" :size="14" class="pop" /><template v-else>{{ i + 1 }}</template></i>
+            <span class="rt"><b>{{ g.t }}</b><small>{{ state(g.k) === "done" ? sum(sumKey(g.k)) : g.h }}</small></span>
+          </li>
+        </ol>
+        <p class="ds-t sm">{{ isAdopt ? "Clean is 3 steps." : "Adopt is 5 steps." }}</p>
+      </nav>
+      <main class="ds-main">
+        <Transition name="stp" mode="out-in">
+          <div :key="gcur" class="ds-in">
+            <h3>{{ steps[idx(gcur)].t }}</h3>
+            <!-- folder and type -->
+            <template v-if="cur === 'folder'">
               <label class="ds-f"><span>The director works in this folder</span><span class="ds-pick"><input v-model="dir" type="text" spellcheck="false" autocomplete="off" placeholder="/Users/you/project" /><button type="button" class="ds-b ghost" :disabled="picking" @click.prevent="pick"><Icon name="folder-open" :size="15" /> {{ picking ? "Waiting…" : "Choose…" }}</button></span></label>
               <p v-if="pickMsg" class="ds-t sm" role="status">{{ pickMsg }}</p>
               <p v-if="info?.dirError" class="ds-err" role="alert">{{ info.dirError }}</p>
               <p v-if="rootLive && !t0" class="ds-t sm" role="status">A director is already connected. Finishing this setup starts a fresh one in this folder; nothing below counts as done until then.</p>
-              <button type="button" class="ds-b" :disabled="!!info?.dirError || !dir" @click="go('type')">Next</button>
-            </template>
-
-            <!-- type -->
-            <template v-else-if="s.k === 'type'">
+              <ul v-if="pc" class="ds-chk" aria-label="Folder check">
+                <li><i :class="pc.instructions ? 'y' : 'n'" />CLAUDE.md <em>{{ pc.instructions ? "found" : "none" }}</em></li>
+                <li><i :class="pc.claudeDir ? 'y' : 'n'" />~/.claude <em>{{ pc.claudeDir ? "found" : "none" }}</em></li>
+                <li><i :class="pc.repos ? 'y' : 'n'" />Git repos <em class="num">{{ pc.repos }}</em></li>
+                <li><i :class="pc.agentDefs ? 'y' : 'n'" />Agent definitions <em class="num">{{ pc.agentDefs }}</em></li>
+                <li><i :class="pc.tmuxAgents ? 'y' : 'n'" />Agents already in tmux <em class="num">{{ pc.tmuxAgents }}</em></li>
+                <li v-for="t in TOOLS" :key="t.k"><i :class="t.ok ? 'y' : 'n'" />{{ t.k }} <em>{{ t.ok ? "found" : "missing" }}</em></li>
+              </ul>
+              <p v-if="hint" class="ds-t sm" role="status">{{ hint }}</p>
               <div class="ds-types" role="radiogroup" aria-label="Setup type" @keydown="modeKey">
                 <button type="button" role="radio" class="ds-type" :class="{ sel: !isAdopt }" :aria-checked="!isAdopt" :tabindex="!isAdopt ? 0 : -1" @click="choose('clean')">
-                  <i class="ds-dot" /><b>Clean</b><span>Fresh director with its own home. Your project is attached, nothing in it is read or changed.</span>
+                  <i class="ds-dot" /><b>Clean</b><em>3 steps</em><span>Fresh director with its own home. Your project is attached, nothing in it is read or changed.</span>
                 </button>
                 <button type="button" role="radio" class="ds-type" :class="{ sel: isAdopt }" :aria-checked="isAdopt" :tabindex="isAdopt ? 0 : -1" @click="choose('adopt')">
-                  <i class="ds-dot" /><b>Adopt my workspace</b><span>Keep your CLAUDE.md, rules and repo agents. agentnet scans first and asks before it changes anything.</span>
+                  <i class="ds-dot" /><b>Adopt my workspace</b><em>5 steps</em><span>Keep your CLAUDE.md, rules and repo agents. agentnet scans first and asks before it changes anything.</span>
                 </button>
               </div>
-              <p v-if="hint" class="ds-t sm" role="status">{{ hint }}</p>
-              <p class="ds-t sm">{{ isAdopt ? "Next: scan, review, preview, apply, then the director starts." : "Next: start the director. No scan is needed." }}</p>
-              <div class="ds-row"><button type="button" class="ds-b ghost" @click="go('folder')">Back</button><button type="button" class="ds-b" @click="typeNext">Next</button></div>
+              <div class="ds-row"><button type="button" class="ds-b" :disabled="!!info?.dirError || !dir" @click="typeNext">Next</button></div>
             </template>
 
             <!-- scan -->
-            <template v-else-if="s.k === 'scan'">
+            <template v-else-if="cur === 'scan'">
               <template v-if="stage === 0">
                 <p class="ds-t">Reads your workspace. Read-only: nothing is changed in this step.</p>
                 <p class="ds-t sm">The director reads these files through your Claude account, which uses a few model calls. It may read this folder, its repos and ~/.claude (settings, rules). Never .env, keys or tokens.</p>
                 <div class="ds-row">
-                  <button type="button" class="ds-b ghost" @click="go('type')">Back</button>
+                  <button type="button" class="ds-b ghost" @click="go('folder')">Back</button>
                   <button type="button" class="ds-b" :disabled="working || !toolsOk" @click="scan('director')">{{ working ? "Starting…" : "Scan with the director" }}</button>
                   <button type="button" class="ds-link" :disabled="working" @click="scan('static')">Basic scan (no model)</button>
                 </div>
@@ -317,13 +342,13 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
             </template>
 
             <!-- review -->
-            <template v-else-if="s.k === 'review'">
+            <template v-else-if="cur === 'review'">
               <AgentnetAdoptFindings v-if="ad?.report" :report="ad.report" :picks="picks" :busy="working" :base="ad.report.workspace" @back="discard()" @preview="preview" @rescan="scan(ad?.scanner === 'static' ? 'static' : 'director')" />
               <p v-if="reviewErr" class="ds-err" role="alert">{{ reviewErr }}</p>
             </template>
 
             <!-- preview -->
-            <template v-else-if="s.k === 'preview'">
+            <template v-else-if="cur === 'preview'">
               <template v-if="ad?.report && plan">
                 <AgentnetAdoptAfter :report="ad.report" :picks="picks" :base="ad.report.workspace" />
                 <AgentnetAdoptPreview :plan="plan" :findings="ad.report.findings" :busy="working" :error="reviewErr" :base="ad.report.workspace" @back="go('review')" @apply="applyPlan" />
@@ -331,7 +356,7 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
             </template>
 
             <!-- apply -->
-            <template v-else-if="s.k === 'apply'">
+            <template v-else-if="cur === 'apply'">
               <div role="status" aria-live="polite"><ul class="ds-prog">
                 <li class="cur"><i><Icon name="loader" :size="12" class="spin" /></i><span>Backing up, changing files, starting the director…</span></li>
               </ul></div>
@@ -339,12 +364,12 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
             </template>
 
             <!-- clean start -->
-            <template v-else-if="s.k === 'start'">
+            <template v-else-if="cur === 'start'">
               <p class="ds-t">Run this in a terminal. It starts Claude Code with the agentnet plugin as the director.</p>
               <div class="ds-cmd"><code>{{ info?.command ?? "…" }}</code>
                 <button type="button" class="ds-cp" :aria-label="copied ? 'Copied' : 'Copy command'" @click="copy()"><Icon :name="copied ? 'check' : 'copy'" :size="14" /> {{ copied ? "Copied" : "Copy" }}</button></div>
               <div class="ds-row">
-                <button type="button" class="ds-b ghost" @click="go('type')">Back</button>
+                <button type="button" class="ds-b ghost" @click="go('folder')">Back</button>
                 <button type="button" class="ds-b" :disabled="!canStart || busy" @click="start()"><Icon name="square-terminal" :size="15" /> {{ busy ? "Starting…" : "Start director for me" }}</button>
                 <button v-if="t0" type="button" class="ds-link" @click="go('ready')">Skip, I started it myself</button>
                 <span v-else class="ds-or">or paste the command above</span>
@@ -354,8 +379,8 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
             </template>
 
             <!-- ready -->
-            <template v-else-if="s.k === 'ready'">
-              <template v-if="state('ready') === 'done'"><p class="ds-t"><span class="ds-live" /> The director said hello.</p></template>
+            <template v-else-if="cur === 'ready'">
+              <template v-if="up"><p class="ds-t"><span class="ds-live" /> The director said hello.</p></template>
               <template v-else>
                 <div role="status" aria-live="polite">
                   <ul class="ds-prog">
@@ -396,7 +421,7 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
             </template>
 
             <!-- hooks -->
-            <template v-else>
+            <template v-else-if="cur === 'hooks'">
               <p class="ds-t"><span class="ds-live" /> The director is connected. It is now your live director; talk to it in its terminal.</p>
               <div v-if="applied" class="ds-undo">
                 <p class="ds-t">Done. Undo anytime with <code>agentnet adopt rollback</code></p>
@@ -410,26 +435,72 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
               <a class="ds-b ghost" href="#/hooks?starter=1" @click="emit('close')">Install starter hooks <Icon name="arrow-up-right" :size="15" /></a>
             </template>
 
-          </div></div>
-        </li>
-      </ol>
-      <div class="ds-f2"><button type="button" class="ds-b ghost" @click="emit('close')">{{ up ? "Done" : "Close" }}</button></div>
+          </div>
+        </Transition>
+      </main>
+      <aside class="ds-side" aria-label="About this step">
+        <details :open="!small">
+          <summary>What this step</summary>
+          <dl><dt>Reads</dt><dd>{{ side.reads }}</dd><dt>Changes</dt><dd>{{ side.changes }}</dd><dt>Shows</dt><dd>{{ side.shows }}</dd></dl>
+          <template v-if="cur === 'review' && ad?.report">
+            <dt class="fl">Files this will change</dt>
+            <ul class="ds-fl" aria-live="polite"><li v-for="f in pfiles" :key="f"><code>{{ shortPath(f, ad.report.workspace) }}</code></li><li v-if="!pfiles.length" class="mut">None yet. Nothing is applied until you press Apply.</li></ul>
+            <p class="ds-t sm">Each file is backed up before the change; a failed step rolls the whole run back.</p>
+          </template>
+          <p v-if="isAdopt" class="ds-t sm">Undo anytime: <code>agentnet adopt rollback</code> or Settings, Reset director.</p>
+        </details>
+      </aside>
     </div>
   </div>
 </template>
 
 <style scoped>
-.ds-scrim{position:fixed;inset:0;z-index:70;display:grid;place-items:center;padding:16px;background:rgba(0,0,0,.55);animation:dsin .2s var(--ease)}
-.ds{width:min(560px,100%);max-height:min(90dvh,860px);overflow-y:auto;overscroll-behavior:contain;display:grid;gap:12px;padding:16px;border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:0 30px 80px rgba(0,0,0,.6);animation:dsup .28s cubic-bezier(.2,.8,.2,1);transition:width .28s cubic-bezier(.2,.8,.2,1)}
-@media (min-width:900px){.ds.wide{width:min(720px,100%)}}
+.ds{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;gap:12px;padding:16px 20px;background:var(--bg);color:var(--ink);overflow:hidden;animation:dsin .2s var(--ease)}
+@media (min-width:761px){.ds{left:232px}}
 .ds *{min-width:0}
-.ds-h{display:flex;align-items:center}
+.ds-h{display:flex;align-items:center;gap:12px;flex:none}
+.ds-h h2{margin:0;font:700 20px/1.2 var(--body);text-transform:none}
 .ds-cnt{margin-left:auto;color:var(--muted);font:500 12px var(--mono)}
-.ds-h h2{margin:0;font:700 18px/1.2 var(--body);text-transform:none;color:var(--ink)}
-.ds-x{margin:-8px -8px -8px 8px;display:grid;place-items:center;width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:var(--ink);cursor:pointer}
-.ds-x:hover{background:var(--track)}
-.ds-rail{height:3px;border-radius:2px;background:var(--track);overflow:hidden}
-.ds-rail i{display:block;height:100%;background:var(--on);border-radius:2px;transition:width .4s cubic-bezier(.2,.8,.2,1)}
+.ds-x{display:grid;place-items:center;width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:var(--ink);cursor:pointer}.ds-x:hover{background:var(--track)}
+.ds-seg{display:none;gap:4px;flex:none}.ds-seg i{flex:1;height:4px;border-radius:2px;background:var(--track)}.ds-seg i.on{background:var(--on)}
+.ds-grid{flex:1;min-height:0;display:grid;grid-template-columns:clamp(190px,18vw,280px) minmax(0,1fr) clamp(260px,24vw,380px);gap:16px}
+.ds-rail,.ds-main,.ds-side{min-height:0;overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:16px}
+.ds-rail ol{list-style:none;margin:0 0 12px;padding:0;display:grid;gap:4px}
+.rs{display:flex;gap:10px;align-items:flex-start;padding:8px;border-radius:12px}
+.rs.on{background:var(--track)}.rs.todo{opacity:.55}
+.rt{display:grid;gap:2px}.rt b{font:650 14px/1.3 var(--body)}.rt small{color:var(--muted);font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+.ds-n{flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;border:1.5px solid var(--muted);color:var(--muted);font:600 12px/1 var(--body);font-style:normal}
+.rs.on .ds-n{border-color:var(--ink);color:var(--ink)}
+.rs.done .ds-n{background:var(--on);border-color:var(--on);color:#06210f}
+.ds-main{padding:20px}
+.ds-main :deep(.af-foot),.ds-main :deep(.ap-foot){bottom:-20px;margin:0 -20px -20px;padding-inline:20px;background:var(--panel)}
+.ds-in{display:grid;gap:14px;align-content:start;max-width:none}
+.ds-in h3{margin:0;font:700 17px/1.2 var(--body);text-transform:none}
+.stp-enter-active,.stp-leave-active{transition:opacity .2s var(--ease),transform .2s var(--ease)}
+.stp-enter-from{opacity:0;transform:translateX(16px)}.stp-leave-to{opacity:0;transform:translateX(-16px)}
+.ds-side summary{font:650 13px var(--body);cursor:pointer;margin-bottom:8px;list-style:none}
+.ds-side dl{margin:0;display:grid;gap:4px}.ds-side dt{font:600 11px var(--body);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:8px}.ds-side dd{margin:0;font-size:13px;line-height:1.45}
+.ds-types{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ds-type{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;align-content:start;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);text-align:left;cursor:pointer;transition:border-color .15s var(--ease),background .15s var(--ease)}
+.ds-type b{font:650 14px/1.3 var(--body);align-self:center}
+.ds-type em{font:500 12px var(--mono);font-style:normal;color:var(--muted);align-self:center}
+.ds-type span{grid-column:1/-1;color:var(--muted);font-size:12.5px;line-height:1.45}
+.ds-chk{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px 16px;font-size:13px}
+.ds-chk li{display:flex;align-items:center;gap:8px}.ds-chk em{margin-left:auto;font:500 12px var(--mono);font-style:normal;color:var(--muted)}
+.ds-chk i{flex:none;width:8px;height:8px;border-radius:50%;background:var(--muted);opacity:.5}.ds-chk i.y{background:var(--on);opacity:1}
+.ds-fl{list-style:none;margin:6px 0;padding:0;display:grid;gap:4px}.ds-fl code{font:12px var(--mono);word-break:break-all}.ds-fl .mut{color:var(--muted);font-size:12.5px}.fl{font:600 11px var(--body);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:12px}
+@media (max-width:1100px){.ds-grid{grid-template-columns:clamp(180px,22vw,240px) minmax(0,1fr)}.ds-side{grid-column:1/-1;max-height:30%}}
+@media (max-width:760px){
+  .ds{padding:12px 12px calc(12px + env(safe-area-inset-bottom,0px))}
+  .ds-seg{display:flex}.ds-rail{display:none}
+  .ds-grid{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
+  .ds-h h2{font-size:16px}.ds-cnt{font-size:11px}.ds-chk{grid-template-columns:1fr 1fr}
+  .ds-side{grid-column:auto;max-height:none;padding:10px 12px}.ds-side summary{margin:0}.ds-side details:not([open]) dl{display:none}
+  .ds-main{padding:14px}.ds-main :deep(.af-foot),.ds-main :deep(.ap-foot){bottom:-14px;margin:0 -14px -14px;padding-inline:14px}.ds-types{grid-template-columns:1fr}
+  .ds-b:not(.ghost){justify-self:stretch}
+}
+
+.ds *{min-width:0}
 .ds-bar{height:4px;margin:8px 0 4px;border-radius:2px;background:var(--track);overflow:hidden}
 .ds-bar i{display:block;height:100%;background:var(--on);transition:width 1s linear}
 .ds-fail{display:grid;gap:8px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--bad) 50%,var(--line));border-radius:12px;background:var(--bad-bg)}
@@ -441,36 +512,15 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
 .ds-opts li{padding:5px 10px;border-radius:8px;background:var(--track);color:var(--muted)}.ds-opts li.pick{color:var(--ink);outline:1px solid var(--on)}
 .pop{animation:dspop .3s cubic-bezier(.2,.8,.2,1)}
 @keyframes dspop{from{transform:scale(.3);opacity:0}}
-.ds-lead{margin:0;color:var(--muted);font-size:13.5px;line-height:1.45}
 .ds-warn{display:flex;gap:8px;align-items:flex-start;margin:0;padding:10px 12px;border:1px solid color-mix(in srgb,var(--warn) 50%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--warn) 9%,transparent);font-size:13px}
 .ds-warn code,.ds-cmd code,.ds-undo code,.ds-chgin code{font-family:var(--mono)}
-.ds-steps{list-style:none;margin:0;padding:0;display:grid;gap:8px}
-.ds-s{scroll-margin-top:4px;border:1px solid var(--line);border-radius:14px;background:var(--panel-2);transition:border-color .2s var(--ease),opacity .2s}
-.ds-s.on{border-color:color-mix(in srgb,var(--ink) 28%,var(--line))}
-.ds-s.done{border-color:color-mix(in srgb,var(--on) 45%,var(--line))}
-.ds-s.todo{opacity:.55}
-.ds-sh{display:flex;align-items:center;gap:10px;width:100%;min-height:48px;padding:8px 12px;border:0;background:transparent;color:var(--ink);font:inherit;text-align:left;border-radius:14px}
-.ds-sh b{font:650 14.5px/1.2 var(--body)}
 .ds input:focus-visible,.ds-b:focus-visible,.ds-cp:focus-visible,.ds-x:focus-visible,.ds-link:focus-visible,.ds-type:focus-visible{outline:2px solid var(--on);outline-offset:1px}
-.ds-n{flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:50%;border:1.5px solid var(--muted);color:var(--muted);font:600 12px/1 var(--body);font-style:normal}
-.ds-s.done .ds-n{background:var(--on);border-color:var(--on);color:#06210f}
-.ds-sum,.ds-opt{margin-left:auto;color:var(--muted);font:500 12px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:50%}
-.ds-opt{font-family:var(--body)}
-.ds-x2{display:grid;grid-template-rows:0fr;transition:grid-template-rows .28s cubic-bezier(.2,.8,.2,1)}
-.ds-s.on .ds-x2{grid-template-rows:1fr}
-/* overflow:clip (not hidden) keeps position:sticky of the review footers bound to the sheet's scroll */
-.ds-in{min-height:0;overflow:hidden;overflow:clip;display:grid;gap:10px;padding:0 12px;visibility:hidden;transition:visibility 0s .28s}
-.ds-s.on .ds-in{padding-bottom:12px;visibility:visible;transition-delay:0s}
 .ds-pick{display:flex;gap:8px;align-items:stretch}.ds-pick input{flex:1;min-width:0}.ds-pick .ds-b{flex:none;text-transform:none;letter-spacing:0}
 .ds-f{display:grid;gap:6px}.ds-f span{color:var(--muted);font:600 11px/1.2 var(--body);letter-spacing:.06em;text-transform:uppercase}
 .ds input{padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--track);color:var(--ink);font:13px var(--mono)}
 .ds-t{margin:0;font-size:13.5px;line-height:1.45}.ds-t.sm{font-size:12.5px;color:var(--muted)}
-.ds-types{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.ds-type{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;align-content:start;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);text-align:left;cursor:pointer;transition:border-color .15s var(--ease),background .15s var(--ease)}
 .ds-type:hover{border-color:var(--muted)}
 .ds-type.sel{border-color:var(--on);background:var(--on-bg)}
-.ds-type b{font:650 14px/1.3 var(--body);align-self:center}
-.ds-type span{grid-column:1/-1;color:var(--muted);font-size:12.5px;line-height:1.45}
 .ds-dot{width:18px;height:18px;border:1.5px solid var(--muted);border-radius:50%;display:grid;place-items:center;font-style:normal}
 .ds-type.sel .ds-dot{border-color:var(--on)}
 .ds-type.sel .ds-dot::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--on)}
@@ -497,18 +547,12 @@ const wide = computed(() => isAdopt.value && ["review", "preview"].includes(cur.
 .ds-b.ghost{background:transparent;border:1px solid var(--line);color:var(--ink)}
 .ds-err{margin:0;color:var(--bad);font-size:12.5px}
 .ds-live{display:inline-block;width:9px;height:9px;margin-right:6px;border-radius:50%;background:var(--on)}
-.ds-f2{display:flex;justify-content:flex-end}
 /* the green accent needs white text on the light theme (axe contrast) */
 :global(:root[data-theme="light"] .ds-b:not(.ghost)){color:#fff}
-:global(:root[data-theme="light"] .ds-s.done .ds-n){color:#fff}
 :global(:root[data-theme="light"] .ds-prog li.ok i){color:#fff}
 @keyframes dsin{from{opacity:0}}@keyframes dsup{from{opacity:0;transform:translateY(12px) scale(.98)}}@keyframes dsp{50%{opacity:.3}}@keyframes dsspin{to{transform:rotate(360deg)}}
 @media (max-width:640px){
-  .ds-scrim{place-items:end center;padding:0}
-  .ds{width:100%;max-height:100dvh;border-radius:18px 18px 0 0;padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));animation:dssheet .3s cubic-bezier(.2,.8,.2,1)}
-  .ds-types{grid-template-columns:1fr}
   .ds-b:not(.ghost){justify-self:stretch}
 }
-@keyframes dssheet{from{transform:translateY(100%)}}
-@media (prefers-reduced-motion:reduce){.ds-scrim,.ds,.pop,.spin{animation:none}.ds-x2,.ds,.ds-chg,.ds-type,.ds-rail i,.ds-bar i{transition:none}}
+@media (prefers-reduced-motion:reduce){.pop,.spin{animation:none}.stp-enter-from,.stp-leave-to{transform:none !important}.stp-enter-active,.stp-leave-active{transition:opacity .15s linear}.ds-chg,.ds-type,.ds-bar i{transition:none}}
 </style>
