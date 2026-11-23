@@ -106,7 +106,7 @@ test("owner-learn: the prune removes a kept rule not followed or not helping; dr
   expect(lessons(name)).toContain("Pruned: Write a decision note (not helping: mean reward 3.50 after keeping, baseline 4.2)");
   expect(ln.versionsOf(name).filter((r) => r.status === "pruned")).toHaveLength(2);
   expect((await ol.pruneRules(false, T0)).pruned).toHaveLength(0);
-  expect(readFileSync(join(process.env.AGENTNET_HOME!, "logs", "rule-prune.jsonl"), "utf8").trim().split("\n")).toHaveLength(3);
+  expect(readFileSync(join((await import("../src/core/config")).ROOT, "logs", "rule-prune.jsonl"), "utf8").trim().split("\n")).toHaveLength(3);
 });
 
 test("owner-learn: the weekly tick runs once on Monday after 04:00 and tells root", async () => {

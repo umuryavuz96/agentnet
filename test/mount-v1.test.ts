@@ -9,6 +9,7 @@ const { Database } = await import("bun:sqlite");
 const { Hono } = await import("hono");
 const { useDatabase } = await import("../src/core/db");
 useDatabase(new Database(":memory:"));
+{ const st = await import("../src/net/store"); st._reset(); st.ensureSchema(); } // a fresh DB gets the full agents schema, whatever ran before in this process
 type Env = import("../src/core/http").Env;
 const { tracing } = await import("../src/core/http");
 const { importRoutes } = await import("../src/net/agent-import");

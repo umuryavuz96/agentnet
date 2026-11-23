@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { LOOP, fetchAsRoot } from "./helpers";
 
 // No tool answer may flood an agent's context: list_agents, owner_goals, list_checks, get_status page or shrink, inbox is capped by bytes, the plugin guards 60 KB.
-process.env.AGENTNET_HOME = mkdtempSync(join(tmpdir(), "an-paging-"));
+process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-paging-"));
 const { buildApp, makeFetch } = await import("../src/server");
 { const { Database } = await import("bun:sqlite"); const { useDatabase } = await import("../src/core/db"); useDatabase(new Database(":memory:")); (await import("../src/net/store"))._reset(); }
 const f = await fetchAsRoot(makeFetch(buildApp()));

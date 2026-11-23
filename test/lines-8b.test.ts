@@ -201,7 +201,7 @@ test("proposals: approve with a missing proposal file writes nothing and can be 
     const a = await lineAgent(4);
     const r = await j(call(a.name, "POST", "/propose-skill", { ...SKILL, name: "fixture-gone" }));
     expect(r.status).toBe(201);
-    const pdir = join(process.env.AGENTNET_HOME!, "lines", a.name, "proposals", r.body.id, "files");
+    const pdir = join((await import("../src/core/config")).ROOT, "lines", a.name, "proposals", r.body.id, "files");
     rmSync(join(pdir, "scripts", "run.sh"));
     const lj = ln.readLine(a.name)!, dst = join(ln.selfDir(a.name, lj.current), "skills", "fixture-gone");
     expect((await j(call("root", "POST", `/agent-lines/proposals/${r.body.id}/approve`, { into: "line" }))).status).toBe(422);

@@ -59,6 +59,7 @@ test("a newer report replaces the old one while reported or planned; the plan is
 });
 
 test("apply from the chat needs the owner's yes, uses default picks without a plan, and keeps backups + Rollback", async () => {
+  await Bun.sleep(1100); // run ids have second precision: another test file may have made one in this home this second
   const bad = await A.applyFromChat(undefined, false); expect(bad.ok).toBe(false);
   const before = readFileSync(mdFile, "utf8");
   const scan = rt.createAgent({ name: "setup-scan", by: "t" });
