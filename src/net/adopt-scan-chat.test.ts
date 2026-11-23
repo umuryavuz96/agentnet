@@ -5,19 +5,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeWorkspace } from "../../test/helpers/adoptFixture";
 
-const tmp = mkdtempSync(join(tmpdir(), "an-adopt-chat-"));
+const ENV = ["AGENTNET_HOME", "AGENTNET_WORKSPACE_DIR", "HOME", "AGENTNET_ADOPT_STUB", "TMUX"];
+const old: Record<string, string | undefined> = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
+process.env.AGENTNET_HOME = join(mkdtempSync(join(tmpdir(), "an-adopt-chat-")), "agentnet");
+const { ROOT } = await import("../core/config"); // fixed at first import: in a full run it is another test's home
+// the workspace sits inside agentnet's home, so its line edits stay ops (outside the home they become manual steps)
+mkdirSync(ROOT, { recursive: true });
+const tmp = mkdtempSync(join(ROOT, "fixture-"));
 const { ws, home } = makeWorkspace(tmp);
 // the predecessor's leftovers: an MCP server and lines in CLAUDE.md
 const mcpFile = join(ws, ".mcp.json"), mdFile = join(ws, "CLAUDE.md");
 const mcp = JSON.parse(readFileSync(mcpFile, "utf8")); mcp.mcpServers.agmsg = { command: "agmsg-mcp" }; writeFileSync(mcpFile, JSON.stringify(mcp, null, 2) + "\n");
 const sj = join(ws, ".claude", "settings.json"), sset = JSON.parse(readFileSync(sj, "utf8")); sset.permissions.allow.push("mcp__agmsg__send_message"); writeFileSync(sj, JSON.stringify(sset, null, 2) + "\n");
 appendFileSync(mdFile, "Send a message to a teammate with agmsg, and check your inbox with it.\n");
-const ENV = ["AGENTNET_HOME", "AGENTNET_WORKSPACE_DIR", "HOME", "AGENTNET_ADOPT_STUB", "TMUX"];
-const old: Record<string, string | undefined> = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
-process.env.AGENTNET_HOME = join(tmp, "agentnet"); process.env.AGENTNET_WORKSPACE_DIR = join(tmp, "agentnet", "workspace"); process.env.HOME = home; delete process.env.TMUX;
-mkdirSync(process.env.AGENTNET_HOME, { recursive: true });
+process.env.AGENTNET_WORKSPACE_DIR = join(tmp, "agentnet", "workspace"); process.env.HOME = home; delete process.env.TMUX;
 { const { Database } = await import("bun:sqlite"); const { useDatabase } = await import("../core/db"); useDatabase(new Database(":memory:")); (await import("./store"))._reset(); }
-const { ROOT } = await import("../core/config");
 const A = await import("./adopt");
 const { defaultPicksFor, relocateLines } = await import("./adopt-plan");
 const { lineHash } = await import("./adopt-report");

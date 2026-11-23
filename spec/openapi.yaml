@@ -343,6 +343,123 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/admin/agent-lines:
+    get:
+      summary: "admin one row per line: {line, role, status, current, baseline, parent, jobs, lastReward, lastPick}. Root only; an agent token is 403"
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not root
+  /v1/admin/agent-lines/{line}:
+    parameters:
+      - name: line
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: "admin a line's state, read only: {name, line (line.json), versions (upgrade, status, reward, adherence, baseline at that time, lesson), baselineSeries [{gen, job, at, reward, baseline}], proofs (every row with status unverified/verified/rejected and the reason), picks (last 50 where the line was a candidate, with each candidate's p), proposals}. Root only; an agent token is 403"
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not root
+        "404":
+          description: No such line
+  /v1/panel/lines:
+    get:
+      summary: "panel one row per line: {line, role, status, current, baseline, parent, jobs, lastReward, lastPick}"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [on, lines]
+                properties:
+                  on:
+                    type: boolean
+                    description: "AGENTNET_LINES is 1 on this server; false means lines are off (the store may still hold old lines)"
+                  lines:
+                    type: array
+                    items:
+                      type: object
+  /v1/panel/lines/proposals:
+    get:
+      summary: "panel every skill and rule proposal, newest first; ?status=pending|approved|rejected. Root fields: an agent token is 403"
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Agent token
+  /v1/panel/lines/proposals/{id}/{op}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: op
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [approve, reject]
+    post:
+      summary: "panel root decides a proposal. approve {into: line|base} for a skill, {owner: true} for a house rule (nothing is written); reject {reason}. Root only"
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not root
+        "404":
+          description: No such proposal
+        "409":
+          description: Already decided, skill exists, or house rule without the owner flag
+        "422":
+          description: Bad body
+  /v1/panel/lines/{line}:
+    parameters:
+      - name: line
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: "panel a line's detail: {name, line, versions, baselineSeries, proofs, picks, proposals, root}. An agent token gets verified proofs only and no proposals; ?include=root with an agent token is 403"
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Root fields asked with an agent token
+        "404":
+          description: No such line
+  /v1/panel/lines/{line}/{op}:
+    parameters:
+      - name: line
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: op
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [retire, fork, activate]
+    post:
+      summary: "panel root retires {reason?} (forks the best active line of the role), forks {as?} or reactivates a line. Root only"
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not root
+        "404":
+          description: No such line
+        "409":
+          description: Not allowed now
   /v1/panel/snapshot:
     get:
       summary: panel snapshot
@@ -376,6 +493,12 @@ paths:
   /v1/panel/discipline:
     get:
       summary: "panel discipline: score per day (last 30), today, the stored daily snapshots"
+      responses:
+        "200":
+          description: OK
+  /v1/panel/metrics:
+    get:
+      summary: "panel metrics: closed jobs per kind of work and week (median wall time and cost, rework rate, owner rounds, owner caught it); query unit=job|task, weeks=1..26"
       responses:
         "200":
           description: OK
@@ -625,6 +748,60 @@ paths:
           description: OK
         "409":
           description: Already resolved
+  /v1/panel/goals:
+    get:
+      summary: "panel goals: the owner's asks of the last 7 days (all open, doing and stuck), each with items, proof and links. {on, goals}"
+      responses:
+        "200":
+          description: OK
+  /v1/panel/goals/usage:
+    get:
+      summary: "panel goals usage: model tokens of the owner asks ledger per day (classify and coverage calls), last 7 days. {cap, days}"
+      responses:
+        "200":
+          description: OK
+  /v1/panel/goals/{id}/missing:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "panel goal missing: body {text}. Adds an owner item to the goal and tells root"
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: No such goal
+  /v1/panel/goals/{id}/heart:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "panel goal heart: the owner likes this work; saved as a praise event"
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: No such goal
+  /v1/panel/items/{id}/mark:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "panel item mark: body {mark: wrong|unwanted|clear}. Tells root; unwanted drops the item"
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: No such item
   /v1/panel/trails/search:
     get:
       summary: panel trails search
@@ -734,6 +911,39 @@ paths:
                   roles: {}
         "403":
           description: Forbidden (root only)
+  /v1/panel/brains:
+    get:
+      summary: panel brain inventory (frontmatter only, with spawn count and average grade)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dir: {}
+                  default: {}
+                  roles: {}
+                  brains: {}
+  /v1/panel/brains/import:
+    post:
+      summary: panel add a catalog persona as a new brain (version 1, never overwrites)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: {}
+                  file: {}
+                  committed: {}
+        "403":
+          description: Forbidden (root only)
+        "409":
+          description: A brain with that name exists
   /v1/panel/compact:
     get:
       summary: panel auto-compact window setting (default and per-role overrides)
@@ -1188,6 +1398,79 @@ paths:
   /v1/panel/update/stream:
     get:
       summary: panel update progress (SSE; hello carries the whole job log)
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agent-import:
+    get:
+      summary: panel import state: phase, run, plan (rewrite of /api/v1/agent-import)
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agent-import/proposal:
+    get:
+      summary: panel import proposal items of the current run
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: No import run
+  /v1/panel/agent-import/scan:
+    post:
+      summary: panel import start a scan of the owner's setup; root only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agent-import/cancel:
+    post:
+      summary: panel import stop the scan and reset; root only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agent-import/decide:
+    post:
+      summary: panel import accept, reject or edit proposal items; root only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agent-import/preview:
+    post:
+      summary: panel import build the plan for the accepted items; changes nothing; root only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agent-import/apply:
+    post:
+      summary: panel import back up and apply the plan (body {planId}); root only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agent-import/rollback:
+    post:
+      summary: panel import undo an applied import (body {runId}); root only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agent-import/stream:
+    get:
+      summary: panel import progress (SSE)
+      responses:
+        "200":
+          description: OK
+  /v1/panel/accounts:
+    get:
+      summary: panel Claude accounts (ids and kinds, never the secret); root only
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: panel add or replace an account secret; root only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/accounts/{id}:
+    delete:
+      summary: panel remove an account; root only
       responses:
         "200":
           description: OK

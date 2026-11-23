@@ -127,7 +127,7 @@ async function answer(label: string) {
           <span v-else-if="isCur(s.i) && (v.mode === 'gate' || v.mode === 'reply')" class="tr-tag">{{ v.mode === "gate" ? "You" : "Reply" }}</span>
         </span>
         <div v-if="isCur(s.i) && branched" class="tr-sub">
-          <i class="tr-br in" /><i class="tr-br out" />
+          <svg class="tr-br in" viewBox="0 0 22 20" aria-hidden="true"><path d="M1 0A10 10 0 0 0 11 10A10 10 0 0 1 21 20" /></svg><svg class="tr-br out" viewBox="0 0 22 20" aria-hidden="true"><path d="M21 0A10 10 0 0 1 11 10A10 10 0 0 0 1 20" /></svg>
           <div v-for="(r, k) in branch" :key="r.key" :data-k="r.key" :class="['tr-row', r.cls, { lit: k < liveAt }]" :style="{ '--n': k }">
             <span />
             <span><template v-if="r.kind === 'live'"><b>{{ r.strong }}</b><template v-if="r.target"><br /><span class="tg">{{ r.target }}</span></template></template><template v-else-if="r.kind === 'last'">{{ r.text }}<span :class="r.ok ? 'ok' : 'fail'">{{ r.ok ? "ok" : "failed" }}</span>{{ r.strong }}</template><template v-else><b>{{ r.strong }}</b>{{ r.text }}</template></span>
@@ -150,7 +150,7 @@ async function answer(label: string) {
 /* Board 10-agent-trail, "shared rail (peek and full)". Token map: --card = --panel, --ground = --panel-2, --k-question = --pend,
    --hair = --line, --faint = --muted; --fiber, --lit, --head carry the board's own values (ui/tokens.css). */
 .trw{display:flex;flex-direction:column;gap:12px;min-width:0;container-type:inline-size}
-.tr-list{list-style:none;margin:0;padding:0;position:relative;--tr-dim:color-mix(in srgb,var(--fiber) 55%,transparent)}
+.tr-list{list-style:none;margin:0;padding:0;position:relative;--tr-dim:color-mix(in srgb,var(--fiber) 55%,var(--panel))}
 .tr-step{position:relative;display:grid;grid-template-columns:24px minmax(0,1fr) auto;column-gap:12px;padding:7px 0}
 /* the rail: a fiber segment from this node to the next one */
 .tr-step::before,.tr-step>.tr-lit{content:"";position:absolute;left:11px;top:19px;bottom:-19px;width:2px;border-radius:1px}
@@ -226,27 +226,23 @@ button.tr-chip.or:focus-visible{outline:2px solid var(--sel);outline-offset:1px}
 .tr-branch>.tr-r{grid-area:1 / 3}
 .tr-branch>.tr-gate{grid-area:3 / 2 / 4 / -1}
 .tr-stem,.tr-tail{grid-column:1;justify-self:center;width:2px;border-radius:1px}
-.tr-stem{grid-row:1;margin:12px 0 -1px;background:var(--lit)}
-.tr-tail{grid-row:3;margin:6px 0 -26px;background:var(--tr-dim);transform-origin:top}
+.tr-stem{grid-row:1;margin:12px 0 -1px;border-radius:0;background:var(--lit)}
+.tr-tail{grid-row:3;margin:6px 0 -26px;border-radius:0;background:var(--tr-dim);transform-origin:top}
 .tr-sub{position:relative;grid-area:2 / 1 / 3 / -1;display:flex;flex-direction:column;gap:2px;margin-top:8px;padding:0 0 8px 24px}
-.tr-br{position:absolute;left:0;width:0;height:0;pointer-events:none}
-.tr-br::before,.tr-br::after{content:"";position:absolute;width:11px;height:11px;border:0 solid var(--tr-dim)}
-.tr-br.in{top:-7px}
-.tr-br.in::before,.tr-br.in::after{border-color:var(--lit)}
-.tr-br.in::before{left:11px;top:0;border-width:0 0 2px 2px;border-bottom-left-radius:11px}
-.tr-br.in::after{left:22px;top:9px;border-width:2px 2px 0 0;border-top-right-radius:11px}
-.tr-br.out{bottom:14px}
-.tr-br.out::before{left:22px;top:0;border-width:0 2px 2px 0;border-bottom-right-radius:11px}
-.tr-br.out::after{left:11px;top:9px;border-width:2px 0 0 2px;border-top-left-radius:11px}
+/* each S is one stroked path (no borders, so no corner joins): x 12 on the main line to x 32 on the branch, two quarter arcs of
+   radius 10. The lines it joins have square ends and sit on the same pixel row, so nothing overlaps and nothing is left open. */
+.tr-br{position:absolute;left:11px;width:22px;height:20px;overflow:visible;pointer-events:none;fill:none;stroke:var(--tr-dim);stroke-width:2;stroke-linecap:butt}
+.tr-br.in{top:-7px;stroke:var(--lit)}
+.tr-br.out{bottom:-6px}
 .tr-row{position:relative;display:grid;grid-template-columns:16px minmax(0,1fr) auto;column-gap:8px;align-items:start;padding:5px 0;font-size:12px;color:var(--muted)}
 /* the branch rail: from this row's node to the next one; lit up to the running call */
-.tr-row::after{content:"";position:absolute;left:7px;top:13px;bottom:-15px;width:2px;border-radius:1px;background:var(--tr-dim)}
+.tr-row::after{content:"";position:absolute;left:7px;top:13px;bottom:-15px;width:2px;background:var(--tr-dim)}
 .tr-row:last-child::after{bottom:6px}
 .tr-row.lit::after{background:var(--lit)}
 /* the last step has no next node to join */
 .tr-step:last-child>.tr-tail,.tr-step:last-child .tr-br.out,.tr-step:last-child .tr-row:last-child::after{display:none}
 .tr-list.dead .tr-stem,.tr-list.dead .tr-tail,.tr-list.dead .tr-row::after{background:none;box-shadow:none;border-left:2px dashed color-mix(in srgb,var(--off) 60%,transparent)}
-.tr-list.dead .tr-br::before,.tr-list.dead .tr-br::after{border-style:dashed;border-color:color-mix(in srgb,var(--off) 60%,transparent)}
+.tr-list.dead .tr-br{stroke:color-mix(in srgb,var(--off) 60%,transparent);stroke-dasharray:3 2}
 .tr-row b{color:var(--ink);font-weight:600}
 .tr-row .tg{font-family:var(--mono);font-size:11px;color:var(--muted);overflow-wrap:anywhere}
 .tr-row .meta{font:500 11px/1.6 var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted)}

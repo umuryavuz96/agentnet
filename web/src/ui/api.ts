@@ -13,7 +13,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
   });
   if (r.status === 204) return undefined as T;
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail ?? data.title ?? `HTTP ${r.status}`);
+  if (!r.ok) throw Object.assign(new Error(data.detail ?? (Array.isArray(data.errors) && data.errors.length ? data.errors.join("; ") : null) ?? data.title ?? `HTTP ${r.status}`), Array.isArray(data.errors) ? { errors: data.errors as string[] } : {});
   return data as T;
 }
 

@@ -1,9 +1,14 @@
 <script setup lang="ts">
 // Shared offline bar (board page 14): the live stream dropped, so numbers on the page may be old. Shown under the page header
 // on every page except the Office map, which draws its own. Retry skips the wait.
-import { computed } from "vue";
+// The same bar carries the service's deprecation lines from /v1/health (step 7: AGENTNET_LOOPBACK_ROOT=on).
+import { computed, onMounted, ref } from "vue";
 import Icon from "./Icon.vue";
 import { net, retryStream } from "../net";
+import { api } from "./api";
+
+const deprecated = ref<string[]>([]);
+onMounted(async () => { try { deprecated.value = (await api<{ deprecations?: string[] }>("v1/health")).deprecations ?? []; } catch { /* no line */ } });
 
 const off = computed(() => net.lastFrameAt > 0 && !net.connected);
 const clock = computed(() => new Date(net.lastFrameAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }));
@@ -13,6 +18,7 @@ const clock = computed(() => new Date(net.lastFrameAt).toLocaleTimeString([], { 
   <Transition name="ob">
     <div v-if="off" class="ob" role="status"><Icon name="loader" :size="16" /><b>Live updates paused</b><span>Lost the connection at {{ clock }}. Retrying every few seconds; numbers below may be old.</span><button type="button" @click="retryStream"><Icon name="rotate-ccw" :size="15" />Retry now</button></div>
   </Transition>
+  <div v-for="d in deprecated" :key="d" class="ob" role="status"><Icon name="triangle-alert" :size="16" /><b>Deprecated setting</b><span>{{ d }}</span></div>
 </template>
 
 <style scoped>

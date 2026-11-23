@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TINT, roleOf, MAXDRAW } from './plan';
 import { overlaps, pathHits } from './audit';
-import { makeLayout, pathOut, breakPath, joinPath, route, walkPoints, toABox, hash, WALLH, INWALL, SEAT, SITZ, SLIDE, WALKW, WALKH, RUNH } from './layout';
+import { SEGS, makeLayout, pathOut, breakPath, joinPath, route, walkPoints, toABox, hash, WALLH, INWALL, SEAT, SITZ, HINGE, foldPose, foldedOpen, WALKW, WALKH, RUNH } from './layout';
 
 const KIND = { task: 0xf2b04a, report: 0x3ecf8e, question: 0x6aa8ff, answer: 0xb48cff, info: 0x38c6d9 };
 const SKIN = [0xf2cfae, 0xe9b98f, 0xb9825a, 0x8a5a3c], HAIR = [0x5a3521, 0x1d1d22, 0xd9a441, 0x9a9aa3, 0xa8472e, 0x3b2a20];
@@ -17,12 +17,12 @@ const PAL = {
     chair: 0x4b5262, chairDir: 0x7a4a31, tech: 0x2b2e37, tray: 0x9aa0ad, plant: 0x4f9a5b, pot: 0xcf6f4c, rug0: 0x9cc7d8, rug1: 0xa8c9a0, rugDir: 0xb9584c, board: 0xffffff, shelf: 0x9a6638,
     cooler: 0xf2f2f2, water: 0x8fcdec, plot: 0xd3cfc8, carton: 0xc9a26b, window: 0xbfe3ff, shade: 0xffe9c4,
     glass: 0xd8efff, mull: 0xfbfcfd, sky: 0xcfe2f0, city0: 0xd9cbb8, city1: 0xb9c4d0, city2: 0xc9b3a1, roof: 0xe6e2dc, cityWin: 0x7f97ad, cityWinC: 0x8ea5b9, cityWin2: 0x8b9cae, ground: 0x9db0c3, tower: 0xaab4c0, band: 0xf3f6f9,
-    door: 0xb9834f, counter: 0xefe8dc, machine: 0x33363f, frame: 0xffffff, screen: 0x20232b, cap: 0xffffff, rail: 0x4b505c },
+    door: 0xb9834f, counter: 0xefe8dc, machine: 0x33363f, frame: 0xffffff, screen: 0x20232b, cap: 0xffffff, },
   dark: { bg: 0x0e0e12, slab: 0x1b1a21, corridor: 0x3b3944, floorTeam: 0x9a7b5c, floorDir: 0x85654d, wall: 0x5d5b70, part: 0x565468, desk: 0xb98248, deskLeg: 0x74502c,
     chair: 0x3d4250, chairDir: 0x6a3f2a, tech: 0x1c1e25, tray: 0x6c7180, plant: 0x3f8049, pot: 0xa8563a, rug0: 0x4f7f95, rug1: 0x4d7a58, rugDir: 0x8a3f37, board: 0xe4e4e8, shelf: 0x7a4f2b,
     cooler: 0xc4c4cc, water: 0x5fa6c8, plot: 0x24232a, carton: 0x7a6444, window: 0x1a2444, shade: 0xffd9a0,
     glass: 0x7f95d8, mull: 0x4a4862, sky: 0x0b1024, city0: 0x1c2748, city1: 0x232d4f, city2: 0x1a2140, roof: 0x2c3a62, cityWin: 0xffd27a, cityWinC: 0xcfe6ff, cityWin2: 0x121a36, ground: 0x090d1e, tower: 0x232d4f, band: 0x34344f,
-    door: 0x8a5f38, counter: 0xb9b3aa, machine: 0x1c1e25, frame: 0xd9d9de, screen: 0x15171d, cap: 0x8a88a0, rail: 0x23252d },
+    door: 0x8a5f38, counter: 0xb9b3aa, machine: 0x1c1e25, frame: 0xd9d9de, screen: 0x15171d, cap: 0x8a88a0, },
 };
 const LIGHTS = { light: { hemi: [0xe6f1ff, 0xdcc9ad, 1.55], sun: [0xffe1b5, 2.3], dir: [-7, 6.2, 3.5], lamp: 0, glass: 0.3 }, dark: { hemi: [0xffe9d2, 0x3a3550, 1.25], sun: [0xfff0dc, 0.95], dir: [-2.5, 9, 4], lamp: 2.4, glass: 0.2 } }; // day: a low warm sun through the glass; night: the ceiling light on, desk lamps as accents
 const MAXLAMPS = 12, MAXCOURIERS = 4, BREAK_AFTER = 120; // real lamp lights, couriers at once, seconds idle before the one coffee break
@@ -47,7 +47,7 @@ const { host, RM } = opts;
 let plan = opts.plan, dark = !!opts.dark, tilt = opts.tilt !== false, sel = opts.sel || '', notes = opts.notes || {}, disposed = false;
 let DT = 0, T = 0; const LOOPS = RM ? 0 : 1;
 const pal = () => PAL[dark ? 'dark' : 'light'];
-const tmp = new V3(), _p = new V3(), _q = new THREE.Quaternion(), _s = new V3(), _e = new THREE.Euler(), _m = new THREE.Matrix4(), _c = new THREE.Color(), ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
+const tmp = new V3(), _p = new V3(), _q = new THREE.Quaternion(), _s = new V3(), _e = new THREE.Euler(), _v = new V3(), _m = new THREE.Matrix4(), _c = new THREE.Color(), ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 const dampAngle = (a, b, l, dt) => a + wrap(b - a) * (1 - Math.exp(-l * dt));
 function spring(s, target, dt, k = 150, z = 0.8) { // z < 1 overshoots a little: that is the settle
   if (dt <= 0) return s.x; const c = 2 * z * Math.sqrt(k), n = Math.max(1, Math.ceil(dt / 0.008)), h = dt / n;
@@ -125,7 +125,29 @@ function addLabel(cls, html, anchor, data) { const el = document.createElement('
 function dropLabel(l) { if (l) { labels.delete(l); l.el.remove(); } }
 
 // ---------- furniture: every box comes from the layout (layout.ts), so the overlap test checks the same boxes ----------
-let L = null, desks = {}, doors = [], fixedLabels = [], fixedEnts = [], bounds = new THREE.Box3();
+let L = null, strips = [], progress = {}, desks = {}, doors = [], fixedLabels = [], fixedEnts = [], bounds = new THREE.Box3();
+
+// ---------- progress strips: the segments of a monitor or wall screen. One per step; done = the accent, the active one white, the rest dim ----------
+const STEP_DIM = 0x3a4152, GAP = 0.012;
+/** as many segments as there are steps, the width shared evenly; the others are hidden. Also repaints them, so a new theme or a rebuilt office needs only this call. */
+function layStrips() {
+  for (const st of strips) {
+    const s = progress[st.id] || '', n = Math.min(s.length, SEGS), sw = n ? (st.w - GAP * (n - 1)) / n : 0; st.n = n; st.act = false;
+    for (let i = 0; i < SEGS; i++) {
+      const vb = st.vbs[i]; if (!vb) continue;
+      if (i >= n) { vb.pool.mesh.setMatrixAt(vb.i, ZERO); continue; }
+      _p.set((i - (n - 1) / 2) * (sw + GAP), 0, 0).applyQuaternion(st.q).add(_v.set(st.x, st.y + st.h / 2, st.z));
+      vb.pool.mesh.setMatrixAt(vb.i, _m.compose(_p, st.q, _s.set(sw, st.h, st.d)));
+      const k = s[i]; if (k === 'a') st.act = true;
+      _c.setHex(k === 'd' ? st.acc : k === 'a' ? 0xf4f4f4 : STEP_DIM); vb.pool.mesh.setColorAt(vb.i, _c); vb.pool.colDirty = true;
+    }
+  }
+}
+/** the active segment breathes (not under reduced motion): only its colour changes, nothing is rebuilt */
+function pulseStrips(t) {
+  if (RM) return; const k = 0.78 + 0.22 * Math.sin(t * 3.2);
+  for (const st of strips) if (st.act) { const s = progress[st.id]; for (let i = 0; i < st.n; i++) if (s[i] === 'a') { const vb = st.vbs[i]; vb.pool.mesh.setColorAt(vb.i, _c.setHex(0xf4f4f4).multiplyScalar(k)); vb.pool.colDirty = true; } }
+}
 function buildStatic() {
   const { rooms, blocks, plots, W, ZF } = plan, zb0 = blocks[0].zb; L = makeLayout(plan, notes); desks = {}; doors = [];
   const parts = {}, refs = {}; // moving parts (chairs, door leaves): one node each, at the part's own origin
@@ -137,7 +159,8 @@ function buildStatic() {
   }
   for (const p of Object.values(parts)) { const o = p.node.position; p.ent = newEnt(p.node, () => { for (const b of p.boxes) box(p.node, b.w, b.h, b.d, b.col, b.x - o.x, b.y, b.z - o.z, b.rx || 0, b.ry || 0, 0, b.unlit ? 'un' : 'lit'); }, p.obj, p.kind); fixedEnts.push(p.ent); }
   for (const d of Object.values(L.desks)) desks[d.name] = { ...d, seat: new V3(d.seat[0], 0, d.seat[1]), tray: new V3(...d.tray), lampAt: new V3(...d.lamp), glow: refs['glow:' + d.name], chair: parts['chair:' + d.name].node, cz: d.chair[1], cs: { x: 0, v: 0 }, out: 0, gl: 0, light: null }; // out: 1 = the chair is turned to the lane, where its owner gets off and on
-  doors = L.doors.map((d) => ({ ...d, node: parts['leaf:' + d.id].node, s: { x: RM ? 1 : 0, v: 0 } }));
+  strips = L.strips.map((st) => ({ ...st, vbs: Array.from({ length: SEGS }, (_, i) => refs['seg:' + st.id + ':' + i]), q: new THREE.Quaternion().setFromEuler(new THREE.Euler(st.rx, st.ry, 0)), n: 0, act: false })); layStrips();
+  doors = L.doors.map((d) => ({ ...d, node: parts['leaf:' + d.id].node, nodeB: parts['leafb:' + d.id].node, s: { x: RM ? 1 : 0, v: 0 } }));
   rooms.forEach((r) => {
     const bl = blocks[r.block], cx = (r.x0 + r.x1) / 2, top = r.block === 0 ? WALLH : INWALL;
     const sub = r.director ? '' : `<em>${r.hidden ? `${MAXDRAW} of ${r.live} live shown` : `${r.live} live`}</em>`;
@@ -386,13 +409,14 @@ function deliver(m) {
   if (A.room === B.room && A.row === B.row && Math.abs(A.x - B.x) < 2.1 && !a.busy() && !b.busy()) { talk(a, b); const e = makeEnvelope(m.kind); if (RM) { rmFade(); land(e, b); } else { e.g.position.set(a.pos.x, 1.0, a.pos.z); toss(e, b); } return; } // reduced motion: the two are turned to each other with the bubble, the envelope is on the tray
   send(a, b, m.kind);
 }
-/** Doors: the leaf slides open on a spring when a walker or a courier comes near, and closes behind them. Reduced motion: drawn open. */
+/** Doors: the leaf, a bi-fold of two panels, folds in a Z against its jamb on a spring when a walker or a courier comes near, and closes behind them. Reduced motion: drawn open. */
+let doorHold = null; // checks only: every door held at this opening (0 to 1), or null
 function updateDoors() {
   for (const d of doors) {
-    let near = false; const hit = (x, z) => Math.abs(x - d.x) < 0.7 && Math.abs(z - d.z) < 1.1;
+    let near = false; const hit = (x, z) => Math.abs(x - (d.x - d.dir * HINGE)) < 0.7 && Math.abs(z - d.z) < 1.1;
     for (const c of Object.values(chars)) if (c.mode !== 'seat' && !c.gone && hit(c.pos.x, c.pos.z)) { near = true; break; }
     if (!near) for (const c of couriers) if (hit(c.g.position.x, c.g.position.z)) { near = true; break; }
-    const o = RM ? 1 : clamp01(spring(d.s, +near, DT, 90, 0.9)); d.node.position.x = d.x + d.dir * SLIDE * o;
+    const o = doorHold != null ? doorHold : RM ? 1 : clamp01(spring(d.s, +near, DT, 90, 0.9)); { const q = foldPose(d, o); d.node.rotation.y = q.a; d.nodeB.position.set(q.b[0], 0, q.b[1]); d.nodeB.rotation.y = q.bRy; }
   }
 }
 
@@ -453,7 +477,7 @@ function tick(dt) {
   for (const c of Object.values(chars)) { c.update(T); if (c.gone) { dropEnt(c.p.ent); dropEnt(c.bubble.ent); dropEnt(c.sign.ent); dropTray(c); dropLabel(c.label); delete chars[c.a.name]; } }
   for (const c of couriers) c.update(); for (let i = couriers.length - 1; i >= 0; i--) if (couriers[i].dead) couriers.splice(i, 1);
   fx = fx.filter((g) => !g.next().done);
-  updateDoors(); flushEnts();
+  updateDoors(); pulseStrips(T); flushEnts();
 }
 
 // ---------- people from the plan ----------
@@ -523,6 +547,8 @@ return {
   cam() { return [camera.position.x, camera.position.y, camera.position.z, camera.zoom].map((v) => +v.toFixed(2)).join(' '); },
   /** put the camera where cam() said, looking down the fixed view (checks only) */
   setCam(s) { const [x, y, z, zoom] = String(s).split(' ').map(Number); camera.position.set(x, y, z); camera.zoom = zoom; controls.target.copy(camera.position).addScaledVector(DIR, -60); view.target.copy(controls.target); goal.target.copy(controls.target); camera.updateProjectionMatrix(); controls.update(); wake(); },
+  /** hold every door at this opening, 0 closed to 1 folded; null lets the springs run again (checks only) */
+  holdDoors(o) { doorHold = o == null ? null : +o; wake(); },
   /** stop the clock and draw exactly dt seconds later (frame strips only) */
   step(dt) { held = true; cancelAnimationFrame(raf); raf = 0; tick(dt); render(dt); },
   /** The overlap check on what is drawn right now: every box of the office and of every person, as placed, and every walk line against the furniture. Nothing may sit inside anything else. (checks only) */
@@ -532,14 +558,16 @@ return {
     for (const e of ents) { if (e.kind === 'fx' || e.alpha < 0.5) continue; e.root.updateMatrixWorld(true); for (const vb of e.boxes) list.push({ obj: e.obj, kind: e.kind, m: Array.from(_m.multiplyMatrices(vb.node.matrixWorld, vb.local).elements) }); }
     if (detail) { list.forEach((b, i) => { b.base = b.obj; b.obj += '#' + i; }); const base = (s) => s.replace(/#\d+$/, ''), r = overlaps(list), at = (n) => { const m = list[+n.split('#').pop()].m; return [m[12], m[13], m[14]].map((v) => +v.toFixed(2)).join(' ') + ' size ' + [Math.hypot(m[0], m[1], m[2]), Math.hypot(m[4], m[5], m[6]), Math.hypot(m[8], m[9], m[10])].map((v) => +v.toFixed(2)).join('x'); }; return r.hits.filter((h) => base(h.a) !== base(h.b)).map((h) => ({ ...h, aAt: at(h.a), bAt: at(h.b) })); }
     const r = overlaps(list), furn = list.filter((b) => b.kind !== 'person' && b.kind !== 'door'), walks = walkPoints(L), ph = [];
-    for (const d of L.doors) for (const b of L.boxes) if (b.ent === 'leaf:' + d.id) furn.push({ ...toABox(b, d.dir * SLIDE), obj: b.obj + ':open' }); // a walker meets the leaf slid open
+    for (const d of L.doors) for (const b of L.boxes) if (b.ent === 'leaf:' + d.id || b.ent === 'leafb:' + d.id) furn.push({ ...toABox(foldedOpen(b, d)), obj: b.obj, kind: 'dooropen' }); // a walker meets the panels folded open (same object as the closed leaf: its own boxes may overlap)
     for (const g of walks) ph.push(...pathHits('walker ' + g.w + ' wide', g.pts, furn, [], g.w, g.w === WALKW ? WALKH : RUNH));
     return { people: perf.agents, objects: r.objects, boxes: r.boxes, pairsTested: r.pairs, overlaps: r.hits, walkLines: walks.reduce((n, g) => n + g.paths, 0), walkPoints: walks.reduce((n, g) => n + g.pts.length, 0), walkHits: ph,
       figBoxes: Math.min(...Object.values(chars).map((c) => c.p.ent.boxes.length)), armBoxes: Math.min(...Object.values(chars).map((c) => c.p.ent.boxes.filter((vb) => vb.node === c.p.armL || vb.node === c.p.armR || vb.node === c.p.elL || vb.node === c.p.elR).length)) }; // the fewest boxes any person is made of, and the fewest arm boxes: a figure that lost a part shows here
   },
   setSel(n) { sel = n || ''; for (const c of Object.values(chars)) c.key = ''; if (aspect < 1.2) setGoal(); wake(); },
   resetView() { setGoal(); snapView(); wake(); },
-  setDark(d) { if (dark === !!d) return; dark = !!d; applyTheme(); for (const vb of statics) paint(vb); for (const e of ents) for (const vb of e.boxes) if (typeof vb.col === 'string') paint(vb); wake(); },
+  setDark(d) { if (dark === !!d) return; dark = !!d; applyTheme(); for (const vb of statics) paint(vb); layStrips(); for (const e of ents) for (const vb of e.boxes) if (typeof vb.col === 'string') paint(vb); wake(); },
+  /** rows: strip id (an agent's name, or 'team:<id>') -> one letter per step: d done, a active, p left. Only the segments change; the scene is not rebuilt. */
+  setProgress(rows) { progress = rows || {}; layStrips(); wake(); },
   setTilt(on) { tilt = !!on; wake(); },
   /** notes: team id -> the status of each open team task (at most 12 are drawn) */
   setNotes(n) { notes = n || {}; if (RM) rmFade(); rebuild(); wake(); },

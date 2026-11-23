@@ -210,7 +210,7 @@ export async function agentnetAvailable(): Promise<boolean> {
 
 // ---------- Terminal windows (M8). Until backend-1 ships them the routes are missing: the buttons go disabled. ----------
 // ---------- teams (v1): records live on the service, the page polls them (they change rarely) ----------
-export interface Team { id: string; name: string; goal: string | null; lead: string | null; project: string | null; created: number; state: "active" | "archived"; members: string[]; tasks?: number; open?: number }
+export interface Team { id: string; name: string; goal: string | null; lead: string | null; project: string | null; created: number; state: "active" | "archived"; members: string[]; /** names that left (despawned): history only */ past?: string[]; tasks?: number; open?: number }
 export interface TeamTask { id: number; team: string; text: string; owner: string | null; status: "pending" | "in_progress" | "done"; created: number; updated: number }
 export interface TeamMsg { id: number; from: string; kind: string; subject: string; body: string; at: number }
 export const teams = reactive({ list: [] as Team[] });
@@ -320,7 +320,7 @@ export interface Discipline { jobs?: number; steps?: number; score: number | nul
 export interface DisciplineDay { day: string; score: number | null; jobs?: number; steps?: number; checks?: DisciplineChecks; agents: Record<string, { score: number | null; jobs?: number }> }
 export interface AgentScoreRow extends ScoreBase { discipline: Discipline; agent: string; role: string; model: string | null; soul: string | null; project: string | null }
 export interface GroupScoreRow extends ScoreBase { key: string }
-export interface ScoresData { discipline: { days: DisciplineDay[]; today: DisciplineDay | null; all: number | null; checks?: DisciplineChecks; jobs?: number; steps?: number }; at: number; minGraded: number; weights: Record<keyof SubScores, number>; agents: AgentScoreRow[]; byRole: GroupScoreRow[]; byModel: GroupScoreRow[]; bySoul: GroupScoreRow[] }
+export interface ScoresData { discipline: { days: DisciplineDay[]; today: DisciplineDay | null; all: number | null; checks?: DisciplineChecks; jobs?: number; steps?: number }; at: number; minGraded: number; weights: Record<keyof SubScores, number>; agents: AgentScoreRow[]; byRole: GroupScoreRow[]; byModel: GroupScoreRow[]; bySoul: GroupScoreRow[]; byBrain?: (GroupScoreRow & { versions: number[] })[] }
 /** A grade of a closed job (unit "job": agent_id is name#generation) or of an old task (unit "task", with the raw grade and the old penalty). */
 export interface ScoreGrade { id: number; unit?: "job" | "task"; agent_id?: string; job?: number; task_id?: number; text: string; grade: number | null; grade_raw?: number | null; penalty?: number; note: string | null; rework: boolean; owner_rounds: number | null; done_at: number; graded_at: number | null; cost_usd: number | null }
 export interface AgentScore extends ScoreBase { discipline: Discipline; agent: string; role: string; minGraded: number; weights: Record<keyof SubScores, number>; last: ScoreGrade[]; lastAvgRounds: number | null }
@@ -337,6 +337,28 @@ export function useScores() {
   if (sUsers++ === 0) { void loadScores(); sTimer = setInterval(loadScores, 60_000); }
   return () => { if (--sUsers === 0) clearInterval(sTimer); };
 }
+// ---------- metrics: closed jobs per kind of work and week (GET /v1/panel/metrics, src/net/metrics.ts) ----------
+export interface MetricPoint { week: string; n: number; wallMin: number | null; nWall: number; costUsd: number | null; nCost: number; reworkRate: number | null; rounds: number | null; nRounds: number; caughtRate: number | null; nCaught: number; thin: boolean }
+export interface MetricKind { kind: string; n: number; points: MetricPoint[] }
+export interface DailyPoint { day: string; n: number; value: number | null; few: boolean }
+export interface DailyLine { kind: string; points: DailyPoint[]; first: number | null; nFirst: number; last: number | null; nLast: number }
+export interface MetricsData { unit: "job" | "task"; daily: { days: string[]; tokens: DailyLine[]; cost: DailyLine[] }; weeks: string[]; kinds: MetricKind[]; total: number; thin: number; fill: { field: string; have: number; of: number; pct: number; sparse: boolean }[]; at: number }
+export const metrics = reactive({ data: null as MetricsData | null, err: "", unit: "job" as "job" | "task" });
+async function loadMetrics() {
+  if (document.hidden) return;
+  try { const r = await fetch(url(`v1/panel/metrics?unit=${metrics.unit}`)); if (!r.ok) throw new Error(`HTTP ${r.status}`); metrics.data = await r.json() as MetricsData; metrics.err = ""; }
+  catch (e) { metrics.err = (e as Error).message; }
+}
+/** Switch between closed jobs and the old per-task rows and reload. */
+export function setMetricsUnit(u: "job" | "task") { metrics.unit = u; void loadMetrics(); }
+let mTimer: ReturnType<typeof setInterval> | undefined;
+let mUsers = 0;
+/** Ref-counted poll every 5 min while the trend list is open (the numbers move by the hour, not the second). */
+export function useMetrics() {
+  if (mUsers++ === 0) { void loadMetrics(); mTimer = setInterval(loadMetrics, 300_000); }
+  return () => { if (--mUsers === 0) clearInterval(mTimer); };
+}
+
 /** One agent's score block for the side panel; null when the agent has no finished task yet. */
 export async function fetchAgentScore(name: string): Promise<AgentScore | null> {
   try { const r = await fetch(url(`v1/panel/agents/${encodeURIComponent(name)}/score`)); return r.ok ? await r.json() as AgentScore : null; } catch { return null; }

@@ -6,9 +6,10 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Hono } from "hono";
 import { HOST, PORT, ROOT } from "../core/config";
+import { soulsDir } from "../core/layout";
 import { problem, type Env } from "../core/http";
 import { logEvent } from "../core/logger";
 import { all, flush, forgetByName, live } from "./store";
@@ -19,6 +20,9 @@ import { templates } from "./hook-templates";
 import { precheck } from "./adopt-scan";
 import { answerDialog, clearLaunch, launchView, markLaunch } from "./launch";
 import { acceptTrust } from "./claude-trust";
+import { DEFAULT_ACCOUNT } from "./accounts";
+import { agentConfigDir, prepareConfig, usesOwnDir } from "./agent-config";
+const shq = (x: string) => `'${x.replace(/'/g, `'\\''`)}'`;
 
 export const REPO = join(import.meta.dir, "..", "..");
 /** The director runs in the root agent's tmux session, so Open window on root finds it. */
@@ -64,7 +68,7 @@ export function composeDirectorPrompt(i: PromptInput): string {
   return `${asset("director.md")}${prec}\n\n${HOUSE_RULES}\n`;
 }
 /** Where the composed prompt lives. Scan and real director never share a file. */
-export const promptPath = (mode: DirectorMode, root = ROOT): string => join(root, "run", "souls", mode === "scan" ? "agentnet-director-scan.md" : "agentnet-director.md");
+export const promptPath = (mode: DirectorMode, root = ROOT): string => join(soulsDir(root), mode === "scan" ? "agentnet-director-scan.md" : "agentnet-director.md");
 /** Write the prompt (0600, tmp + rename) and return its path. */
 export function writeDirectorPrompt(i: PromptInput, root = ROOT): string {
   const p = promptPath(i.mode, root);
@@ -103,7 +107,10 @@ export function killScanSession(session: string = scanSession(), t: Tmux = realT
 
 /** claude keeps a conversation at <config>/projects/<cwd with every non-alphanumeric char as "-">/<session>.jsonl. */
 export const transcriptSlug = (dir: string): string => dir.replace(/[^A-Za-z0-9]/g, "-");
-export const transcriptPath = (dir: string, session: string, home = homedir()): string => join(home, ".claude", "projects", transcriptSlug(dir), `${session}.jsonl`);
+export const transcriptPath = (dir: string, session: string, home = homedir()): string => join(directorOwnDir() ? agentConfigDir(DIRECTOR_DIR) : join(home, ".claude"), "projects", transcriptSlug(dir), `${session}.jsonl`);
+/** The director's own config dir name under agents/ (step 3): used only when the default account has a secret and the base is complete. */
+const DIRECTOR_DIR = "director";
+const directorOwnDir = () => usesOwnDir({ account: DEFAULT_ACCOUNT });
 /** A session id is a uuid-like token; anything else never reaches a path or a shell. */
 const SESSION_ID = /^[A-Za-z0-9-]{8,64}$/;
 
@@ -168,8 +175,15 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
   clearDeath(SES);
   // Claude Code asks "do you trust this folder" once per folder. Answer it ahead of time for the folder we start in (merge, with a backup); the pane watcher is the fallback.
   const trusted = [...new Set([cwd, d.dir])];
-  const tr = acceptTrust([cwd]);
-  if (tr.error) logEvent("warn", "trust not pre-accepted", { error: tr.error });
+  if (directorOwnDir()) { // its own config dir (agents/director/claude), logged in from the default account; the secret is read by the shell, never put in the command
+    try {
+      const p = prepareConfig(DIRECTOR_DIR, { project: cwd, account: DEFAULT_ACCOUNT });
+      if (p.env && p.file) cmd = `CLAUDE_CONFIG_DIR=${shq(p.dir)} ${p.env}="$(cat ${shq(p.file)})" ${cmd}`;
+    } catch (e) { logEvent("warn", "director config dir not prepared", { error: (e as Error).message }); }
+  } else {
+    const tr = acceptTrust([cwd]); // no account or no complete base: ~/.claude as before (removed at step 6)
+    if (tr.error) logEvent("warn", "trust not pre-accepted", { error: tr.error });
+  }
   // remain-on-exit for this session only (never -g): when claude exits the pane stays, so the server can read why (windows.ts reapDead)
   const r = run("tmux", ["new-session", "-d", "-s", SES, "-c", cwd, "sh", "-c", cmd, ";", "set-option", "-t", `=${SES}:`, "remain-on-exit", "on"]);
   if (r.status !== 0) { const detail = (r.stderr ?? "").trim() || "tmux could not start the session."; markLaunch(SES, Date.now(), detail); return { ok: false, code: "failed", detail }; }
@@ -229,7 +243,8 @@ export interface ResetDeps {
 export function cleanDirectorFiles(root = ROOT): string[] {
   const out: string[] = [];
   clearLaunch(); clearDeath(SESSION); clearDeath(scanSession());
-  for (const f of [promptPath("adopt", root), promptPath("scan", root), scanMarkerPath(root)]) { try { if (existsSync(f)) { unlinkSync(f); out.push(f); } } catch { /* gone */ } }
+  const legacy = (m: DirectorMode) => join(root, "run", "souls", basename(promptPath(m, root))); // one-folder fallback: remove after 0.7
+  for (const f of [...new Set([promptPath("adopt", root), promptPath("scan", root), legacy("adopt"), legacy("scan")]), scanMarkerPath(root)]) { try { if (existsSync(f)) { unlinkSync(f); out.push(f); } } catch { /* gone */ } }
   const note = join(root, "director", "CLAUDE.md");
   try { if (readFileSync(note, "utf8") === HOME_NOTE) { unlinkSync(note); out.push(note); } rmdirSync(join(root, "director")); } catch { /* edited, missing or not empty: leave it */ }
   return out;

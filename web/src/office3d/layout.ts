@@ -5,7 +5,8 @@ import type { ABox } from "./audit";
 
 export const WALLH = 2.0, INWALL = 1.3, PARTH = 0.6; // outer glass wall, the solid wall between two blocks, low partitions
 export const DESKT = 0.42, SEAT = 0.16, SITZ = 0.075; // desk top, chair seat top, how far in front of the chair's middle a person sits (knees clear the seat)
-export const DOORH = 1.56, LEAFW = 0.82, SLIDE = 0.88; // door frame height (the tallest hair plus a walking bob is 1.45), sliding leaf width, how far the leaf slides
+export const DOORH = 1.56, PANW = 0.355, FOLDA = 1.536, HINGE = 0.35; // door frame height (the tallest hair plus a walking bob is 1.45), width of one of the two bi-fold panels, how far they fold (88 degrees: both end up almost flat against the jamb), the hinge's offset from the door centre (just inside one jamb)
+export const SEGS = 12; // slots of a progress strip (a job holds at most 12 steps), on every desk monitor and on each team wall screen; as many show as there are steps
 export const WALKW = 0.58, WALKH = 1.46, RUNW = 0.28, RUNH = 0.5; // the space a walking person takes (shoulders and swinging arms), and a courier
 export const GROUND = -44; // the street, far below the floor
 export const ACCENT = [0x3ecf8e, 0x6aa8ff, 0xf2b04a, 0xb48cff, 0x38c6d9, 0xff7a59], GOLD = 0xd9a441; // one accent per team room: door, partition cap, wall screen
@@ -16,17 +17,20 @@ export type P2 = [number, number]; // x, z
 /** One box. y is its bottom. col = a palette name or a fixed colour. tint = how far it fades into the sky (the city below). ent = the moving part it belongs to. */
 export interface LBox { obj: string; kind?: string; pool?: "glass" | "city"; unlit?: boolean; col: string | number; tint?: number; ent?: string; ref?: string; w: number; h: number; d: number; x: number; y: number; z: number; rx?: number; ry?: number }
 export interface LDesk { name: string; x: number; z: number; w: number; room: PRoom; row: number; up: boolean; side: number; seat: P2; chair: P2; hop: P2; rowZ: number; front: P2; aisle: number; tray: [number, number, number]; lamp: [number, number, number]; lit: boolean }
-export interface LDoor { id: string; x: number; z: number; dir: number }
-export interface Layout { boxes: LBox[]; desks: Record<string, LDesk>; doors: LDoor[]; ents: Record<string, P2>; sideX: number; plan: Plan }
+export interface LDoor { id: string; x: number; z: number; dir: number } // x, z = the hinge; dir = which side of the door the hinge is on
+/** A progress strip: its middle (x, z; y = the bottom), total width w, height h, depth d, turn rx/ry and the accent of its done segments. Its SEGS boxes are refs `seg:<id>:<i>`; the page lays out as many as there are steps. */
+export interface LStrip { id: string; acc: number; x: number; y: number; z: number; w: number; h: number; d: number; rx: number; ry: number }
+export interface Layout { boxes: LBox[]; desks: Record<string, LDesk>; doors: LDoor[]; ents: Record<string, P2>; strips: LStrip[]; sideX: number; plan: Plan }
 
 export const hash = (s: string) => { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); h ^= h >>> 15; h = Math.imul(h, 2246822507); return (h ^ (h >>> 13)) >>> 0; }; // well mixed, so web-dev-1 and web-dev-2 do not look alike
 const rng = (seed: number) => () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 
 export function makeLayout(plan: Plan, notes: Record<string, string[]> = {}): Layout {
   const { rooms, blocks, plots, W, ZF, multi } = plan, zb0 = blocks[0].zb;
-  const boxes: LBox[] = [], desks: Record<string, LDesk> = {}, doors: LDoor[] = [], ents: Record<string, P2> = {};
+  const boxes: LBox[] = [], desks: Record<string, LDesk> = {}, doors: LDoor[] = [], ents: Record<string, P2> = {}, strips: LStrip[] = [];
   let cur: { obj: string; kind?: string; ent?: string; pool?: "glass" | "city" } = { obj: "" };
   const B = (w: number, h: number, d: number, col: string | number, x: number, y: number, z: number, o: Partial<LBox> = {}) => { const b: LBox = { obj: cur.obj, kind: cur.kind, ent: cur.ent, pool: cur.pool, col, w, h, d, x, y, z, ...o }; boxes.push(b); return b; };
+  const progress = (id: string, acc: number, x: number, y: number, z: number, w: number, h: number, rx = 0, ry = 0) => { strips.push({ id, acc, x, y, z, w, h, d: 0.012, rx, ry }); for (let i = 0; i < SEGS; i++) B(w / SEGS, h, 0.012, acc, x + (i - (SEGS - 1) / 2) * (w / SEGS) * Math.cos(ry), y, z - (i - (SEGS - 1) / 2) * (w / SEGS) * Math.sin(ry), { rx, ry, unlit: true, ref: "seg:" + id + ":" + i }); };
   const O = (obj: string, fn: () => void, kind?: string, ent?: string, pool?: "glass" | "city") => { const p = cur; cur = { obj, kind, ent, pool }; fn(); cur = p; };
   const plant = (id: string, x: number, z: number) => O(id, () => { B(0.24, 0.2, 0.24, "pot", x, 0, z); ([[0.36, 0.2, 0.2], [0.28, 0.42, 0.7], [0.18, 0.62, 1.3]] as number[][]).forEach(([s, y, r]) => B(s, s * 0.7, s, "plant", x, y, z, { ry: r })); });
 
@@ -50,21 +54,36 @@ export function makeLayout(plan: Plan, notes: Record<string, string[]> = {}): La
     glassWall("wall:left:" + bi, "z", bl.zb, bl.z0 + CORR - (lastB ? 0 : 0.15), -0.15); // the outer wall runs on past the corridor
   });
 
-  function desk(a: PAgent, r: PRoom) {
-    const { x, z } = a.desk, big = r.director, w = big ? 1.7 : 1.4, h = hash(a.name), T = DESKT, lx = -w / 2 + 0.17, kit = big ? 2 : h % 3, side = Math.sign(r.lane - x) || -1, lampOn = big || !a.desk.alt;
+  function desk(a: PAgent, r: PRoom, acc: number) {
+    const { x, z } = a.desk, big = r.director, w = big ? 1.7 : 1.4, h = hash(a.name), T = DESKT, lx = -w / 2 + 0.17, side = Math.sign(r.lane - x) || -1, lampOn = big || !a.desk.alt;
     const b = (bw: number, bh: number, bd: number, col: string | number, dx: number, y: number, dz: number, o: Partial<LBox> = {}) => B(bw, bh, bd, col, x + dx, y, z + dz, o);
     O("desk:" + a.name, () => {
       b(w, 0.06, 0.72, "desk", 0, T - 0.06, 0); b(0.06, T - 0.06, 0.62, "deskLeg", -w / 2 + 0.06, 0, 0); b(0.06, T - 0.06, 0.62, "deskLeg", w / 2 - 0.06, 0, 0);
       const glow = "glow:" + a.name;
-      if (kit === 0) { b(0.4, 0.02, 0.26, "tech", 0, T, -0.14); b(0.4, 0.27, 0.02, "tech", 0, T, 0.03, { rx: 0.2 }); b(0.12, 0.12, 0.012, 0, 0, T + 0.07, 0.046, { rx: 0.2, unlit: true, ref: glow }); } // laptop: the lit mark on its lid shows the state
-      else {
-        b(0.34, 0.015, 0.11, "tech", 0, T, -0.15); b(0.05, 0.02, 0.08, "tech", 0.27, T, -0.15); // keyboard, mouse
-        if (kit === 1) { b(0.2, 0.015, 0.14, "tech", 0, T, 0.1); b(0.06, 0.1, 0.05, "tech", 0, T, 0.1); b(0.52, 0.3, 0.03, "tech", 0, T + 0.08, 0.1); b(0.12, 0.12, 0.012, 0, 0, T + 0.17, 0.121, { unlit: true, ref: glow }); }
-        else { for (const s of [-1, 1]) { b(0.16, 0.015, 0.12, "tech", s * 0.2, T, 0.1); b(0.05, 0.1, 0.05, "tech", s * 0.2, T, 0.1); b(0.38, 0.26, 0.03, "tech", s * 0.2, T + 0.08, 0.1, { ry: -s * 0.22 }); }
-          b(0.1, 0.1, 0.012, 0, 0.2 + 0.021 * Math.sin(-0.22), T + 0.16, 0.1 + 0.021 * Math.cos(0.22), { ry: -0.22, unlit: true, ref: glow }); }
-      }
+      b(0.34, 0.015, 0.11, "tech", 0, T, -0.15); b(0.05, 0.02, 0.08, "tech", 0.27, T, -0.15); // keyboard, mouse
+      const R = rng(h ^ 0x5bd1e995), m = (h >>> 28) & 1 ? 1 : -1, KINDS = big ? [2, 3, 4] : [0, 1, 2, 3, 4, 5], kind = KINDS[(h >>> 16) % KINDS.length]; // the setup of this person, from their name: it stays the same on every reload
+      // one screen: stand, neck, panel. The person sits at -z behind the desk, facing the camera (owner feedback): the face looks to -z, at them, and carries the progress strip or a dim code pattern; the camera sees the plain back with the stand. ry = its turn: a pair turns its outer ends toward the chair, never away.
+      const mon = (cx: number, cz: number, sw: number, sh: number, ry: number, main: boolean) => {
+        const y0 = T + 0.09, c = Math.cos(ry), sn = Math.sin(ry), at = (u: number, wd: number): P2 => [cx + u * c + wd * sn, cz - u * sn + wd * c];
+        b(0.2, 0.012, 0.14, "tech", cx, T, cz, { ry }); const [nx, nz] = at(0, 0.03); b(0.04, 0.09, 0.03, "tech", nx, T + 0.012, nz, { ry });
+        b(sw, sh, 0.03, "tech", cx, y0, cz, { ry });
+        if (main) {
+          const [gx, gz] = at(0, -0.021); b(0.12, 0.12, 0.012, 0, gx, y0 + 0.17, gz, { ry, unlit: true, ref: glow });
+          progress(a.name, acc, x + gx, y0 + 0.03, z + gz, Math.min(0.66, sw * 0.8), 0.026, 0, ry + Math.PI);
+        } else for (let i = 0, n = Math.floor((sh - 0.06) / 0.04); i < n; i++) { const lw = sw * (0.25 + 0.55 * R()), [qx, qz] = at(sw * 0.4 - lw / 2, -0.021); b(lw, 0.014, 0.012, 0x2b3a52, qx, y0 + 0.03 + i * 0.04, qz, { ry, unlit: true }); }
+      };
+      const lap = (lx0: number) => { // a laptop on a stand, next to a monitor: its lid leans back, a dim pattern on the face toward the person
+        b(0.2, 0.07, 0.14, "tech", lx0, T, 0); b(0.32, 0.015, 0.21, "tech", lx0, T + 0.07, -0.01); b(0.32, 0.2, 0.015, "tech", lx0, T + 0.085, 0.096, { rx: 0.2 });
+        for (let i = 0; i < 4; i++) { const lw = 0.26 * (0.3 + 0.6 * R()), v = -0.07 + i * 0.045; b(lw, 0.012, 0.01, 0x2b3a52, lx0 - 0.13 + lw / 2 + 0.02, T + 0.185 + v * 0.98 - 0.006, 0.096 + v * 0.2 - 0.012, { rx: 0.2, unlit: true }); }
+      };
+      if (kind === 0) mon(0, 0.1, 0.53, 0.3, 0, true); // 24 inch
+      else if (kind === 1) mon(0, 0.1, 0.6, 0.34, 0, true); // 27 inch
+      else if (kind === 2) mon(0, 0.1, 0.8, 0.34, 0, true); // ultrawide
+      else if (kind === 3) { const pw = big ? 0.6 : 0.53, ph = big ? 0.34 : 0.3, cxx = pw / 2 + 0.01; mon(-cxx, 0.1, pw, ph, -0.2, false); mon(cxx, 0.1, pw, ph, 0.2, true); } // two side by side
+      else if (kind === 4) { mon(-m * 0.13, 0.1, 0.53, 0.3, 0, true); mon(m * 0.4, 0, 0.3, 0.53, m * 0.2, false); } // one landscape, one upright on the side (set back: the tray stands in front of it, the lamp beside it)
+      else { mon(-0.12, 0.1, 0.6, 0.34, 0, true); lap(0.4); } // a monitor, and a laptop on a stand on the side away from the lamp
       b(0.32, 0.03, 0.24, "tray", w / 2 - 0.3, T, 0.2); b(0.07, 0.08, 0.07, MUGS[(h >>> 4) % 5], w / 2 - 0.62, T, 0.27);
-      if (lampOn) { b(0.13, 0.02, 0.13, "tech", lx, T, 0.2); b(0.03, 0.3, 0.03, "tech", lx, T + 0.02, 0.2); b(0.19, 0.12, 0.19, "shade", lx, T + 0.3, 0.2, { unlit: true }); } // a lamp on every second desk
+      if (lampOn) { b(0.13, 0.02, 0.13, "tech", lx, T, 0.27); b(0.03, 0.3, 0.03, "tech", lx, T + 0.02, 0.27); b(0.19, 0.12, 0.19, "shade", lx, T + 0.3, 0.27, { unlit: true }); } // a lamp on every second desk
       const px = -0.28, pz = 0.27, pk = (h >>> 7) % 7; // one thing of their own, by name: books, a plant, a photo, a toy robot, a bottle, sticky notes, a cactus
       if (pk === 0) { b(0.18, 0.04, 0.12, BOOKS[(h >>> 9) % 6], px, T, pz, { ry: 0.2 }); b(0.16, 0.04, 0.11, BOOKS[(h >>> 12) % 6], px, T + 0.04, pz, { ry: -0.1 }); }
       else if (pk === 1) { b(0.09, 0.07, 0.09, "pot", px, T, pz); b(0.14, 0.12, 0.14, "plant", px, T + 0.07, pz, { ry: 0.5 }); }
@@ -78,7 +97,7 @@ export function makeLayout(plan: Plan, notes: Record<string, string[]> = {}): La
     O("chair:" + a.name, () => { B(0.34, 0.04, 0.07, "tech", x, 0, cz); B(0.07, 0.04, 0.34, "tech", x, 0, cz); B(0.07, SEAT - 0.1, 0.07, "tech", x, 0.04, cz); B(0.42, 0.06, 0.37, ch, x, SEAT - 0.06, cz - 0.025); /* the seat ends behind the shins */ B(0.42, 0.44, 0.06, ch, x, SEAT, cz - 0.21); }, "chair", "chair:" + a.name);
     const front: P2 = [x + w / 2 - 0.3, z + 0.64];
     desks[a.name] = { name: a.name, x, z, w, room: r, row: a.desk.row, up: a.desk.up, side, seat: [x, cz + SITZ], chair: [x, cz], hop: [x + side * 0.6, z - 0.66], rowZ: z - (r.people.some((p) => p.desk.row > a.desk.row) ? 1.24 : 1.14) /* the middle of the walkway behind the chair: between two rows, or between the back row and the wall furniture */, front,
-      aisle: r.aisles.reduce((p, q) => (Math.abs(q - front[0]) < Math.abs(p - front[0]) ? q : p), r.aisles[0]), tray: [x + w / 2 - 0.3, T + 0.035, z + 0.2], lamp: [x + lx, 1.1, z + 0.25], lit: lampOn };
+      aisle: r.aisles.reduce((p, q) => (Math.abs(q - front[0]) < Math.abs(p - front[0]) ? q : p), r.aisles[0]), tray: [x + w / 2 - 0.3, T + 0.035, z + 0.2], lamp: [x + lx, 1.1, z + 0.3], lit: lampOn };
   }
 
   rooms.forEach((r, ri) => {
@@ -93,11 +112,15 @@ export function makeLayout(plan: Plan, notes: Record<string, string[]> = {}): La
     O("front:" + r.id, () => { for (const [a0, a1] of [[r.x0, r.doorX - DOORW / 2], [r.doorX + DOORW / 2, r.x1 + (r.last ? 0.1 : 0)]]) if (a1 - a0 > 0.01) { B(a1 - a0, PARTH + 0.02, 0.1, "part", (a0 + a1) / 2, -0.02, zf); B(a1 - a0, 0.03, 0.1, acc, (a0 + a1) / 2, PARTH, zf); } });
     O("door:" + r.id, () => {
       for (const s of [-1, 1]) B(0.08, DOORH, 0.1, "frame", r.doorX + s * (DOORW / 2 - 0.04), 0, zf);
-      B(DOORW - 0.16, 0.08, 0.1, "frame", r.doorX, DOORH - 0.08, zf); B(LEAFW + SLIDE, 0.05, 0.05, "rail", r.doorX + (dir * SLIDE) / 2, DOORH - 0.06, r.z0 + 0.035); // the rail the leaf hangs on, on the corridor side
+      B(DOORW - 0.16, 0.08, 0.1, "frame", r.doorX, DOORH - 0.08, zf);
     });
-    ents["leaf:" + r.id] = [r.doorX, r.z0]; doors.push({ id: r.id, x: r.doorX, z: r.z0, dir });
-    O("leaf:" + r.id, () => { B(LEAFW, DOORH - 0.07, 0.04, acc, r.doorX, 0.005, r.z0 + 0.03); B(0.4, 0.5, 0.044, "window", r.doorX, 0.62, r.z0 + 0.03, { unlit: true }); B(0.04, 0.14, 0.02, "tech", r.doorX - dir * 0.3, 0.55, r.z0 + 0.06); }, "door", "leaf:" + r.id);
-    for (const a of r.people) desk(a, r);
+    // the leaf is a bi-fold: two panels, the first hinged just inside one jamb, the second hinged to the first. Opening folds them in a Z, into the room,
+    // until both stand almost flat against the jamb: no rail, no travel along the wall. Each panel is a part whose node origin is its hinge.
+    const hx = r.doorX + dir * HINGE, hz = zf, mid = hx - dir * PANW;
+    ents["leaf:" + r.id] = [hx, hz]; ents["leafb:" + r.id] = [mid, hz]; doors.push({ id: r.id, x: hx, z: hz, dir });
+    O("leaf:" + r.id, () => { B(PANW, DOORH - 0.095, 0.04, acc, hx - (dir * PANW) / 2, 0.005, hz); B(0.2, 0.5, 0.044, "window", hx - (dir * PANW) / 2, 0.62, hz, { unlit: true }); }, "door", "leaf:" + r.id);
+    O("leaf:" + r.id, () => { B(PANW, DOORH - 0.095, 0.04, acc, mid - (dir * PANW) / 2, 0.005, hz); B(0.2, 0.5, 0.044, "window", mid - (dir * PANW) / 2, 0.62, hz, { unlit: true }); B(0.04, 0.14, 0.02, "tech", mid - dir * (PANW - 0.07), 0.55, hz + 0.03); }, "door", "leafb:" + r.id);
+    for (const a of r.people) desk(a, r, acc);
     if (r.director) { // the corner office: two glass walls, a low cabinet with books, two plants
       O("cabinet", () => {
         B(1.1, 0.5, 0.3, "shelf", r.x0 + 0.75, 0, r.zb + 0.2);
@@ -117,7 +140,7 @@ export function makeLayout(plan: Plan, notes: Record<string, string[]> = {}): La
       });
       O("screen:" + r.id, () => {
         B(0.4, 0.04, 0.3, "tech", sx, 0, sz); B(0.06, 0.7, 0.06, "tech", sx, 0.04, sz); B(0.9, 0.52, 0.05, "screen", sx, 0.7, sz);
-        for (let i = 0; i < 5; i++) B(0.1, 0.1 + (((h >>> (i * 3)) % 5) * 0.07), 0.012, i === 3 ? 0xf4f4f4 : acc, sx - 0.3 + i * 0.15, 0.76, sz + 0.031, { unlit: true });
+        progress("team:" + r.id, acc, sx, 0.8, sz + 0.031, 0.8, 0.17); // the team's progress: one segment per step of its members' jobs
       });
       plant("plant:" + r.id, r.x1 - 0.4, r.zb + 0.26);
       O("coffee:" + r.id, () => {
@@ -135,7 +158,7 @@ export function makeLayout(plan: Plan, notes: Record<string, string[]> = {}): La
     for (let i = 0; i < t.members; i++) { const layer = Math.floor(i / per), j = i % per, c = j % cols, k = Math.floor(j / cols); O("carton:" + t.id + ":" + i, () => B(0.28, 0.22, 0.28, "carton", cx + (c - (cols - 1) / 2) * 0.4, layer * 0.22, zm - 0.05 + (k - (rows - 1) / 2) * 0.38, { ry: Math.sin(i * 12.9 + ti) * 0.22 })); }
   });
   city(plan, B, O);
-  return { boxes, desks, doors, ents, sideX: plan.sideX, plan };
+  return { boxes, desks, doors, ents, strips, sideX: plan.sideX, plan };
 }
 
 // The view from a high floor: our own tower going down below the slab, and the roofs of lower towers around it. The lower a box, the more it fades into the sky.
@@ -215,6 +238,17 @@ export function toABox(b: LBox, dx = 0): ABox {
   const rx = b.rx || 0, ry = b.ry || 0, c = Math.cos(rx || ry), s = Math.sin(rx || ry), x = b.x + dx, y = b.y + b.h / 2, z = b.z;
   const m = rx ? [b.w, 0, 0, 0, 0, b.h * c, b.h * s, 0, 0, -b.d * s, b.d * c, 0, x, y, z, 1] : [b.w * c, 0, -b.w * s, 0, 0, b.h, 0, 0, b.d * s, 0, b.d * c, 0, x, y, z, 1];
   return { obj: b.obj, kind: b.kind, m };
+}
+/** Where the two panels are when the door is `o` open (0 closed, 1 folded): panel 1 turns about the hinge, panel 2 about the end of panel 1 and the other way. */
+export function foldPose(d: LDoor, o: number): { a: number; b: P2; bRy: number } {
+  const t = FOLDA * o;
+  return { a: -d.dir * t, b: [d.x - d.dir * PANW * Math.cos(t), d.z - PANW * Math.sin(t)], bRy: d.dir * t };
+}
+/** A leaf box (of panel "leaf:" or "leafb:") with the door `o` open, for the overlap check: the same turns the page makes. */
+export function foldedOpen(b: LBox, d: LDoor, o = 1): LBox {
+  const p = foldPose(d, o), second = b.ent!.startsWith("leafb:"), piv: P2 = second ? [d.x - d.dir * PANW, d.z] : [d.x, d.z], to: P2 = second ? p.b : [d.x, d.z], r = second ? p.bRy : p.a;
+  const c = Math.cos(r), s = Math.sin(r), dx = b.x - piv[0], dz = b.z - piv[1];
+  return { ...b, x: to[0] + dx * c + dz * s, z: to[1] - dx * s + dz * c, ry: (b.ry || 0) + r };
 }
 /** Every walk line of the office: each person's way out, coffee break and way in, and a courier line between every two desks (w = how wide the walker is). */
 export function allPaths(L: Layout): { name: string; pts: P2[]; w: number }[] {

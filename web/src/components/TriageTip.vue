@@ -44,7 +44,10 @@ function dismiss() { const k = last.value; hidden.value = { ...hidden.value, [k]
 .tt{display:grid;grid-template-rows:0fr;opacity:0;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease)}
 .tt.open{grid-template-rows:1fr;opacity:1}
 .tt:not(.open){visibility:hidden;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease),visibility 0s .3s}
-.tt-in{overflow:hidden;min-height:0}
+/* the opening reveal clips with clip-path, so the open tip never has an overflow box: its text wraps in full once the row has grown.
+   Closed (row 0, hidden) keeps overflow:hidden so the folded text adds no scroll area. */
+.tt-in{min-height:0;clip-path:inset(0)}
+.tt:not(.open) .tt-in{overflow:hidden}
 .tt-c{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding:8px 12px;border:1px solid color-mix(in srgb,var(--on) 40%,var(--line));border-radius:14px;background:color-mix(in srgb,var(--on) 6%,var(--panel))}
 .tt-c p{flex:1 1 260px;margin:0;font-size:13px;line-height:1.4;min-width:0}
 .tt-c a{color:var(--ink);text-underline-offset:2px}

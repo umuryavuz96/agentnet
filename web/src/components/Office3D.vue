@@ -5,9 +5,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { route } from "../router";
 import { modelShort } from "../crewTree";
-import { net, teams, layoutKey, teamsKey, placing } from "../net";
+import { net, teams, layoutKey, teamsKey, placing, loadTeams } from "../net";
 import { api } from "../ui/api";
+import { trailSteps } from "../trailView";
 import { officeBlur } from "../office3d/prefs";
+import { peopleKey } from "../office3d/plan";
 import type { Plan, PState } from "../office3d/plan";
 
 const props = defineProps<{ selected: string | null; cover: number; half?: boolean }>();
@@ -16,7 +18,7 @@ const host = ref<HTMLElement | null>(null), labels = ref<HTMLElement | null>(nul
 const status = ref<"loading" | "ready" | "fail">("loading");
 const reduce = typeof matchMedia === "function" && (matchMedia("(prefers-reduced-motion: reduce)").matches);
 type Notes = Record<string, string[]>;
-type Office = { setSel(n: string): void; resetView(): void; setPlan(p: Plan): void; setDark(d: boolean): void; setTilt(on: boolean): void; setNotes(n: Notes): void; setState(r: Record<string, { state: string; model: string | null }>): void; pushMsg(m: Record<string, unknown>): void; dispose(): void; perf: Record<string, unknown>; bench(n?: number): number[] };
+type Office = { setSel(n: string): void; resetView(): void; setPlan(p: Plan): void; setDark(d: boolean): void; setTilt(on: boolean): void; setNotes(n: Notes): void; setProgress(r: Record<string, string>): void; setState(r: Record<string, { state: string; model: string | null }>): void; pushMsg(m: Record<string, unknown>): void; dispose(): void; perf: Record<string, unknown>; bench(n?: number): number[] };
 let office: Office | null = null, building = 0, makePlanFn: typeof import("../office3d/plan").makePlan | null = null, cleanFn: (s: string | null | undefined) => string = String;
 let rooms: string[] = [], notes: Notes = {}, notesKey = "";
 const strip = (n: string) => n.replace(/#\d+$/, "");
@@ -59,15 +61,36 @@ async function build() {
     const o = mod.createOffice({ host: el, labels: lab, plan: plan(), dark: dark(), tilt: officeBlur.value, notes, RM: reduce, sel: nameOfId(props.selected), onPick: (n: string) => emit("select", n.startsWith("team:") ? n : idOfName(n)) }) as unknown as Office;
     office = o; status.value = "ready";
     (window as unknown as { __office?: Office }).__office = office;
-    loadNotes(); poll = window.setInterval(loadNotes, 12_000);
+    o.setProgress(JSON.parse(progressKey.value)); loadNotes(); poll = window.setInterval(loadNotes, 12_000);
   } catch (e) { if (my === building) { status.value = "fail"; emit("fail", (e as Error).message || "3D failed"); } }
 }
 let timer = 0, poll = 0;
 // someone joined or left, a team changed: the office changes in place (new people fade in and rise, rooms grow)
 const replan = () => { clearTimeout(timer); timer = window.setTimeout(() => { if (office) { office.setPlan(plan()); loadNotes(); } }, 350); };
-watch([layoutKey, teamsKey], replan);
+// peopleKey: an agent that turns live (or stops being live) after it was spawned changes neither layoutKey nor teamsKey
+const whoKey = computed(() => peopleKey(net.agents, placing));
+watch([layoutKey, teamsKey, whoKey], replan);
 const stateKey = computed(() => live().map((a) => `${strip(a.name)}:${stateOf(a)}:${a.model ?? ""}`).join("|"));
 watch(stateKey, () => { if (office) office.setState(Object.fromEntries(live().map((a) => [strip(a.name), { state: stateOf(a), model: modelShort(a.model) }]))); });
+
+// progress strips: an agent's own job steps on its monitor; a team's screen pools the current steps of all its live members
+// (done first, then active, then left), because the screen belongs to the room and the job steps are already live in the store
+const SEGS = 12;
+const letter = (st: string) => (st === "done" ? "d" : st === "in_progress" ? "a" : "p");
+function progressRows(): Record<string, string> {
+  const out: Record<string, string> = {}, mine: Record<string, string> = {};
+  for (const a of live()) { const s = trailSteps(a).steps.filter((t) => t.status !== "dropped").map((t) => letter(t.status)).join(""); if (s) out[strip(a.name)] = mine[strip(a.name)] = s; }
+  for (const t of teams.list) {
+    if (t.state !== "active") continue;
+    const all = t.members.map(strip).map((m) => mine[m] ?? "").join("").split("").sort((x, y) => "dap".indexOf(x) - "dap".indexOf(y));
+    if (!all.length) continue;
+    if (all.length <= SEGS) { out["team:" + t.id] = all.join(""); continue; }
+    out["team:" + t.id] = Array.from({ length: SEGS }, (_, i) => { const g = all.slice(Math.floor((i * all.length) / SEGS), Math.floor(((i + 1) * all.length) / SEGS)); return g.every((x) => x === "d") ? "d" : g.includes("a") ? "a" : "p"; }).join("");
+  }
+  return out;
+}
+const progressKey = computed(() => JSON.stringify(progressRows()));
+watch(progressKey, () => office?.setProgress(JSON.parse(progressKey.value)));
 watch(() => props.selected, (s) => office?.setSel(nameOfId(s)));
 watch(officeBlur, (on) => office?.setTilt(on));
 // real messages: one courier per new message; a backlog after a reconnect is history, not traffic
@@ -78,8 +101,10 @@ watch(() => net.messages.length, () => {
   for (const m of fresh) if (Date.now() - m.at < 10_000) office?.pushMsg({ from: strip(m.from), to: strip(m.to), kind: m.kind });
 });
 let mo: MutationObserver | null = null;
-onMounted(() => { build(); mo = new MutationObserver(() => office?.setDark(dark())); mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] }); });
-onBeforeUnmount(() => { building++; clearTimeout(timer); clearInterval(poll); mo?.disconnect(); office?.dispose(); office = null; delete (window as unknown as { __office?: Office }).__office; });
+// a new team has no stream event (only agents do): re-read the team list every 1.5 s while the office is open, so a team shows up in 2 s, not 5
+let teamPoll = 0;
+onMounted(() => { build(); teamPoll = window.setInterval(() => { if (!document.hidden) void loadTeams(); }, 1500); mo = new MutationObserver(() => office?.setDark(dark())); mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] }); });
+onBeforeUnmount(() => { building++; clearInterval(teamPoll); clearTimeout(timer); clearInterval(poll); mo?.disconnect(); office?.dispose(); office = null; delete (window as unknown as { __office?: Office }).__office; });
 </script>
 
 <template>

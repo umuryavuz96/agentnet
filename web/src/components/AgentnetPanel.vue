@@ -83,7 +83,7 @@ const goalReview = computed(() => !!r.value?.goal && r.value.life === "live" && 
 const idRows = computed(() => {
   const x = r.value; if (!x) return [];
   const rows: [string, string | null, string?][] = [
-    ["Reports to", x.boss], ["Model", x.model ? x.model + (x.effort ? " · " + x.effort : "") : null], ["Persona", x.soul ?? null], ["Why these", x.audit ?? null],
+    ["Reports to", x.boss], ["Model", x.model ? x.model + (x.effort ? " · " + x.effort : "") : null], ["Brain", x.soul ?? null], ["Why these", x.audit ?? null],
     ["Project", x.project?.split("/").filter(Boolean).pop() ?? null, x.project ?? undefined], ["Up since", x.spawnedAt ? `${new Date(x.spawnedAt).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })} (${since(x.spawnedAt)})` : null],
     ["Session", x.session ? x.session.slice(0, 8) : null, x.session ?? undefined], ["PID", x.pid ? String(x.pid) : null],
   ];
@@ -270,7 +270,7 @@ defineExpose({ el });
         <AgentnetScore v-if="!isRoot" :only="name" class="ap-score" />
       <section v-if="r && idRows.length" class="sec fold">
         <button type="button" class="fh" :aria-expanded="openId" aria-controls="ap-id" @click="openId = !openId">
-          <span>Details</span><span class="ap-hint">{{ isRoot ? "session, pid" : "project, session, persona" }}</span><Icon name="chevron-down" :size="16" class="cv-i" />
+          <span>Details</span><span class="ap-hint">{{ isRoot ? "session, pid" : "project, session, brain" }}</span><Icon name="chevron-down" :size="16" class="cv-i" />
         </button>
         <div id="ap-id" class="fb" :class="{ 'is-open': openId }" :inert="!openId || undefined">
           <div><dl class="ap-kv"><template v-for="[k, v, full] in idRows" :key="k"><dt>{{ k }}</dt><dd :title="full ?? v" class="mono">{{ v }}</dd></template></dl></div>

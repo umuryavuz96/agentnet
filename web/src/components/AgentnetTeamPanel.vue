@@ -107,7 +107,7 @@ defineExpose({ el });
       <Transition v-else :name="'tp-' + slide" mode="out-in" @before-enter="paneShown = tab">
         <!-- Tree -->
         <div v-if="tab === 'people'" key="people" class="tp-pn" role="tabpanel">
-          <AgentnetCrewRows :name="title" :members="team?.members ?? []" :lead="team?.lead ?? null" :archived="archived" :bosses="bosses" @select="emit('select', $event)" />
+          <AgentnetCrewRows :name="title" :members="[...(team?.members ?? []), ...(team?.past ?? [])]" :lead="team?.lead ?? null" :archived="archived" :bosses="bosses" @select="emit('select', $event)" />
         </div>
 
         <!-- Channel -->

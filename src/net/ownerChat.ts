@@ -76,7 +76,7 @@ export function ownerChatRoutes(api: Hono<Env>, deps: Partial<ChatDeps> = {}) {
       const pend = () => sent.pending(name).filter((e) => e.nonce).map((e) => ({ id: `sending:${e.nonce}`, kind: "owner", ts: e.at, text: e.text, nonce: e.nonce!, sending: true }) as FeedItem);
       while (!stream.aborted) {
         const r = rowOf(name), before: string | null = path;
-        path = r || name === "root" ? transcriptFor({ session: r?.session ?? null, project: r?.project ?? null, pid: r?.pid ?? null }) : null;
+        path = r || name === "root" ? transcriptFor({ session: r?.session ?? null, project: r?.project ?? null, pid: r?.pid ?? null, name }) : null;
         if (path !== before || (!p && path)) {
           p = path ? new FeedParser(path, name) : null; p?.update(); cursor = p?.cursor ?? 0;
           pending = JSON.stringify(pend());

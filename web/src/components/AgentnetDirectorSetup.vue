@@ -1,40 +1,39 @@
 <script setup lang="ts">
-// "Set up your director": one guided flow, walked in order. Adopt: folder > type > scan > review > preview > apply > director ready (> hooks).
-// Clean: folder > type > start > director ready (> hooks). Exactly one step is active; a step is green only when its work is really
-// done (a scan that reported, a plan that was applied, a root hello that arrived AFTER this flow started it). A root agent that was
-// already live before the flow never turns a step green. The server builds every command and plan; the page never makes one up
-// (src/net/director.ts, adopt-*.ts, docs/internal/SPEC-adopt-workspace.md section 7).
+// "Set up your director": one guided flow, walked in order. Import: folder > type > Claude account > review > preview and import >
+// director (> hooks). Clean: folder > type > start > director ready (> hooks). Exactly one step is active; a step is green only when its
+// work is really done (an import that applied, a root hello that arrived AFTER this flow started it). A root agent that was already
+// live before the flow never turns a step green. The server builds every command, proposal and plan; the page never makes one up
+// (src/net/director.ts, src/net/agent-import.ts, docs/internal/one-folder/SPEC-step5-import-ui.md).
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import Icon from "../ui/Icon.vue";
-import AgentnetAdoptFindings from "./AgentnetAdoptFindings.vue";
-import AgentnetAdoptPreview from "./AgentnetAdoptPreview.vue";
-import AgentnetAdoptAfter from "./AgentnetAdoptAfter.vue";
+import AgentnetImportAccount from "./AgentnetImportAccount.vue";
+import AgentnetImportReview from "./AgentnetImportReview.vue";
+import AgentnetImportRun from "./AgentnetImportRun.vue";
 import { net } from "../net";
-import { api, toast } from "../ui/api";
-import { defaultPicks, pickedFiles, shortPath, type AdoptPlan, type AdoptState, type Launch, type Picks, type Precheck } from "../adopt";
-import { adoptApply, adoptCancel, adoptPlan, adoptScan, adoptState } from "../adoptApi";
+import { api } from "../ui/api";
+import type { Launch, Precheck } from "../adopt";
+import type { ImportItem, ImportPlan, ImportState, Proposal } from "../importView";
 
 const emit = defineEmits<{ close: [] }>();
 interface Info { home: string; dir: string; dirError: string | null; tools: { bun: boolean; claude: boolean; tmux: boolean; python3: boolean }; root: boolean; session: boolean; sessionName: string; command: string; precheck?: Precheck; launch?: Launch }
-type Mode = "clean" | "adopt";
-type Key = "folder" | "type" | "scan" | "review" | "preview" | "apply" | "start" | "ready" | "hooks";
+type Mode = "clean" | "import";
+type Key = "folder" | "account" | "review" | "preview" | "start" | "ready" | "hooks";
+type RunStage = "preview" | "running" | "done" | "failed" | "rolledback";
 const info = ref<Info | null>(null), dir = ref(""), copied = ref(false), busy = ref(false), err = ref(""), started = ref("");
 const mode = ref<Mode>("clean"), modeTouched = ref(false);
-const ad = ref<AdoptState | null>(null), picks = ref<Picks>({ findings: {}, skipActions: [] }), plan = ref<AdoptPlan | null>(null);
-const working = ref(false), reviewErr = ref(""), scanErr = ref(""), undoCopied = ref(false), changedOpen = ref(false);
+const imp = ref<ImportState | null>(null), items = ref<ImportItem[] | null>(null), plan = ref<ImportPlan | null>(null), runStage = ref<RunStage>("preview");
+const working = ref(false), reviewErr = ref(""), scanErr = ref(""), importedDir = ref<string | null>(null), runKey = ref(0);
 const el = ref<HTMLElement | null>(null);
-let resuming = true;
 const cur = ref<Key>("folder"), startedAt = ref(0), now = ref(Date.now());
 
-const isAdopt = computed(() => mode.value === "adopt");
-// Board 13: a fixed count per path. Adopt 5 (folder and type, scan and review, preview and apply, start, ready), Clean 3 (folder and type, start, ready).
-// `cur` keeps the finer internal keys; each rail step groups some of them.
-type G = "folder" | "review" | "apply" | "start" | "ready";
-const GROUP: Record<Key, G> = { folder: "folder", type: "folder", scan: "review", review: "review", preview: "apply", apply: "apply", start: "start", ready: "start", hooks: "ready" };
+const isImport = computed(() => mode.value === "import");
+// A fixed count per path. Import 6 (folder and type, account, review, preview and import, director, ready), Clean 3 (folder and type, start, ready).
+type G = "folder" | "account" | "review" | "apply" | "start" | "ready";
+const GROUP: Record<Key, G> = { folder: "folder", account: "account", review: "review", preview: "apply", start: "start", ready: "start", hooks: "ready" };
 const steps = computed<{ k: G; t: string; h: string }[]>(() => [
-  { k: "folder", t: "Folder and type", h: "Where it works, Clean or Adopt" },
-  ...(isAdopt.value ? [{ k: "review" as G, t: "Scan and review", h: "Read-only scan, you pick per item" }, { k: "apply" as G, t: "Preview and apply", h: "Every file backed up first" }] : []),
-  { k: "start", t: "Start the director", h: "tmux, Claude Code, hello" }, { k: "ready", t: "Ready", h: "Optional: starter hooks" },
+  { k: "folder", t: "Folder and type", h: "Where it works, Clean or Import" },
+  ...(isImport.value ? [{ k: "account" as G, t: "Claude account", h: "One token for every agent, optional" }, { k: "review" as G, t: "Review", h: "Read-only scan, you pick per item" }, { k: "apply" as G, t: "Preview and import", h: "Every op listed first, undo any time" }] : []),
+  { k: "start", t: "Start the director", h: importedDir.value ? "Started by the import" : "tmux, Claude Code, hello" }, { k: "ready", t: "Ready", h: "Optional: starter hooks" },
 ]);
 const gcur = computed(() => GROUP[cur.value]);
 const idx = (k: G) => steps.value.findIndex((x) => x.k === k);
@@ -44,7 +43,8 @@ const pct = computed(() => Math.round((idx(gcur.value) / (steps.value.length - 1
 
 const root = computed(() => Object.values(net.agents).find((a) => a.name === "root" && a.life === "live"));
 const rootLive = computed(() => !!root.value);
-const launch = computed<Launch | null>(() => { const l = info.value?.launch ?? (ad.value as (AdoptState & { launch?: Launch }) | null)?.launch ?? null; return l && l.state !== "idle" ? l : null; }); // idle = the server tracks no start: the page falls back to its own clock
+const liveNames = computed(() => Object.values(net.agents).filter((a) => a.life === "live").map((a) => a.name));
+const launch = computed<Launch | null>(() => { const l = info.value?.launch ?? null; return l && l.state !== "idle" ? l : null; }); // idle = the server tracks no start: the page falls back to its own clock
 const t0 = computed(() => launch.value?.startedAt ?? startedAt.value);
 /** Connected means a root hello after THIS flow started the director; a root that was live before never counts. */
 const up = computed(() => {
@@ -52,7 +52,7 @@ const up = computed(() => {
   if (!rootLive.value) return false;
   return t0.value ? Number((root.value as { connectedAt?: number } | undefined)?.connectedAt ?? 0) >= t0.value : false;
 });
-const applied = computed(() => ad.value?.phase === "applied" && ad.value.mode === "adopt");
+const imported = computed(() => imp.value?.phase === "applied");
 const toolsOk = computed(() => !!info.value?.tools.tmux && !!info.value?.tools.claude);
 const canStart = computed(() => toolsOk.value && !info.value?.session && !info.value?.dirError);
 const missing = computed(() => (["claude", "tmux", "python3"] as const).filter((k) => info.value && !info.value.tools[k]));
@@ -68,9 +68,9 @@ const hint = computed(() => {
   const p = pc.value; if (!p) return "";
   const bits = [p.instructions ? "Claude instructions" : "", p.repos ? `${p.repos} ${p.repos === 1 ? "repo" : "repos"}${p.agentDefs ? " with agents" : ""}` : ""].filter(Boolean);
   if (!bits.length && !p.claudeDir) return "Nothing agent-related found in this folder. Clean is suggested.";
-  return `This folder has ${bits.length ? bits.join(" and ") : "a .claude folder"}. ${mode.value === "adopt" ? "Adopt is suggested." : "You chose Clean."}`;
+  return `This folder has ${bits.length ? bits.join(" and ") : "a .claude folder"}. ${isImport.value ? "Import is suggested." : "You chose Clean."}`;
 });
-const suggestAdopt = computed(() => !!pc.value && (pc.value.instructions || pc.value.claudeDir || pc.value.repos > 0));
+const suggestImport = computed(() => !!pc.value && (pc.value.instructions || pc.value.claudeDir || pc.value.repos > 0));
 
 // ---- waiting for the director: a real clock, real stages, and an error with a reason when it does not come ----
 const WAIT_MS = 90_000;
@@ -109,50 +109,49 @@ const wsteps = computed(() => {
   });
 });
 
-
+/** The director start and info routes know clean and adopt; an import starts the clean director (its own home, the imported base). */
+const apiMode = "clean";
 async function load() {
   try {
-    const q = [dir.value ? "dir=" + encodeURIComponent(dir.value) : "", "mode=" + mode.value].filter(Boolean).join("&");
+    const q = [dir.value ? "dir=" + encodeURIComponent(dir.value) : "", "mode=" + apiMode].filter(Boolean).join("&");
     const i = await api<Info>("v1/panel/director?" + q);
     if (!dir.value) dir.value = i.home;
     info.value = i;
-    if (!modeTouched.value && i.precheck && cur.value === "folder") mode.value = suggestAdopt.value ? "adopt" : "clean";
+    if (!modeTouched.value && i.precheck && cur.value === "folder") mode.value = suggestImport.value ? "import" : "clean";
   } catch (e) { err.value = (e as Error).message; }
 }
-async function refreshAd() { try { ad.value = await adoptState(); } catch { /* an older server has no adopt routes: Adopt then shows its error on Scan */ } }
+async function refreshImp() { try { imp.value = await api<ImportState>("api/v1/agent-import"); } catch { imp.value = null; } }
 let t: ReturnType<typeof setTimeout> | undefined, poll: ReturnType<typeof setInterval> | undefined, clock: ReturnType<typeof setInterval> | undefined;
-const tick = ref(Date.now()), scanAt = ref(0);
-watch(dir, (n, o) => {
-  clearTimeout(t); t = setTimeout(load, 350);
-  if (!resuming && o && ad.value && ["scanning", "reported", "planned"].includes(ad.value.phase)) { void discard(false); } // another folder: the old scan and plan no longer apply
-});
-watch(mode, () => { if (info.value) void load(); });
-watch(() => ad.value?.phase, (p) => {
-  clearInterval(poll);
-  if (p === "scanning") poll = setInterval(async () => { tick.value = Date.now(); await refreshAd(); }, 1500);
-  if (p === "reported" && cur.value === "scan") { picks.value = defaultPicks(ad.value!.report?.findings ?? []); plan.value = null; go("review"); }
-});
+watch(dir, () => { clearTimeout(t); t = setTimeout(load, 350); });
 // while waiting for the director: tick the clock every second, refresh the session state every 2 s
 watch(cur, (c) => {
   clearInterval(clock);
-  if (c === "ready") { now.value = Date.now(); let n = 0; clock = setInterval(() => { now.value = Date.now(); if (++n % 2 === 0) void Promise.all([load(), refreshAd()]); }, 1000); }
+  if (c === "ready") { now.value = Date.now(); let n = 0; clock = setInterval(() => { now.value = Date.now(); if (++n % 2 === 0) void load(); }, 1000); }
 }, { immediate: true });
 watch(up, (u) => { if (u && cur.value === "ready") go("hooks"); });
 onMounted(async () => {
-  await Promise.all([load(), refreshAd()]);
-  const a = ad.value;
-  if (a && a.workspace && a.phase !== "idle" && (a.mode === "adopt" || a.phase === "applied")) { // window reopened: resume from the server state
-    modeTouched.value = true; mode.value = a.mode === "adopt" ? "adopt" : "clean"; dir.value = a.workspace;
-    startedAt.value = Date.parse(a.runs?.[0]?.createdAt ?? "") || Date.now(); setTimeout(() => (resuming = false));
-    if (a.phase === "scanning") { scanAt.value = Date.now(); cur.value = "scan"; }
-    else if (a.phase === "reported" || a.phase === "planned") { picks.value = defaultPicks(a.report?.findings ?? []); cur.value = "review"; }
-    else if (a.phase === "applying") cur.value = "apply";
-    else if (a.phase === "applied") cur.value = up.value ? "hooks" : "ready";
+  await Promise.all([load(), refreshImp()]);
+  const a = imp.value;
+  if (a && a.runId && ["proposed", "previewed", "applying", "applied", "failed"].includes(a.phase)) { // window reopened: resume from the server state
+    modeTouched.value = true; mode.value = "import"; if (a.project) dir.value = a.project;
+    await resume(a);
     return;
   }
-  resuming = false;
   nextTick(() => el.value?.querySelector<HTMLInputElement>("input")?.focus());
 });
+/** Pick the step that matches the run on the server. GET /agent-import carries the plan with each op's status after an apply. */
+async function resume(a: ImportState) {
+  if (a.phase === "proposed") { await loadProposal(); cur.value = "review"; return; }
+  if (a.phase === "previewed") { try { plan.value = await api<ImportPlan>("api/v1/agent-import/preview", { method: "POST", body: {} }); runStage.value = "preview"; cur.value = "preview"; } catch { await loadProposal(); cur.value = "review"; } return; }
+  plan.value = a.plan ?? { planId: a.planId ?? "", runId: a.runId!, ops: [], files: [], warnings: [] };
+  cur.value = "preview";
+  if (a.phase === "applying") {
+    runStage.value = "running"; clearInterval(poll);
+    poll = setInterval(async () => { await refreshImp(); const n = imp.value; if (n?.phase !== "applying") { clearInterval(poll); if (n?.plan) plan.value = n.plan; runStage.value = n?.phase === "applied" ? "done" : "failed"; runKey.value++; } }, 1500);
+    return;
+  }
+  runStage.value = a.phase === "applied" ? "done" : "failed"; runKey.value++;
+}
 /** Focus can fall to <body> when the button that had it leaves (Scan, Preview): Escape and Tab must still act on the open sheet. */
 function onDoc(e: KeyboardEvent) {
   if (!el.value || el.value.contains(document.activeElement)) return;
@@ -163,11 +162,11 @@ let opener: HTMLElement | null = null;
 onMounted(() => { opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null; document.addEventListener("keydown", onDoc); });
 onUnmounted(() => { clearTimeout(t); clearInterval(poll); clearInterval(clock); document.removeEventListener("keydown", onDoc); if (opener?.isConnected) nextTick(() => opener?.focus()); });
 /** Move to a step and put focus on its first control, so keyboard and screen-reader users follow the flow. */
-function go(k: Key) { cur.value = k; nextTick(() => setTimeout(() => { el.value?.querySelector(".ds-s.on")?.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); el.value?.querySelector<HTMLElement>(".ds-s.on .ds-in input, .ds-s.on .ds-in [role=radio][aria-checked=true], .ds-s.on .ds-in .ds-b:not([disabled])")?.focus({ preventScroll: true }); }, 300)); }
+function go(k: Key) { cur.value = k; nextTick(() => setTimeout(() => { el.value?.querySelector(".ds-s.on")?.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); el.value?.querySelector<HTMLElement>(".ds-in input, .ds-in [role=radio][aria-checked=true], .ds-in .ds-b:not([disabled])")?.focus({ preventScroll: true }); }, 300)); }
 
-async function copy(text?: string, flag: "cmd" | "undo" = "cmd") {
+async function copy(text?: string) {
   const v = text ?? info.value?.command; if (!v) return;
-  try { await navigator.clipboard.writeText(v); const r = flag === "cmd" ? copied : undoCopied; r.value = true; setTimeout(() => (r.value = false), 1600); } catch { toast("Copy failed"); }
+  try { await navigator.clipboard.writeText(v); copied.value = true; setTimeout(() => (copied.value = false), 1600); } catch { err.value = "Copy failed"; }
 }
 const picking = ref(false), pickMsg = ref("");
 /** Native folder dialog on the server Mac. Cancel keeps the field; no dialog available leaves the typed path as the way. */
@@ -179,86 +178,62 @@ async function pick() {
   } catch (e) { pickMsg.value = (e as Error).message; } finally { picking.value = false; }
 }
 function choose(m: Mode) { modeTouched.value = true; mode.value = m; }
-const MODES: Mode[] = ["clean", "adopt"];
+const MODES: Mode[] = ["clean", "import"];
 function modeKey(e: KeyboardEvent) {
   const d = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
   if (!d) return;
   e.preventDefault(); choose(MODES[(MODES.indexOf(mode.value) + d + 2) % 2]);
   nextTick(() => el.value?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')?.focus());
 }
-function typeNext() { go(mode.value === "adopt" ? "scan" : "start"); }
+function typeNext() { go(isImport.value ? "account" : "start"); }
 const TOOLS = computed(() => (info.value ? (["bun", "claude", "tmux", "python3"] as const).map((k) => ({ k, ok: info.value!.tools[k] })) : []));
 
-/** Drop the scan and plan. `back` = the user pressed Back (return to the scan step); otherwise the folder changed under it. */
-async function discard(back = true) { try { await adoptCancel(); } catch { /* nothing running */ } plan.value = null; await refreshAd(); if (back) go("scan"); else if (["scan", "review", "preview"].includes(cur.value)) cur.value = "type"; }
-async function scan(m: "director" | "static") {
-  scanErr.value = ""; working.value = true;
-  try { await adoptScan(dir.value, m); scanAt.value = Date.now(); await refreshAd(); } catch (e) { scanErr.value = (e as Error).message; } finally { working.value = false; }
-}
-async function cancelScan() { await adoptCancel().catch(() => {}); await refreshAd(); }
-const scanning = computed(() => ad.value?.phase === "scanning" && !ad.value.failed);
-const slow = computed(() => scanning.value && !ad.value?.facts && tick.value - scanAt.value > 15000);
-const stage = computed(() => {
-  const a = ad.value; if (!a || a.phase === "idle") return 0;
-  if (a.failed) return -1;
-  if (a.phase !== "scanning") return 3;
-  return a.facts ? (a.scanner === "static" ? 3 : 2) : 1;
-});
-const stages = computed(() => [
-  { k: 1, t: "Collected facts", s: ad.value?.facts ? `${ad.value.facts.signals} signals` : "" },
-  ...(ad.value?.scanner === "static" ? [] : [{ k: 2, t: "Director is reading evidence…", s: "" }]),
-  { k: 3, t: "Findings ready", s: "" },
-]);
-
-async function preview() {
-  if (!ad.value?.scanId) return;
-  working.value = true; reviewErr.value = "";
-  try { plan.value = await adoptPlan(ad.value.scanId, picks.value); go("preview"); } catch (e) { reviewErr.value = (e as Error).message; } finally { working.value = false; }
-}
-async function applyPlan(confirmGlobal: boolean) {
-  if (!plan.value) return;
-  working.value = true; reviewErr.value = ""; go("apply");
+// ---- import ----
+async function loadProposal() { const p = await api<Proposal>("api/v1/agent-import/proposal"); items.value = p.items; }
+/** Scan the folder (read-only, static: llm off) and show the proposal. An open run from before is cancelled first. */
+async function scan() {
+  scanErr.value = ""; reviewErr.value = ""; working.value = true; items.value = null; plan.value = null; importedDir.value = null; go("review");
   try {
-    await adoptApply(plan.value.planId, confirmGlobal);
-    startedAt.value = Date.now(); now.value = startedAt.value;
-    started.value = "agentnet answers Claude Code's first-run questions for you.";
-    await Promise.all([refreshAd(), load()]); go("ready");
-  } catch (e) {
-    const m = (e as Error).message;
-    cur.value = "preview";
-    if (/changed since|stale|not the current plan/i.test(m)) { try { plan.value = await adoptPlan(ad.value!.scanId!, picks.value); } catch { /* keeps the old preview */ } reviewErr.value = "A file changed while you were reviewing. Review again."; }
-    else reviewErr.value = m;
-  } finally { working.value = false; }
+    await refreshImp();
+    if (imp.value?.runId && ["proposed", "previewed"].includes(imp.value.phase)) await api("api/v1/agent-import/cancel", { method: "POST", body: {} }).catch(() => {});
+    await api("api/v1/agent-import/scan", { method: "POST", body: { dir: dir.value } });
+    await Promise.all([loadProposal(), refreshImp()]);
+  } catch (e) { scanErr.value = (e as Error).message; } finally { working.value = false; }
 }
-/** Start (clean) or restart (retry) the director. A retry kills a leftover tmux session first (`restart`). */
+async function backToAccount() { if (imp.value?.runId && ["proposed", "previewed"].includes(imp.value.phase)) await api("api/v1/agent-import/cancel", { method: "POST", body: {} }).catch(() => {}); items.value = null; await refreshImp(); go("account"); }
+async function preview() {
+  working.value = true; reviewErr.value = "";
+  try { plan.value = await api<ImportPlan>("api/v1/agent-import/preview", { method: "POST", body: {} }); runStage.value = "preview"; runKey.value++; go("preview"); }
+  catch (e) { reviewErr.value = (e as Error).message; } finally { working.value = false; }
+}
+async function backToReview() { try { await loadProposal(); } catch { /* keep the old list */ } go("review"); }
+function afterImport(director: string | null) { importedDir.value = director; void refreshImp(); go(director ? "hooks" : "start"); }
+
+/** Start (clean or after an import) or restart (retry) the director. A retry kills a leftover tmux session first (`restart`). */
 async function start(retry = false) {
   busy.value = true; err.value = "";
   try {
-    await api("v1/panel/director/start", { method: "POST", body: { dir: dir.value, mode: mode.value, ...(retry ? { restart: true } : {}) } });
+    await api("v1/panel/director/start", { method: "POST", body: { dir: dir.value, mode: apiMode, ...(retry ? { restart: true } : {}) } });
     startedAt.value = Date.now(); now.value = startedAt.value;
     started.value = "agentnet answers Claude Code's first-run questions for you.";
     await load(); go("ready");
   } catch (e) { err.value = (e as Error).message; } finally { busy.value = false; }
 }
-function trap(e: KeyboardEvent) {
-  if (e.key === "Escape") { e.stopPropagation(); emit("close"); return; }
-}
 
-const lead = computed(() => !isAdopt.value || !["scan", "review", "preview", "apply"].includes(cur.value) ? "The director is the one Claude Code session you talk to. It starts the other agents and shows up at the top of the map." : "agentnet reads your workspace first, then asks before it changes anything. Every change is backed up and can be undone.");
-const sumKey = (g: G): Key => ({ folder: "type", review: "review", apply: "apply", start: "ready", ready: "hooks" } as Record<G, Key>)[g];
-const sum = (k: Key) => k === "folder" ? dir.value : k === "type" ? (dir.value + " · ") + (isAdopt.value ? "Adopt my workspace" : "Clean") : k === "scan" ? (ad.value?.report ? `${ad.value.report.findings.length} findings` : "") : k === "review" ? "choices saved" : k === "preview" ? "plan ready" : k === "apply" ? "applied" : k === "start" ? "started" : k === "ready" ? "connected" : "";
+const sumKey = (g: G): Key => ({ folder: "folder", account: "account", review: "review", apply: "preview", start: "ready", ready: "hooks" } as Record<G, Key>)[g];
+const sum = (k: Key) => k === "folder" ? (dir.value + " · ") + (isImport.value ? "Import" : "Clean") : k === "account" ? "done" : k === "review" ? (items.value ? `${items.value.filter((i) => i.kind !== "plugin").length} items reviewed` : "choices saved") : k === "preview" ? (imported.value ? "imported" : "planned") : k === "ready" ? (importedDir.value ? `${importedDir.value}, started by the import` : "connected") : "";
 
 const SIDE: Record<G, { reads: string; changes: string; shows: string }> = {
   folder: { reads: "Only the folder you pick: CLAUDE.md, ~/.claude, git repos, agent definitions, tmux, tools. Read-only.", changes: "Nothing.", shows: "What the check found, and which path fits." },
-  review: { reads: "This folder, its repos and ~/.claude (settings, rules). Never .env, keys or tokens.", changes: "Nothing until you apply. Each finding needs your Keep or Switch off.", shows: "Findings grouped by area, each with Today and After." },
-  apply: { reads: "The plan you approved.", changes: "Only the files in the preview. Every file is backed up first and the run rolls back if a step fails.", shows: "Files that change, the backup folder, the rollback command." },
+  account: { reads: "Nothing. You paste a token from `claude setup-token`.", changes: "Stores the token in the agentnet folder (accounts/main, readable only by you). It is never shown again.", shows: "Connected, with the date it was added. Skip keeps this machine's Claude login." },
+  review: { reads: "~/.claude, ~/.claude.json and this folder's agent definitions. Never .env files, keys or token values.", changes: "Nothing until you import. Each switch is saved as your choice.", shows: "One row per item, grouped, with the reason and badges." },
+  apply: { reads: "The plan you previewed. Each source is checked again before it is copied.", changes: "Only the files in the preview, all inside the agentnet folder. Your ~/.claude is never written.", shows: "Every step as it runs, and Undo import." },
   start: { reads: "The terminal of the director session.", changes: "Starts a tmux session with Claude Code and the agentnet plugin. Answers Claude Code's first-run questions you approved.", shows: "Real stages and the last terminal lines. Waits up to 90 s, then shows what went wrong." },
   ready: { reads: "Nothing.", changes: "Nothing. Starter hooks are optional.", shows: "Your director is live. Talk to it in its terminal." },
 };
-const pfiles = computed(() => (ad.value?.report ? pickedFiles(ad.value.report.findings, picks.value) : []));
 const small = matchMedia("(max-width:760px)").matches;
-/** Esc closes like the X; after an apply it asks first, since the director is already starting. */
-function onEsc() { if (applied.value && !up.value && !confirm("Setup was applied and the director is starting. Close this page?")) return; emit("close"); }
+/** Esc closes like the X. */
+function onEsc() { emit("close"); } // a running import keeps running on the server; reopening the window resumes it
 const side = computed(() => SIDE[gcur.value]);
 </script>
 
@@ -266,7 +241,7 @@ const side = computed(() => SIDE[gcur.value]);
   <div ref="el" class="ds" role="region" aria-label="Set up your director" @keydown.esc.stop="onEsc">
     <header class="ds-h">
       <h2>Set up your director</h2>
-      <span class="ds-cnt num" aria-live="polite">Step {{ stepNo }} of {{ steps.length }} · {{ isAdopt ? "Adopt" : "Clean" }}</span>
+      <span class="ds-cnt num" aria-live="polite">Step {{ stepNo }} of {{ steps.length }} · {{ isImport ? "Import" : "Clean" }}</span>
       <button type="button" class="ds-x" aria-label="Close" @click="emit('close')"><Icon name="x" :size="20" /></button>
     </header>
     <div class="ds-seg" role="progressbar" aria-label="Setup progress" :aria-valuenow="pct" aria-valuemin="0" aria-valuemax="100"><i v-for="(g, i) in steps" :key="g.k" :class="{ on: i <= idx(gcur) }" /></div>
@@ -279,7 +254,7 @@ const side = computed(() => SIDE[gcur.value]);
             <span class="rt"><b>{{ g.t }}</b><small>{{ state(g.k) === "done" ? sum(sumKey(g.k)) : g.h }}</small></span>
           </li>
         </ol>
-        <p class="ds-t sm">{{ isAdopt ? "Clean is 3 steps." : "Adopt is 5 steps." }}</p>
+        <p class="ds-t sm">{{ isImport ? "Clean is 3 steps." : "Import is 6 steps." }}</p>
       </nav>
       <main class="ds-main">
         <Transition name="stp" mode="out-in">
@@ -301,66 +276,39 @@ const side = computed(() => SIDE[gcur.value]);
               </ul>
               <p v-if="hint" class="ds-t sm" role="status">{{ hint }}</p>
               <div class="ds-types" role="radiogroup" aria-label="Setup type" @keydown="modeKey">
-                <button type="button" role="radio" class="ds-type" :class="{ sel: !isAdopt }" :aria-checked="!isAdopt" :tabindex="!isAdopt ? 0 : -1" @click="choose('clean')">
+                <button type="button" role="radio" class="ds-type" :class="{ sel: !isImport }" :aria-checked="!isImport" :tabindex="!isImport ? 0 : -1" @click="choose('clean')">
                   <i class="ds-dot" /><b>Clean</b><em>3 steps</em><span>Fresh director with its own home. Your project is attached, nothing in it is read or changed.</span>
                 </button>
-                <button type="button" role="radio" class="ds-type" :class="{ sel: isAdopt }" :aria-checked="isAdopt" :tabindex="isAdopt ? 0 : -1" @click="choose('adopt')">
-                  <i class="ds-dot" /><b>Adopt my workspace</b><em>5 steps</em><span>Keep your CLAUDE.md, rules and repo agents. agentnet scans first and asks before it changes anything.</span>
+                <button type="button" role="radio" class="ds-type" :class="{ sel: isImport }" :aria-checked="isImport" :tabindex="isImport ? 0 : -1" @click="choose('import')">
+                  <i class="ds-dot" /><b>Import from existing workspace</b><em>6 steps</em><span>The director reads your Claude setup and proposes agents, teams and hooks. You accept each one.</span>
                 </button>
               </div>
+              <p v-if="isImport" class="ds-t sm">Your files are only read. Accepted items are copied into the agentnet folder.</p>
               <div class="ds-row"><button type="button" class="ds-b" :disabled="!!info?.dirError || !dir" @click="typeNext">Next</button></div>
             </template>
 
-            <!-- scan -->
-            <template v-else-if="cur === 'scan'">
-              <template v-if="stage === 0">
-                <p class="ds-t">Reads your workspace. Read-only: nothing is changed in this step.</p>
-                <p class="ds-t sm">The director reads these files through your Claude account, which uses a few model calls. It may read this folder, its repos and ~/.claude (settings, rules). Never .env, keys or tokens.</p>
-                <div class="ds-row">
-                  <button type="button" class="ds-b ghost" @click="go('folder')">Back</button>
-                  <button type="button" class="ds-b" :disabled="working || !toolsOk" @click="scan('director')">{{ working ? "Starting…" : "Scan with the director" }}</button>
-                  <button type="button" class="ds-link" :disabled="working" @click="scan('static')">Basic scan (no model)</button>
-                </div>
-                <p v-if="!toolsOk" class="ds-t sm">The director scan needs Claude Code and tmux. Basic scan works without them.</p>
-                <p v-if="scanErr" class="ds-err" role="alert">{{ scanErr }}</p>
-              </template>
-              <template v-else-if="stage === -1">
-                <p class="ds-err" role="alert">{{ ad?.failed }}</p>
-                <div class="ds-row"><button type="button" class="ds-b" :disabled="working" @click="scan('director')">Retry</button><button type="button" class="ds-link" :disabled="working" @click="scan('static')">Basic scan</button><button type="button" class="ds-link" @click="discard()">Cancel</button></div>
-              </template>
-              <template v-else>
-                <p class="ds-t">Reading your workspace. Read-only: nothing is changed in this step.</p>
-                <div role="status" aria-live="polite"><ul class="ds-prog">
-                  <li v-for="g in stages" :key="g.k" :class="{ ok: stage > g.k || (stage === 3 && g.k === 3), cur: stage === g.k && stage < 3 }">
-                    <i><Icon v-if="stage > g.k || stage === 3" name="check" :size="12" /><Icon v-else-if="stage === g.k" name="loader" :size="12" class="spin" /></i><span>{{ g.t }}</span><em v-if="g.s">{{ g.s }}</em>
-                  </li>
-                </ul></div>
-                <p v-if="slow" class="ds-t sm">Nothing yet. agentnet answers Claude Code's first-run questions itself. If one needs you, it shows up here.</p>
-                <p class="ds-t sm">It may read this folder, its repos and your Claude settings. It never reads secrets.</p>
-                <div v-if="scanning" class="ds-row"><button type="button" class="ds-b ghost" @click="cancelScan">Cancel scan</button><button type="button" class="ds-link" @click="scan('static')">Basic scan instead</button></div>
-              </template>
+            <!-- Claude account -->
+            <template v-else-if="cur === 'account'">
+              <AgentnetImportAccount setup @back="go('folder')" @next="scan" @skip="scan" />
             </template>
 
             <!-- review -->
             <template v-else-if="cur === 'review'">
-              <AgentnetAdoptFindings v-if="ad?.report" :report="ad.report" :picks="picks" :busy="working" :base="ad.report.workspace" @back="discard()" @preview="preview" @rescan="scan(ad?.scanner === 'static' ? 'static' : 'director')" />
-              <p v-if="reviewErr" class="ds-err" role="alert">{{ reviewErr }}</p>
-            </template>
-
-            <!-- preview -->
-            <template v-else-if="cur === 'preview'">
-              <template v-if="ad?.report && plan">
-                <AgentnetAdoptAfter :report="ad.report" :picks="picks" :base="ad.report.workspace" />
-                <AgentnetAdoptPreview :plan="plan" :findings="ad.report.findings" :busy="working" :error="reviewErr" :base="ad.report.workspace" @back="go('review')" @apply="applyPlan" />
+              <div v-if="working && !items" role="status" aria-live="polite"><ul class="ds-prog"><li class="cur"><i><Icon name="loader" :size="12" class="spin" /></i><span>Reading your Claude setup. Read-only: nothing is changed.</span></li></ul></div>
+              <template v-else-if="scanErr">
+                <p class="ds-err" role="alert">The scan failed: {{ scanErr }}</p>
+                <div class="ds-row"><button type="button" class="ds-b ghost" @click="go('account')">Back</button><button type="button" class="ds-b" @click="scan">Retry</button></div>
               </template>
+              <template v-else-if="items && !items.length">
+                <div class="ds-empty" role="status"><Icon name="shield-check" :size="18" /><div><b>Nothing to import here</b><p class="ds-t sm">No CLAUDE.md, rules, skills, hooks, settings or MCP servers were found in ~/.claude, and no agent definitions in this folder. A clean director is the way to start.</p></div></div>
+                <div class="ds-row"><button type="button" class="ds-b ghost" @click="backToAccount">Back</button><button type="button" class="ds-b" @click="choose('clean'); go('start')">Start clean instead</button></div>
+              </template>
+              <AgentnetImportReview v-else-if="items" :key="imp?.runId ?? 'r'" :items="items" :home="info?.home" :live-names="liveNames" :busy="working" :error="reviewErr" @back="backToAccount" @preview="preview" />
             </template>
 
-            <!-- apply -->
-            <template v-else-if="cur === 'apply'">
-              <div role="status" aria-live="polite"><ul class="ds-prog">
-                <li class="cur"><i><Icon name="loader" :size="12" class="spin" /></i><span>Backing up, changing files, starting the director…</span></li>
-              </ul></div>
-              <p class="ds-t sm">Every touched file is backed up first. If a step fails, the run rolls itself back.</p>
+            <!-- preview and import -->
+            <template v-else-if="cur === 'preview'">
+              <AgentnetImportRun v-if="plan" :key="runKey" :plan="plan" :stage="runStage" :manifest="imp?.manifest" :error="imp?.error" @back="backToReview" @rescan="scan" @next="afterImport" @phase="runStage = $event" />
             </template>
 
             <!-- clean start -->
@@ -422,14 +370,11 @@ const side = computed(() => SIDE[gcur.value]);
 
             <!-- hooks -->
             <template v-else-if="cur === 'hooks'">
-              <p class="ds-t"><span class="ds-live" /> The director is connected. It is now your live director; talk to it in its terminal.</p>
-              <div v-if="applied" class="ds-undo">
-                <p class="ds-t">Done. Undo anytime with <code>agentnet adopt rollback</code></p>
-                <div class="ds-row">
-                  <button type="button" class="ds-cp" :aria-label="undoCopied ? 'Copied' : 'Copy rollback command'" @click="copy('agentnet adopt rollback', 'undo')"><Icon :name="undoCopied ? 'check' : 'copy'" :size="14" /> {{ undoCopied ? "Copied" : "Copy" }}</button>
-                  <button v-if="ad?.plan" type="button" class="ds-link" :aria-expanded="changedOpen" @click="changedOpen = !changedOpen">What changed</button>
-                </div>
-                <div class="ds-chg" :class="{ on: changedOpen }"><ul class="ds-chgin"><li v-for="f in ad?.plan?.willBackup ?? []" :key="f"><code>{{ f }}</code> backed up and changed</li><li v-if="ad?.plan"><code>{{ ad.plan.backupDir }}</code></li></ul></div>
+              <p v-if="importedDir" class="ds-t"><span class="ds-live" /> Director <b>{{ importedDir }}</b> was started by the import.</p>
+              <p v-else class="ds-t"><span class="ds-live" /> The director is connected. It is now your live director; talk to it in its terminal.</p>
+              <div v-if="imported" class="ds-undo">
+                <p class="ds-t">Imported into the agentnet folder. Undo removes everything the import created.</p>
+                <button type="button" class="ds-link" @click="go('preview')">Back to the import (Undo)</button>
               </div>
               <p class="ds-t">Hooks add guard rails and routing to every agent. The starter set is a good first pick. You can change it later on the Hooks page.</p>
               <a class="ds-b ghost" href="#/hooks?starter=1" @click="emit('close')">Install starter hooks <Icon name="arrow-up-right" :size="15" /></a>
@@ -442,12 +387,7 @@ const side = computed(() => SIDE[gcur.value]);
         <details :open="!small">
           <summary>What this step</summary>
           <dl><dt>Reads</dt><dd>{{ side.reads }}</dd><dt>Changes</dt><dd>{{ side.changes }}</dd><dt>Shows</dt><dd>{{ side.shows }}</dd></dl>
-          <template v-if="cur === 'review' && ad?.report">
-            <dt class="fl">Files this will change</dt>
-            <ul class="ds-fl" aria-live="polite"><li v-for="f in pfiles" :key="f"><code>{{ shortPath(f, ad.report.workspace) }}</code></li><li v-if="!pfiles.length" class="mut">None yet. Nothing is applied until you press Apply.</li></ul>
-            <p class="ds-t sm">Each file is backed up before the change; a failed step rolls the whole run back.</p>
-          </template>
-          <p v-if="isAdopt" class="ds-t sm">Undo anytime: <code>agentnet adopt rollback</code> or Settings, Reset director.</p>
+          <p v-if="isImport && gcur === 'apply'" class="ds-t sm">Undo any time from the import step: it removes what the import created. Your ~/.claude is never written.</p>
         </details>
       </aside>
     </div>
@@ -546,6 +486,7 @@ const side = computed(() => SIDE[gcur.value]);
 .ds-b:disabled{opacity:.35;cursor:default}
 .ds-b.ghost{background:transparent;border:1px solid var(--line);color:var(--ink)}
 .ds-err{margin:0;color:var(--bad);font-size:12.5px}
+.ds-empty{display:flex;gap:12px;align-items:flex-start;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--panel-2)}.ds-empty b{font:650 14px var(--body)}.ds-empty p{margin-top:4px}.ds-empty>svg{flex:none;color:var(--on);margin-top:2px}
 .ds-live{display:inline-block;width:9px;height:9px;margin-right:6px;border-radius:50%;background:var(--on)}
 /* the green accent needs white text on the light theme (axe contrast) */
 :global(:root[data-theme="light"] .ds-b:not(.ghost)){color:#fff}

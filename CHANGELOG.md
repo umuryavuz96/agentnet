@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.7.1
+
+Trends show whether the system is improving, and no tool answer floods an agent's context.
+
+- The plugin's tools answer in pages: `list_agents` (compact rows, `limit`, `since`, `life`, `boss`), `owner_goals` and `list_checks` return newest first with a total and a `next_cursor`. `get_status` leaves out the evidence of earlier closed jobs unless `jobs=all`. `inbox` returns at most 40 KB of bodies per call and leaves the rest unread. Any other answer over 60 KB becomes a short notice that says how to page.
+- The Asks page drops reports from agents that are already closed.
+- `agentnet metrics` and a Trends tab on the Scores page show whether the system is improving: closed jobs per kind of work and week, with median time and cost, rework, owner rounds and how often the owner came back with a problem. See docs/metrics.md.
+- The Trends tab opens with two line charts, usage per job and cost per job, one point per day for 14 days, a line per kind of work plus all work, and one plain sentence under each saying how the last 7 days compare with the first 7.
+
+## 0.7.0
+
+The Hooks page shows every hook that runs, the Waiting page is gone, and the Asks page reads in plain words.
+
+**Hooks**
+
+- The Hooks page lists the hooks of your Claude Code settings file (`~/.claude/settings.json`) next to agentnet's own, and the hooks of every enabled plugin. Each row says where the hook is set.
+- Switching a hook in your settings file off or on works like the others: a backup first, a check of the result, and a restore if anything looks wrong. "Roll back" puts back the newest backup of either file.
+- Plugin hooks are read only and labelled with the plugin name. Switch the plugin off to stop them.
+
+**Asks**
+
+- The Waiting for you page is removed. Old `#/waiting` links open Asks. Its questions (with their answer buttons) and unread reports now sit on Asks.
+- Asks has three groups: Needs your answer, Waiting on an agent, Done. Each row says who asks, what they want in one sentence and since when. The detail says what every button does.
+
+**Agent definitions ("brains")**
+
+- Spawns can start from a brain: a Claude Code agent file (`<name>.md`, YAML frontmatter with `version`, `reads` and `skills`, plus a markdown body) kept in a folder outside this repo. Set `AGENTNET_BRAINS_DIR` (default `~/.agents/brains`); brains are off when that folder has no `index.json`.
+- `spawn-agent.sh --brain <name>` picks one. Without it, the service maps the role through `index.json` (`roles`, then the role's last word, then `default`). There is no keyword scoring. An unknown brain refuses the spawn.
+- The brain text goes first in the agent's appended system prompt, before the house rules. The agent record and the agent panel show it as `<name>@v<version>`.
+- The persona catalog picker (`pick-soul.sh`) no longer runs at spawn. `--soul` is ignored with a warning. Only a workspace soul (`ws/...`) from an adopt run still loads, after the brain. The catalog files stay as they are.
+
 ## 0.6.0
 
 The agentnet API now needs a token or a login by default. Also: a redesigned web app, a 3D office next to a new 2D map, and agents that work from a short plan instead of a growing task list.

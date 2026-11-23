@@ -1,4 +1,4 @@
-// Claude Code hooks (~/.claude/settings.json "hooks"): list them with a plain description, switch one on or off, and
+// Claude Code hooks (the "hooks" of agentnet's base settings, $AGENTNET_HOME/claude/base/settings.json): list them with a plain description, switch one on or off, and
 // show how the ones that keep a log have been doing. Claude Code has no per-hook "disabled" flag, so a hook that is
 // switched off is taken out of settings.json and parked in the data folder (hooks-disabled.json); switching it on puts it back.
 // Every write: back up settings.json first, change only the "hooks" key, validate the result, write atomically, and
@@ -9,7 +9,8 @@ import { createHash } from "node:crypto";
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { homedir } from "node:os";
-import { dir } from "../core/config";
+import { ROOT, dir } from "../core/config";
+import { allowOwnerPath, assertInHome } from "../core/paths";
 import { problem, type Env } from "../core/http";
 import { rootOnly } from "../core/access";
 import { HookInputError, templates, validateHook, type HookSpec, type HookTemplate } from "./hook-templates";
@@ -22,11 +23,29 @@ interface Parked { id: string; event: string; matcher: string | null; groupIndex
 export interface HookRun { at: number; ms: number | null; ok: boolean; text: string }
 export interface HookInfo {
   id: string; event: string; matcher: string | null; command: string; script: string; timeout: number | null; enabled: boolean;
+  /** where the hook lives: agentnet's base settings, the user's settings file, or an enabled plugin (read only) */
+  source: "agentnet" | "user" | "plugin"; plugin: string | null; readOnly: boolean;
   name: string; about: string; log: string | null; runs: number; failures: number; avgMs: number | null; p95Ms: number | null; lastAt: number | null; recent: HookRun[];
 }
 
-const SETTINGS = () => process.env.CLAUDE_SETTINGS_FILE ?? join(homedir(), ".claude", "settings.json");
-const PARKED = () => join(process.env.AGENTNET_HOOKS_DATA ?? process.env.HOOKS_DATA_DIR ?? dir("data"), "hooks-disabled.json");
+/** The file the Hooks page edits: agentnet's own base settings in its home. CLAUDE_SETTINGS_FILE (owner-chosen) overrides it. */
+export const SETTINGS = () => allowOwnerPath("CLAUDE_SETTINGS_FILE") ?? join(ROOT, "claude", "base", "settings.json");
+/** The user's own Claude Code settings. Its hooks are listed and can be switched off and on (backup first, same safe write). */
+const userHome = () => process.env.HOME || homedir();
+const USER_SETTINGS = () => join(userHome(), ".claude", "settings.json");
+/** Which settings file a hook lives in: agentnet's own base settings, or the user's ~/.claude/settings.json. */
+export type Scope = "agentnet" | "user";
+/** A user-scope hook id carries a "u" prefix so the same command in both files never collides. */
+const scopeOfId = (id: string): Scope => (id.startsWith("u") ? "user" : "agentnet");
+const userScopeOn = () => USER_SETTINGS() !== SETTINGS();
+const fileOf = (s: Scope) => (s === "user" ? USER_SETTINGS() : SETTINGS());
+const PARKED_DIR = () => allowOwnerPath("AGENTNET_HOOKS_DATA") ?? allowOwnerPath("HOOKS_DATA_DIR") ?? dir("data");
+const PARKED = (s: Scope = "agentnet") => join(PARKED_DIR(), s === "user" ? "hooks-disabled-user.json" : "hooks-disabled.json");
+/** The owner asked the Hooks page to edit the user settings file: that one file and its backups/temp siblings are allowed outside agentnet's folder. */
+function guard(p: string, what: string, s: Scope) {
+  if (s === "user" && dirname(p) === dirname(USER_SETTINGS()) && basename(p).startsWith("settings.json")) return;
+  assertInHome(p, what);
+}
 const LOGS = () => process.env.AGENTNET_HOOK_LOGS ?? process.env.HOOK_LOG_DIR ?? dir("logs");
 const KEEP_BACKUPS = 12;
 
@@ -67,14 +86,15 @@ export const scriptOf = (cmd: string): string => {
   return w.find((x) => !x.startsWith("-") && (x.includes("/") || /\.(js|ts|py|sh|mjs|cjs)$/.test(x))) ?? w[w.length - 1] ?? cmd;
 };
 
-function readSettings(): { raw: string; json: Settings } {
-  // A fresh machine may have no ~/.claude/settings.json yet: start it as "{}" so the backup and install path work.
-  if (!existsSync(SETTINGS())) { mkdirSync(dirname(SETTINGS()), { recursive: true }); writeFileSync(SETTINGS(), "{}\n", { mode: 0o600 }); }
-  const raw = readFileSync(SETTINGS(), "utf8");
+function readSettings(s: Scope = "agentnet"): { raw: string; json: Settings } {
+  const f = fileOf(s);
+  // The base settings start as "{}" (0600 in a 0700 folder) so the backup and install path work. The user's file is never created.
+  if (!existsSync(f) && s === "agentnet") { assertInHome(f, "hook settings"); mkdirSync(dirname(f), { recursive: true, mode: 0o700 }); writeFileSync(f, "{}\n", { mode: 0o600 }); }
+  const raw = readFileSync(f, "utf8");
   return { raw, json: JSON.parse(raw) as Settings };
 }
-function readParked(): Parked[] { try { return JSON.parse(readFileSync(PARKED(), "utf8")) as Parked[]; } catch { return []; } }
-function writeParked(p: Parked[]) { mkdirSync(dirname(PARKED()), { recursive: true }); const t = PARKED() + ".tmp"; writeFileSync(t, JSON.stringify(p, null, 2)); renameSync(t, PARKED()); }
+function readParked(s: Scope = "agentnet"): Parked[] { try { return JSON.parse(readFileSync(PARKED(s), "utf8")) as Parked[]; } catch { return []; } }
+function writeParked(p: Parked[], s: Scope = "agentnet") { assertInHome(PARKED(s), "parked hooks"); mkdirSync(dirname(PARKED(s)), { recursive: true }); const t = PARKED(s) + ".tmp"; writeFileSync(t, JSON.stringify(p, null, 2)); renameSync(t, PARKED(s)); }
 
 // ---------- logs ----------
 interface LogLine { ts?: string; ms?: number; latency_ms?: number; err?: unknown; error?: unknown; dry?: boolean; test?: boolean; skip?: boolean; reason?: string; p?: string; ack?: string; route?: string; kind?: string; agent?: string }
@@ -154,41 +174,86 @@ export function onHookFire(cb: (f: HookFire) => void): () => void {
 
 // ---------- list ----------
 export function listHooks(): HookInfo[] {
-  const { json } = readSettings();
   const out: HookInfo[] = [];
-  const mk = (event: string, matcher: string | null, h: RawHook, enabled: boolean): HookInfo => {
+  const mk = (event: string, matcher: string | null, h: RawHook, enabled: boolean, source: HookInfo["source"] = "agentnet", plugin: string | null = null): HookInfo => {
     const command = String(h.command ?? ""), k = catalog().find((x) => x.match.test(command));
     // an inline shell command (a template or a custom one) has no script file: name it from its template, else call it a custom hook
     const tpl = k ? undefined : templates().find((t) => t.command === command), inline = /[;|&$<>(\n]/.test(command);
     const script = tpl ? tpl.id : inline ? "custom-" + hookId(event, matcher, command) : basename(scriptOf(command));
     const log = k?.log ?? shippedLog(tpl?.id), st = log ? logStats(log) : null;
+    const hid = hookId(event, source === "plugin" ? plugin + "\0" + (matcher ?? "") : matcher, command), id = source === "user" ? "u" + hid : source === "plugin" ? "p" + hid : hid;
     return {
-      id: hookId(event, matcher, command), event, matcher, command, script, timeout: typeof h.timeout === "number" ? h.timeout : null, enabled,
-      name: k?.name ?? tpl?.name ?? (inline ? "Custom hook" : script), about: k?.about ?? tpl?.about ?? EVENT_ABOUT[event] ?? "A custom hook.", log: log ?? null,
+      id, source, plugin, readOnly: source === "plugin", event, matcher, command, script, timeout: typeof h.timeout === "number" ? h.timeout : null, enabled,
+      name: k?.name ?? tpl?.name ?? (inline ? (plugin ? `${plugin} (${event})` : "Custom hook") : script), about: k?.about ?? tpl?.about ?? (plugin ? `From the ${plugin} plugin. ` : "") + (EVENT_ABOUT[event] ?? "A custom hook."), log: log ?? null,
       runs: st?.runs ?? 0, failures: st?.failures ?? 0, avgMs: st?.avgMs ?? null, p95Ms: st?.p95Ms ?? null, lastAt: st?.lastAt ?? null, recent: st?.recent ?? [],
     };
   };
-  for (const [event, groups] of Object.entries(json.hooks ?? {})) for (const g of groups) for (const h of g.hooks ?? []) out.push(mk(event, g.matcher ?? null, h, true));
-  for (const p of readParked()) out.push(mk(p.event, p.matcher, p.hook, false));
+  const add = (s: Scope, source: "agentnet" | "user") => {
+    const { json } = readSettings(s);
+    for (const [event, groups] of Object.entries(json.hooks ?? {})) for (const g of Array.isArray(groups) ? groups : []) for (const h of g.hooks ?? []) out.push(mk(event, g.matcher ?? null, h, true, source));
+    for (const p of readParked(s)) out.push(mk(p.event, p.matcher, p.hook, false, source));
+  };
+  add("agentnet", "agentnet");
+  if (userScopeOn()) { try { add("user", "user"); } catch { /* user file missing or unreadable: nothing to list */ } }
+  for (const ph of pluginHooks()) out.push(mk(ph.event, ph.matcher, ph.hook, true, "plugin", ph.plugin));
   return out;
 }
 
+/** The hooks of every enabled plugin (enabledPlugins in the user settings), read from the plugin's hooks/hooks.json and the "hooks" of its plugin.json. Read only. */
+function pluginHooks(): { plugin: string; event: string; matcher: string | null; hook: RawHook }[] {
+  const out: { plugin: string; event: string; matcher: string | null; hook: RawHook }[] = [];
+  const read = <T,>(f: string): T | null => { try { return JSON.parse(readFileSync(f, "utf8")) as T; } catch { return null; } };
+  const user = read<{ enabledPlugins?: Record<string, boolean> }>(USER_SETTINGS());
+  const inst = read<{ plugins?: Record<string, { scope?: string; installPath?: string }[]> }>(join(userHome(), ".claude", "plugins", "installed_plugins.json"));
+  for (const [id, on] of Object.entries(user?.enabledPlugins ?? {})) {
+    if (on !== true) continue;
+    const entries = inst?.plugins?.[id] ?? [], root = (entries.find((e) => e.scope === "user") ?? entries[0])?.installPath;
+    if (!root) continue;
+    const name = id.split("@")[0], seen = new Set<string>();
+    const files = [read<{ hooks?: unknown }>(join(root, "hooks", "hooks.json")), read<{ hooks?: unknown }>(join(root, ".claude-plugin", "plugin.json")), read<{ hooks?: unknown }>(join(root, "plugin.json"))];
+    for (const f of files) {
+      const hooks = f?.hooks;
+      if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) continue;
+      for (const [event, gs] of Object.entries(hooks as Record<string, Group[]>)) for (const g of Array.isArray(gs) ? gs : []) for (const h of g.hooks ?? []) {
+        const key = event + "\0" + (g.matcher ?? "") + "\0" + String(h.command ?? "");
+        if (seen.has(key)) continue; seen.add(key);
+        out.push({ plugin: name, event, matcher: g.matcher ?? null, hook: h });
+      }
+    }
+  }
+  return out;
+}
+
+/** The hooks in the user's ~/.claude/settings.json, read only (null when the file is missing, unreadable or is the edited file). */
+export function externalHooks(): { file: string; hooks: { event: string; matcher: string | null; command: string }[]; readOnly: true } | null {
+  const f = USER_SETTINGS();
+  if (f === SETTINGS() || !existsSync(f)) return null;
+  try {
+    const json = JSON.parse(readFileSync(f, "utf8")) as Settings;
+    const hooks = Object.entries(json.hooks ?? {}).flatMap(([event, gs]) => (Array.isArray(gs) ? gs : []).flatMap((g) => (g.hooks ?? []).map((h) => ({ event, matcher: g.matcher ?? null, command: String(h.command ?? "") }))));
+    return { file: "~/.claude/settings.json", hooks, readOnly: true };
+  } catch { return null; }
+}
+
 // ---------- safe write ----------
-export function backups(): string[] {
-  const f = SETTINGS(), d = dirname(f), pre = basename(f) + ".bak-agentnet-";
+export function backups(s: Scope = "agentnet"): string[] {
+  const f = fileOf(s), d = dirname(f), pre = basename(f) + ".bak-agentnet-";
   return existsSync(d) ? readdirSync(d).filter((n) => n.startsWith(pre)).sort() .map((n) => join(d, n)) : [];
 }
-function backup(): string {
-  const f = SETTINGS(), b = `${f}.bak-agentnet-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 17)}`;
+function backup(s: Scope = "agentnet"): string {
+  const f = fileOf(s), b = `${f}.bak-agentnet-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 17)}`;
+  guard(b, "hook settings backup", s);
   copyFileSync(f, b);
-  for (const old of backups().slice(0, -KEEP_BACKUPS)) try { unlinkSync(old); } catch { /* ignore */ }
+  for (const old of backups(s).slice(0, -KEEP_BACKUPS)) try { unlinkSync(old); } catch { /* ignore */ }
   return b;
 }
 /** Write `next` as the new settings, but only if it differs from `prev` in the "hooks" key alone. */
-function commit(prev: Settings, next: Settings): string {
+function commit(prev: Settings, next: Settings, sc: Scope = "agentnet"): string {
   const { hooks: _a, ...restPrev } = prev, { hooks: _b, ...restNext } = next;
   if (JSON.stringify(restPrev) !== JSON.stringify(restNext)) throw new Error("refusing to change anything but hooks");
-  const text = JSON.stringify(next, null, 2), f = SETTINGS(), b = backup();
+  const f = fileOf(sc);
+  guard(f, "hook settings", sc);
+  const b = backup(sc), text = JSON.stringify(next, null, 2) + (readFileSync(f, "utf8").endsWith("\n") ? "\n" : "");
   try {
     const check = JSON.parse(text) as Settings;
     if (JSON.stringify({ ...check, hooks: 0 }) !== JSON.stringify({ ...prev, hooks: 0 })) throw new Error("validation failed");
@@ -202,24 +267,26 @@ function commit(prev: Settings, next: Settings): string {
 
 /** Switch one hook off (taken out of settings.json, parked) or on (put back where it was). Returns the new list. */
 export function setHookEnabled(id: string, enabled: boolean): HookInfo[] {
-  const { json } = readSettings(), prev = structuredClone(json), parked = readParked();
+  if (id.startsWith("p")) throw new Error("a plugin hook is read only: switch the plugin off instead");
+  const sc = scopeOfId(id), raw = sc === "user" ? id.slice(1) : id;
+  const { json } = readSettings(sc), prev = structuredClone(json), parked = readParked(sc);
   json.hooks ??= {};
   if (!enabled) {
     for (const [event, groups] of Object.entries(json.hooks)) {
       for (let gi = 0; gi < groups.length; gi++) {
-        const g = groups[gi], hi = (g.hooks ?? []).findIndex((h) => hookId(event, g.matcher ?? null, String(h.command ?? "")) === id);
+        const g = groups[gi], hi = (g.hooks ?? []).findIndex((h) => hookId(event, g.matcher ?? null, String(h.command ?? "")) === raw);
         if (hi < 0) continue;
         const [hook] = g.hooks.splice(hi, 1);
-        parked.push({ id, event, matcher: g.matcher ?? null, groupIndex: gi, hookIndex: hi, hook, at: Date.now() });
+        parked.push({ id: raw, event, matcher: g.matcher ?? null, groupIndex: gi, hookIndex: hi, hook, at: Date.now() });
         if (!g.hooks.length) groups.splice(gi, 1);
         if (!groups.length) delete json.hooks[event];
-        commit(prev, json); writeParked(parked);
+        commit(prev, json, sc); writeParked(parked, sc);
         return listHooks();
       }
     }
     throw new Error("hook not found");
   }
-  const pi = parked.findIndex((p) => p.id === id);
+  const pi = parked.findIndex((p) => p.id === raw);
   if (pi < 0) throw new Error("hook not found");
   const p = parked[pi];
   const groups = (json.hooks[p.event] ??= []);
@@ -227,7 +294,7 @@ export function setHookEnabled(id: string, enabled: boolean): HookInfo[] {
   if (near && (near.matcher ?? null) === p.matcher) near.hooks.splice(Math.min(p.hookIndex, near.hooks.length), 0, p.hook);
   else { const g: Group = { hooks: [p.hook] }; if (p.matcher) g.matcher = p.matcher; groups.splice(Math.min(p.groupIndex, groups.length), 0, g); }
   parked.splice(pi, 1);
-  commit(prev, json); writeParked(parked);
+  commit(prev, json, sc); writeParked(parked, sc);
   return listHooks();
 }
 
@@ -317,14 +384,20 @@ export function uninstallHook(id: string): { backup: string | null } {
 }
 
 /** Put the newest backup back (and park nothing: the parked list is cleared because the backup is the truth). */
+const stamp = (f: string) => f.slice(f.lastIndexOf(".bak-agentnet-"));
+/** Backups of both settings files, oldest first by their timestamp. */
+export function allBackups(): { sc: Scope; file: string }[] {
+  const l = (["agentnet", ...(userScopeOn() ? ["user"] : [])] as Scope[]).flatMap((sc) => backups(sc).map((file) => ({ sc, file })));
+  return l.sort((a, b) => stamp(a.file).localeCompare(stamp(b.file)));
+}
 export function rollback(): { restored: string } {
-  const list = backups(), last = list[list.length - 1];
+  const all = allBackups(), pick = all[all.length - 1], last = pick?.file, sc = pick?.sc ?? "agentnet";
   if (!last) throw new Error("no backup yet");
-  const { json: prev } = readSettings(), restored = JSON.parse(readFileSync(last, "utf8")) as Settings;
-  commit(prev, { ...prev, hooks: restored.hooks }); // keeps every other key as it is now
+  const { json: prev } = readSettings(sc), restored = JSON.parse(readFileSync(last, "utf8")) as Settings;
+  commit(prev, { ...prev, hooks: restored.hooks }, sc); // keeps every other key as it is now
   // hooks that came back are no longer parked; hooks that are missing from the restored file stay parked
   const live = new Set(Object.entries(restored.hooks ?? {}).flatMap(([e, gs]) => gs.flatMap((g) => (g.hooks ?? []).map((h) => hookId(e, g.matcher ?? null, String(h.command ?? ""))))));
-  writeParked(readParked().filter((p) => !live.has(p.id)));
+  writeParked(readParked(sc).filter((p) => !live.has(p.id)), sc);
   return { restored: basename(last) };
 }
 
@@ -363,18 +436,18 @@ export function hooksRoutes(api: Hono<Env>) {
   const bad = (c: Parameters<typeof problem>[0], e: unknown) => e instanceof HookInputError ? problem(c, e.status, e.status === 409 ? "Conflict" : e.status === 404 ? "Not Found" : "Bad Request", e.message) : problem(c, 400, "Bad Request", String((e as Error).message));
   api.post("/agent-hooks/install", rootOnly, async (c) => {
     const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
-    try { const r = installHook(body); return c.json({ installed: r.id, backup: r.backup, fragment: r.fragment, dryRun: body.dryRun === true, hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return bad(c, e); }
+    try { const r = installHook(body); return c.json({ installed: r.id, backup: r.backup, fragment: r.fragment, dryRun: body.dryRun === true, hooks: listHooks(), backups: allBackups().map((b) => basename(b.file)) }); } catch (e) { return bad(c, e); }
   });
   api.post("/agent-hooks/install-set", rootOnly, async (c) => {
     const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
-    try { const r = installSet(body); return c.json({ ...r, dryRun: body.dryRun === true, hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return bad(c, e); }
+    try { const r = installSet(body); return c.json({ ...r, dryRun: body.dryRun === true, hooks: listHooks(), backups: allBackups().map((b) => basename(b.file)) }); } catch (e) { return bad(c, e); }
   });
-  api.delete("/agent-hooks/:id", rootOnly, (c) => { try { const r = uninstallHook(c.req.param("id")); return c.json({ backup: r.backup, hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return bad(c, e); } });
-  api.get("/agent-hooks", (c) => { try { return c.json({ hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return c.json({ hooks: [], backups: [], error: String((e as Error).message) }); } });
+  api.delete("/agent-hooks/:id", rootOnly, (c) => { try { const r = uninstallHook(c.req.param("id")); return c.json({ backup: r.backup, hooks: listHooks(), backups: allBackups().map((b) => basename(b.file)) }); } catch (e) { return bad(c, e); } });
+  api.get("/agent-hooks", (c) => { try { return c.json({ hooks: listHooks(), backups: allBackups().map((b) => basename(b.file)), external: externalHooks() }); } catch (e) { return c.json({ hooks: [], backups: [], external: externalHooks(), error: String((e as Error).message) }); } });
   api.post("/agent-hooks/:id/enabled", rootOnly, async (c) => {
     const body = await c.req.json().catch(() => ({})) as { enabled?: unknown };
     if (typeof body.enabled !== "boolean") return problem(c, 400, "Bad Request", "enabled must be true or false");
-    try { return c.json({ hooks: setHookEnabled(c.req.param("id"), body.enabled), backups: backups().map((b) => basename(b)) }); } catch (e) { return problem(c, 400, "Bad Request", String((e as Error).message)); }
+    try { return c.json({ hooks: setHookEnabled(c.req.param("id"), body.enabled), backups: allBackups().map((b) => basename(b.file)) }); } catch (e) { return problem(c, 400, "Bad Request", String((e as Error).message)); }
   });
-  api.post("/agent-hooks/rollback", rootOnly, (c) => { try { const r = rollback(); return c.json({ ...r, hooks: listHooks(), backups: backups().map((b) => basename(b)) }); } catch (e) { return problem(c, 400, "Bad Request", String((e as Error).message)); } });
+  api.post("/agent-hooks/rollback", rootOnly, (c) => { try { const r = rollback(); return c.json({ ...r, hooks: listHooks(), backups: allBackups().map((b) => basename(b.file)) }); } catch (e) { return problem(c, 400, "Bad Request", String((e as Error).message)); } });
 }

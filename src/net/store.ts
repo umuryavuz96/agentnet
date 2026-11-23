@@ -35,11 +35,16 @@ export function ensureSchema() {
   );
   try { db().run("ALTER TABLE messages ADD COLUMN channel_id INTEGER"); } catch { /* fresh table or already added */ }
   try { db().run("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'info'"); } catch { /* fresh table has it */ }
+  try { db().run("ALTER TABLE team_members ADD COLUMN left_at INTEGER"); } catch { /* fresh or already added */ } // set when the agent was despawned: it is past, not a member
   try { db().run("ALTER TABLE agents ADD COLUMN token_file TEXT"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE agents ADD COLUMN compact_window INTEGER"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE agents ADD COLUMN goal TEXT"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE agents ADD COLUMN audit TEXT"); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE agents ADD COLUMN kind TEXT NOT NULL DEFAULT 'agent'"); } catch { /* fresh or already added */ }
+  try { db().run("ALTER TABLE agents ADD COLUMN account TEXT DEFAULT 'main'"); } catch { /* fresh or already added */ } // the Claude account it logs in with (accounts.ts)
+  try { db().run("ALTER TABLE agents ADD COLUMN standing INTEGER NOT NULL DEFAULT 0"); } catch { /* fresh or already added */ } // never auto-finished (finish.ts)
+  try { db().run("ALTER TABLE agents ADD COLUMN keep_list TEXT"); } catch { /* fresh or already added */ } // the agent's keep tool: [{pid?, port?, reason}]
+  try { db().run("ALTER TABLE agents ADD COLUMN pending_kill_at INTEGER"); } catch { /* fresh or already added */ } // finish.ts: session kill due (sweep.ts)
   for (const col of ["options", "answer", "answer_tone"]) try { db().run(`ALTER TABLE checks ADD COLUMN ${col} TEXT`); } catch { /* fresh or already added */ }
   try { db().run("ALTER TABLE messages ADD COLUMN subject TEXT"); } catch { /* fresh table has it; the live table from 2026-11-07 did not */ }
 }

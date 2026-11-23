@@ -19,7 +19,7 @@ const claudeJson = () => `{"numStartups":  12,\n  "history": [{"display":"caf\\u
 const hookSettings = (script: string) => JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: `$CLAUDE_PROJECT_DIR/bin/${script}` }] }] } }, null, 2) + "\n";
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "adopt-global-")); home = join(tmp, "home"); ws = join(tmp, "work"); root = join(tmp, "agentnet");
+  tmp = mkdtempSync(join(tmpdir(), "adopt-global-")); home = join(tmp, "home"); ws = join(tmp, "work"); root = tmp; // HOME inside the home: covers the ~/.claude.json mechanics (rollback of old runs)
   oldHome = process.env.HOME; process.env.HOME = home;
   mkdirSync(home, { recursive: true });
   w(join(home, ".claude.json"), claudeJson());

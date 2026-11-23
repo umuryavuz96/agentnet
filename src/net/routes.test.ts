@@ -22,7 +22,7 @@ const j = async (r: Response) => ({ status: r.status, body: await r.json().catch
 beforeAll(() => {
   useDatabase(new Database(":memory:")); st._reset();
   // root → architect-1 → {backend-1, web-dev-1}; root → sre-1
-  for (const [name, boss] of [["root", null], ["architect-1", "root"], ["backend-1", "architect-1"], ["web-dev-1", "architect-1"], ["sre-1", "root"]] as const) tok[name] = rt.createAgent({ name, boss: boss ?? undefined, job: "t", by: "test" }).token;
+  for (const [name, boss] of [["root", null], ["architect-1", "root"], ["backend-1", "architect-1"], ["web-dev-1", "architect-1"], ["sre-1", "root"]] as const) tok[name] = rt.createAgent({ name, boss: boss ?? undefined, job: "t", by: "test", standing: true }).token; // standing: these tests keep using an agent after its done report (finish.test.ts covers auto-finish)
 });
 
 describe("agent token check and agentPath", () => {
@@ -50,7 +50,7 @@ describe("identity", () => {
     expect((await call("backend-1", "POST", "/spawn", { name: "x-1" })).status).toBe(403);
     expect((await call("backend-1", "POST", "/despawn", { agent: "sre-1" })).status).toBe(403);
     const r = await j(await call("root", "POST", "/spawn", { name: "qa-1", boss: "architect-1", job: "qa" }));
-    expect(r.status).toBe(201); expect(r.body.agent).toBe("qa-1#1"); expect(r.body.token_file.endsWith("qa-1.token")).toBe(true);
+    expect(r.status).toBe(201); expect(r.body.agent).toBe("qa-1#1"); expect(r.body.token_file.endsWith("agents/qa-1/token")).toBe(true);
     expect(st.get("qa-1#1")?.life).toBe("starting");
     expect((await j(await call("root", "POST", "/spawn", { name: "qa-1" }))).status).toBe(422); // live already
   });
@@ -272,6 +272,7 @@ describe("POST /bg", () => {
   test("a shell without a description gets a summary sentence later; the command stays in cmd; a described one is left alone", async () => {
     const sum = await import("./bgsum"); const asked: string[] = [];
     sum.setAsk(async (c) => { asked.push(c); await Bun.sleep(40); return "Waits for the render batch to finish"; });
+    process.env.AGENTNET_BG_SUMMARY = "1"; // opt-in
     try {
       await call("sre-1", "POST", "/hello", { session: "sid-s", pid: 2 });
       const cmd = "until grep -q F6GRID_DONE ~/projects/x/log; do sleep 30; done";
@@ -285,17 +286,21 @@ describe("POST /bg", () => {
       await call("sre-1", "POST", "/bg", { id: "s1", kind: "shell", label: cmd, state: "done" }); // later events keep the sentence and are not asked again
       expect(row("s1")).toMatchObject({ label: "Waits for the render batch to finish", state: "done" });
       await Bun.sleep(30); expect(asked).toHaveLength(1);
-    } finally { sum.setAsk(null); sum._reset(); }
+    } finally { delete process.env.AGENTNET_BG_SUMMARY; sum.setAsk(null); sum._reset(); }
   });
-  test("a failed summary leaves the raw command; AGENTNET_BG_SUMMARY=0 never asks", async () => {
+  test("a failed summary leaves the raw command; without AGENTNET_BG_SUMMARY=1 it never asks", async () => {
     const sum = await import("./bgsum"); let n = 0;
     sum.setAsk(async () => { n++; return null; });
+    process.env.AGENTNET_BG_SUMMARY = "1";
     try {
       await call("sre-1", "POST", "/bg", { id: "f1", kind: "monitor", label: "tail -f build.log", raw: true, state: "running" });
       await Bun.sleep(40); expect(n).toBe(1);
       expect(st.all().find((x) => x.name === "sre-1")!.bg!.find((b) => b.id === "f1")!.label).toBe("tail -f build.log");
-      process.env.AGENTNET_BG_SUMMARY = "0";
+      delete process.env.AGENTNET_BG_SUMMARY; // the default: off
       await call("sre-1", "POST", "/bg", { id: "f2", kind: "shell", label: "sleep 100", raw: true, state: "running" });
+      await Bun.sleep(40); expect(n).toBe(1);
+      process.env.AGENTNET_BG_SUMMARY = "0";
+      await call("sre-1", "POST", "/bg", { id: "f3", kind: "shell", label: "sleep 101", raw: true, state: "running" });
       await Bun.sleep(40); expect(n).toBe(1);
     } finally { delete process.env.AGENTNET_BG_SUMMARY; sum.setAsk(null); sum._reset(); }
   });

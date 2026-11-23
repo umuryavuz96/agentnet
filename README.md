@@ -150,25 +150,46 @@ keeps names, tasks, messages and notes, and the web app shows them live.
 
 There is no agent loop to write; the agents are real Claude Code sessions.
 
+## One folder
+
+Everything agentnet writes lives in one folder, `$AGENTNET_HOME` (default `~/.local/share/agentnet`). Folders are 0700 and
+secret files 0600.
+
+```
+$AGENTNET_HOME/
+  config/  data/  logs/  trails/  backups/  bgjobs/
+  run/                root.token, panel.token, login sessions (hashed)
+  accounts/<id>/      the Claude login token for agents (from `claude setup-token`)
+  claude/base/        your imported Claude Code setup: CLAUDE.md, rules, agents, commands, skills, hooks, settings
+  souls/              agent personas
+  agents/<name>/      token, claude/ (the agent's own CLAUDE_CONFIG_DIR), work/, records/
+  import/<run>/       what each import did, for undo
+```
+
+- agentnet never writes outside this folder. Your `~/.claude` is only read, by the import scan. Your project folders are
+  where agents work; agentnet adds nothing of its own there (no `.claude/`, no settings, no trust files).
+- The one exception is a path you set yourself in an env var such as `CLAUDE_SETTINGS_FILE`; the server lists those at boot.
+- To bring in an existing setup, open the web app and pick **Import** in "Set up your director". A read-only scan
+  lists your CLAUDE.md, rules, skills, hooks, MCP servers and agents; you pick per item, see every file in a preview, and
+  can undo the import at any time. Your originals are copied, never moved or edited.
+- An install from before 0.6 moves into this layout with `agentnet migrate one-folder` (a dry run unless you pass `--apply`;
+  `--undo <id>` puts it back).
+
 ## Security model
 
-agentnet has no login. It is safe because of where it listens.
+Every API request needs a credential (only `/v1/health` and the sign-in page are open); coming from the machine itself gives no rights.
 
-- It listens on `127.0.0.1`. Only programs on your machine can reach it.
-- You can opt in to one LAN or tailnet address (`AGENTNET_HOST`) to open the web app from your phone. Public addresses,
-  `0.0.0.0` and `::` are refused.
-- Behind a reverse proxy on the same machine, set `AGENTNET_TRUST_PROXY=private` so LAN and tailnet clients can use the
-  panel's write controls. It is off by default.
-- There is no login, so never expose it to the internet: no port forwarding, no public tunnel or proxy.
-- Starting and stopping agents and changing settings work only from the machine itself or from the root agent.
-- The update button works only from the machine itself or the root agent, like other writes. If you set
-  `AGENTNET_TRUST_PROXY=private`, anyone on your LAN or tailnet can press it. It can only move agentnet to the newest
-  release tag from `origin` and runs no other command. Set `AGENTNET_WEB_UPDATE=0` to turn it off. The release check
-  calls api.github.com every 10 minutes (answers to unchanged releases are free 304s); `AGENTNET_UPDATE_CHECK=0` turns that off.
-- Each agent's token says which agent is calling. It sits in a file only you can read (mode 0600). It is identity, not a
-  login.
+- The web app needs a sign-in. `agentnet login` prints a one-time link (one use, 60 s) that becomes a 30-day session
+  cookie. The first start prints one too.
+- Agents send their own token; root sends `run/root.token`. Scripts can use `run/panel.token` for the panel routes.
+- It listens on `127.0.0.1` by default. You can opt in to one LAN or tailnet address (`AGENTNET_HOST`); public addresses,
+  `0.0.0.0` and `::` are refused. Never expose it to the internet.
+- Two house flags bring back the old loopback trust on one machine. Both are off by default and logged at every start.
+  `AGENTNET_LOOPBACK_ROOT=on` is deprecated and goes away in 0.8.
+- The update button can only move agentnet to the newest release tag from `origin`. `AGENTNET_WEB_UPDATE=0` turns it off;
+  `AGENTNET_UPDATE_CHECK=0` stops the release check (api.github.com every 10 minutes).
 
-Details: [docs/api.md](docs/api.md).
+What one agent can and cannot reach, and how to report a problem: [SECURITY.md](SECURITY.md). API details: [docs/api.md](docs/api.md).
 
 ## Server OS
 

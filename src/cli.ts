@@ -14,7 +14,7 @@ const HELP = `agentnet: a local network for Claude Code agents
   serve                     run the server in the foreground
   spawn | join | pick-model | pick-soul | bg   run the matching script (see scripts/)
   council <project> <team> "<job>" "<name=angle,...>" "<roles>" [--go] [--ask T]   plan a council team (spawn it with --go)
-  install-hooks [--write]   print the triage hook snippet for ~/.claude/settings.json; --write merges it (backup first)
+  install-hooks [--write] [--target <file>]   print the triage hook snippet; --write merges it into $AGENTNET_HOME/claude/base/settings.json (backup first)
   plan-spawn --job TEXT [--project DIR] [--role R] ...   where a new agent would land (name, boss, team, model, soul); changes nothing
   trust <dir> [--enable a,b]   answer Claude Code's trust + .mcp.json questions for a folder (spawn does this itself)
   despawn <name> [--reason R]
@@ -24,8 +24,12 @@ const HELP = `agentnet: a local network for Claude Code agents
   login                     print a one-time sign-in link for the web panel (one use, 60 s)
   init [dir] [--start]      first run: check the setup, print the command that starts the director; --start runs it in tmux
   discipline [--day [YYYY-MM-DD]] [--json]   task discipline score per agent and per day; --day also writes the daily snapshot
+  metrics [--weeks N] [--tasks] [--json]   closed jobs per kind of work and week: wall time, cost, rework, owner rounds, owner caught it
+  pick --role <role>        pick a line of the role by Thompson sampling (or the rubric fallback under 5 graded jobs); logged with its probability
+  lines import [--apply]                    make a line (lines/<name>, self v1 = its soul) for every agent name; a dry run unless --apply
   doctor                    check bun, tmux, claude, python3, data folder, service
   install-service [--dry-run]   write a launchd (macOS) or systemd user unit; never starts it
+  migrate one-folder [--apply | --undo <id> [--force]]   move tokens, souls and records into the one-folder layout (dry run by default)
   migrate-from-server-os --source <var> [--to <home>] [--dry-run] [--members a,b]   copy a Server OS var folder into an agentnet home
   export-legacy --to <server-os var> [--from <home>] [--yes]   copy post-cutover data back (rollback); dry run without --yes
   update [--check] [--yes]  move to the newest release tag (install, build, restart, doctor; rolls back on failure)`;
@@ -103,6 +107,17 @@ async function planSpawn(args: string[]): Promise<number> {
   } catch (e) { console.error(`agentnet: plan-spawn failed: ${(e as Error).message}`); return 1; }
 }
 
+/** agentnet pick --role <role>: the server's Thompson line pick (step 8b). Prints {line, prob, candidates} or {fallback}. */
+async function pick(args: string[]): Promise<number> {
+  const i = args.indexOf("--role"), role = i >= 0 ? args[i + 1] : undefined;
+  if (!role) { console.error("usage: agentnet pick --role <role>"); return 2; }
+  try {
+    const r = await fetch(`${url()}/pick`, { method: "POST", headers: authed(), body: JSON.stringify({ role }), signal: AbortSignal.timeout(10000) });
+    console.log(JSON.stringify(await r.json(), null, 2));
+    return r.ok ? 0 : 1;
+  } catch (e) { console.error(`agentnet: pick failed: ${(e as Error).message}`); return 1; }
+}
+
 /** `agentnet login`: a one-time sign-in link for the web panel (one use, 60 s), made with run/panel.token. */
 async function login(): Promise<number> {
   const t = readToken(join(ROOT, "run", "panel.token"));
@@ -137,6 +152,36 @@ async function discipline(args: string[]): Promise<number> {
   console.log(`discipline ${d.all ?? "n/a"} over ${d.jobs} closed jobs (${d.steps} steps)`);
   for (const r of d.days) console.log(`${r.day}  ${String(r.score ?? "n/a").padStart(3)}  ${String(r.jobs).padStart(3)} jobs ${String(r.steps).padStart(4)} steps  work seen ${r.checks.workSeen ?? "-"}%  proof ${r.checks.evidence ?? "-"}%  plan kept ${r.checks.planKept ?? "-"}%  not dropped ${r.checks.notDropped ?? "-"}%  closed ${r.checks.closed ?? "-"}%`);
   if (written.length) console.log(`snapshot written: ${written.map((r) => r.day).join(", ")}`);
+  return 0;
+}
+
+/** Is the system improving? Per kind of work and week (src/net/metrics.ts). --tasks reads the old per-task rows instead of jobs. */
+async function metrics(args: string[]): Promise<number> {
+  const { ensureSchema } = await import("./net/store"), m = await import("./net/metrics");
+  ensureSchema();
+  const wi = args.indexOf("--weeks"), w = wi >= 0 ? Number(args[wi + 1]) : 8;
+  if (!Number.isInteger(w) || w < 1 || w > 26) { console.error("usage: agentnet metrics [--weeks 1-26] [--tasks] [--json]"); return 2; }
+  const t = m.metricsReport(args.includes("--tasks") ? "task" : "job", w);
+  console.log(args.includes("--json") ? JSON.stringify(t, null, 1) : m.formatTrend(t));
+  return 0;
+}
+
+/** agentnet lines import [--apply]: one line per agent name (step 8a). A dry run lists what it would create. */
+async function lines(args: string[]): Promise<number> {
+  if (args[0] === "prune") { // weekly rule prune (SPEC-asks-ledger (f)); dry run unless --apply
+    const { ensureSchema } = await import("./net/store"), { pruneRules } = await import("./net/ownerLearn");
+    ensureSchema();
+    const r = await pruneRules(args.includes("--apply"));
+    for (const p of r.pruned) console.log(`${r.apply ? "pruned   " : "would prune"} ${p.line}: ${p.text} (${p.reason})`);
+    console.log(`${r.pruned.length} of ${r.checked} kept rules across ${r.lines} lines; boot text ${r.before ?? "?"} -> ${r.after ?? "?"} tokens${r.apply ? "" : " (dry run: add --apply)"}`);
+    return 0;
+  }
+  if (args[0] !== "import") { console.error("usage: agentnet lines import|prune [--apply]"); return 2; }
+  const { ensureSchema } = await import("./net/store"), { importLines } = await import("./net/lines");
+  ensureSchema();
+  const apply = args.includes("--apply"), out = importLines(apply), fresh = out.filter((r) => !r.exists);
+  for (const r of out) console.log(`${r.exists ? "has a line " : apply ? "created    " : "would make "} ${r.name}${r.soul ? ` (soul ${r.soul})` : ""}`);
+  console.log(`${fresh.length} of ${out.length} names ${apply ? "got a line" : "would get a line (dry run: add --apply)"}`);
   return 0;
 }
 
@@ -227,14 +272,18 @@ export function triageSnippet(): { hooks: { UserPromptSubmit: { hooks: { type: s
 }
 
 /** Print the snippet; with --write, back up settings.json (CLAUDE_SETTINGS_FILE or ~/.claude/settings.json), then add the hook once. */
-function installHooks(args: string[]): number {
+async function installHooks(args: string[]): Promise<number> {
   const snip = triageSnippet();
   if (!args.includes("--write")) {
     console.log(JSON.stringify(snip, null, 2));
-    console.error("add the hooks key to ~/.claude/settings.json, or run: agentnet install-hooks --write");
+    console.error(`add the hooks key to ${join(ROOT, "claude", "base", "settings.json")}, or run: agentnet install-hooks --write`);
     return 0;
   }
-  const file = process.env.CLAUDE_SETTINGS_FILE ?? join(HOME, ".claude", "settings.json");
+  // agentnet's own base settings in its home; --target must be inside the home; CLAUDE_SETTINGS_FILE is the owner's choice
+  const target = flag(args, "--target");
+  const { allowOwnerPath, assertInHome } = await import("./core/paths"); // lazy: the other commands do not load the server config
+  const file = target ? resolve(tilde(target)) : allowOwnerPath("CLAUDE_SETTINGS_FILE") ?? join(ROOT, "claude", "base", "settings.json");
+  try { assertInHome(file, "install-hooks", ROOT); } catch (e) { console.error((e as Error).message); return 1; }
   let cur: Record<string, any> = {};
   if (existsSync(file)) {
     try { cur = JSON.parse(readFileSync(file, "utf8")); } catch { console.error(`agentnet: ${file} is not valid JSON; not touched`); return 1; }
@@ -246,9 +295,9 @@ function installHooks(args: string[]): number {
   const group = snip.hooks.UserPromptSubmit[0]!;
   const list: any[] = ((cur.hooks ??= {}).UserPromptSubmit ??= []);
   list.push(group);
-  mkdirSync(dirname(file), { recursive: true });
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.tmp-agentnet`;
-  writeFileSync(tmp, JSON.stringify(cur, null, 2) + "\n");
+  writeFileSync(tmp, JSON.stringify(cur, null, 2) + "\n", { mode: 0o600 });
   renameSync(tmp, file);
   console.log(`added the triage hook to ${file}`);
   return 0;
@@ -282,6 +331,35 @@ async function migrateCmd(args: string[]): Promise<number> {
     if (dryRun && r.ok) console.log(`next: AGENTNET_HOME=${resolve(to)} AGENTNET_PORT=3196 AGENTNET_SWEEP=0 agentnet serve`);
     console.log(r.ok ? (dryRun ? `migrate ok (dry run in ${resolve(to)})` : "migrate ok") : "migrate FAILED");
     return r.ok ? 0 : 1;
+  } catch (e) { console.error((e as Error).message); return 1; }
+}
+
+async function migrateOneFolder(args: string[]): Promise<number> {
+  if (args[0] !== "one-folder") { console.error("usage: agentnet migrate one-folder [--apply | --undo <id> [--force]]"); return 2; }
+  const m = await import("./net/migrate"); // lazy: the other commands do not load it
+  const procs = m.realMigrateProcs();
+  try {
+    const undo = flag(args, "--undo");
+    if (undo) {
+      const r = m.undoMigration(ROOT, undo, args.includes("--force"));
+      for (const f of r.restored) console.log(`restored ${f}`);
+      for (const f of r.refused) console.log(`refused ${f}`);
+      for (const k of r.kept) console.log(`kept: ${k}`);
+      console.log(r.ok ? `undo ok: ${r.checked} files match the manifest (sha256 + mode)` : r.checked ? `undo done with differences: ${r.checked} match` : "undo refused: files changed since the migration (use --force)");
+      return r.ok ? 0 : 1;
+    }
+    if (!args.includes("--apply")) {
+      const d = m.openDb(ROOT);
+      try { for (const l of m.formatPlan(m.planMigration(ROOT, d, procs))) console.log(l); } finally { d.close(); }
+      console.log("dry run: nothing changed. Run with --apply to do it.");
+      return 0;
+    }
+    const r = m.applyMigration(ROOT, procs);
+    for (const l of m.formatPlan(r.plan)) console.log(l);
+    if (!r.manifest) { console.log("nothing to move"); return 0; }
+    console.log(`applied: migrate id ${r.manifest.id}, manifest ${join(ROOT, "backups", `migrate-${r.manifest.id}`, "manifest.json")}`);
+    console.log(`undo: agentnet migrate one-folder --undo ${r.manifest.id}`);
+    return 0;
   } catch (e) { console.error((e as Error).message); return 1; }
 }
 
@@ -337,6 +415,7 @@ async function adopt(args: string[]): Promise<number> {
         if (r.status !== 200) return fail(r);
         for (const o of r.json.ops) console.log(`--- ${o.op} ${opLabel(o)}\n${o.diff ?? ""}`);
         for (const w of r.json.warnings ?? []) console.log("warning: " + w);
+        for (const m of r.json.manual ?? []) console.log("by hand: " + m.text);
         console.log(`plan ${r.json.planId}: ${r.json.ops.length} change${r.json.ops.length === 1 ? "" : "s"}; backup ${r.json.backupDir}\nnext: agentnet adopt apply --plan ${r.json.planId}${r.json.needsConfirmGlobal ? " --confirm-global" : ""}`);
         return 0;
       }
@@ -401,7 +480,11 @@ async function main(): Promise<number> {
     case "init": return init(rest);
     case "doctor": return doctor();
     case "discipline": return discipline(rest);
+    case "metrics": return metrics(rest);
+    case "lines": return lines(rest);
+    case "pick": return pick(rest);
     case "install-service": return installService(rest);
+    case "migrate": return migrateOneFolder(rest);
     case "migrate-from-server-os": return migrateCmd(rest);
     case "export-legacy": return exportCmd(rest);
     case "update": return (await import("./update/cli")).runUpdateCli(rest, { repo: REPO, home: ROOT });

@@ -16,3 +16,11 @@ test("toHash round trip", () => {
     expect(parseHash(toHash(r))).toEqual(r);
   expect(toHash({ page: "agents", query: { agent: "a" } })).toBe("#/agents?agent=a");
 });
+
+test("old waiting deep link opens the asks page", () => {
+  expect(parseHash("#/waiting")).toEqual({ page: "asks", query: {} });
+  expect(parseHash("#/waiting?x=1")).toEqual({ page: "asks", query: { x: "1" } });
+});
+test("personas alias opens the brains page", () => {
+  expect(parseHash("#/personas")).toEqual({ page: "brains", query: {} });
+});

@@ -34,7 +34,7 @@ const WORKER_TOOLS: ToolSpec[] = [
     inputSchema: obj({ summary: str("one short paragraph"), state: { type: "string", enum: ["progress", "done", "blocked", "failed"] }, ...NOTE_FIELDS }, ["summary"]) },
   { name: "plan_set", description: "Set the plan of your job: at most 7 steps, each an outcome the brief asks for (not 'read the brief', 'commit' or 'report'). Step 1 becomes active by itself. Allowed until your first step is closed, and once more to adjust. A brief with a `## Steps` section gives you the plan already.", isDeferred: false,
     inputSchema: obj({ steps: { type: "array", items: { type: "string" }, description: "the steps, in order, one line each" } }, ["steps"]) },
-  { name: "step_done", description: "Close your active step with proof; the next step becomes active by itself. evidence is a list of \"kind: value\" lines: commit: <hash> | file: <path> | check: <the PASS line> | shot: <path> | msg: <message id> | none: <why there is no proof>. The server checks what it can and shows the rest as not verified. For real work, fill the decision fields too: they become a trail the next agent finds.", isDeferred: false,
+  { name: "step_done", description: "Close your active step with proof; the next step becomes active by itself. evidence is a list of \"kind: value\" lines: commit: <hash> | file: <path> | check: <the PASS line> | shot: <path> | msg: <message id> | none: <why there is no proof> | expected: <a failed check line this step meant to show>. The server checks what it can and shows the rest as not verified. For real work, fill the decision fields too: they become a trail the next agent finds.", isDeferred: false,
     inputSchema: obj({ evidence: { type: "array", items: { type: "string" }, description: "proof lines, e.g. [\"commit: 3facbd8\", \"check: bun test 867 pass 0 fail\"]" }, note: str("one line on the outcome, optional"), ...NOTE_FIELDS }, ["evidence"]) },
   { name: "step_add", description: "Add one step to your plan when the scope grew; it runs after the active step. because is the id of the message from your boss or root that asked for it, or \"self\". A job holds 12 steps at most and 2 of your own; a boss ask that needs no step is closed by answering it with reply_to.", isDeferred: false,
     inputSchema: obj({ text: str("the step, one line"), because: str("the boss message id (e.g. 6502), or \"self\"") }, ["text", "because"]) },
@@ -54,17 +54,36 @@ const WORKER_TOOLS: ToolSpec[] = [
   { name: "ask_owner_check", description: "Ask the owner (the person running agentnet) to check something only they can see in the real world, then stop: do not idle waiting. Write `question` as a plain question to the owner, e.g. \"Do you see a Voice button in a bot's header on the iPad?\". Write `options` as 2-4 short answer buttons (max ~5 words each) with a tone, e.g. [{label:\"Yes, it's there\",tone:\"good\"},{label:\"No button\",tone:\"bad\"}]; without options the buttons are Works / Not yet. The check stays on the map until the owner taps a button, even after you are closed. The answer reaches root.", isDeferred: false,
     inputSchema: obj({ question: str("a plain question to the owner, one sentence"), options: { type: "array", minItems: 2, maxItems: 4, description: "answer buttons, in order", items: { type: "object", properties: { label: str("short button text, max ~5 words"), tone: { type: "string", enum: ["good", "bad", "neutral"], description: "good = green, bad = red, neutral = grey" } }, required: ["label", "tone"] } }, detail: str("how to check it, optional") }, ["question"]) },
   { name: "set_status", description: "Tell the network what you are doing right now, your progress and what blocks you.", inputSchema: obj({ doing: str("what you are doing, one line"), progress: int("0-100"), phase: str("short phase name"), blocked_on: str("what you wait for, or omit") }) },
+  { name: "keep", description: "Keep a process running after you finish: your done report stops your processes and background jobs unless they are kept. Give its pid or the port it listens on, and why it must stay up.", inputSchema: obj({ pid: int("process id"), port: int("TCP port it listens on"), reason: str("why it must keep running") }, ["reason"]) },
+];
+/** Step 8a: registered only when hello says this agent has a line and lines are on. */
+const LINE_TOOLS: ToolSpec[] = [
+  { name: "self_upgrade", description: "Propose your one upgrade for this job, before your first step_done: a rule you will follow (text, 20-300 chars), when it applies (scope every_step or before_report) and a check the hooks can see: {tool, command_includes, output_includes?} (e.g. {tool: \"Bash\", command_includes: \"ui-check.mjs\", output_includes: \"PASS\"}), {file_glob}, {commit_msg_includes} or {judgment: true}. A check you already met is refused; a command that only prints proves nothing. It is kept for the next generation only if you follow it and the job scores at least the line's baseline.", isDeferred: false,
+    inputSchema: obj({ text: str("the rule, 20-300 characters"), scope: { type: "string", enum: ["every_step", "before_report"] }, check: { type: "object", description: "{tool, command_includes, output_includes?} | {file_glob} | {commit_msg_includes} | {judgment: true}" } }, ["text", "scope", "check"]) },
+  { name: "upgrade_proof", description: "Only for an upgrade with a judgment check: say how you followed it this time (one line). It counts half; two are needed. A machine check is proven by the hooks when you do the thing.", isDeferred: false,
+    inputSchema: obj({ evidence: str("how you followed your upgrade, one line") }, ["evidence"]) },
+  { name: "propose_skill", description: "Propose a skill for your line: a name (a-z, 0-9, -; up to 40), a summary, and its files [{path, content}] (relative paths, 64 KB in total). It is taken only when your line's last finished job went well; the answer is \"accepted for review\" or \"not eligible now\". Root approves it into your line's skills or the shared base.", isDeferred: true,
+    inputSchema: obj({ name: str("skill folder name, e.g. ui-check-loop"), summary: str("what it does and when to use it"), files: { type: "array", description: "[{path, content}], e.g. [{path: \"SKILL.md\", content: \"...\"}]", items: obj({ path: str("relative path"), content: str("file text") }, ["path", "content"]) } }, ["name", "summary", "files"]) },
+  { name: "propose_rule", description: "Propose a rule (20-300 chars). target line: a rule for your own line, root decides. target house: a rule for every agent; only the owner can approve it.", isDeferred: true,
+    inputSchema: obj({ text: str("the rule"), target: { type: "string", enum: ["line", "house"] } }, ["text", "target"]) },
 ];
 const ROOT_TOOLS: ToolSpec[] = [
-  { name: "list_checks", description: "Root: owner checks (question, options, agent, state pending|answered, answer, note). Default: pending only.", inputSchema: obj({ state: { type: "string", enum: ["pending", "answered"] } }) },
-  { name: "list_agents", description: "Root: every live agent with its status snapshot.", inputSchema: obj({ all: { type: "boolean", description: "include gone agents" } }) },
-  { name: "get_status", description: "Root: one agent's status snapshot (and its last events).", inputSchema: obj({ agent: str("agent name"), events: int("how many recent events, default 0") }, ["agent"]) },
+  { name: "owner_goals", description: "Root: the owner's goals (his messages that ask for work) with their items, links and proof. G<n> is a goal, an item belongs to one. Newest first, 8 goals per call (limit up to 20), long text cut with its length marked; the answer has total and next_cursor: pass next_cursor as cursor for the next page. goal=N gives that one goal whole.", inputSchema: obj({ since: int("ms epoch; default 7 days ago"), limit: int("goals per page, default 8, max 20"), cursor: str("next_cursor of the last answer"), goal: int("one goal number, whole text") }) },
+  { name: "owner_goal_link", description: "Root: link an agent's current job to owner goal G<n>; its plan steps become the goal's items. Replaces a wrong auto link.", inputSchema: obj({ goal: int("goal number, G12 = 12"), agent: str("agent name") }, ["goal", "agent"]) },
+  { name: "owner_goal_drop", description: "Root: drop an owner goal that is not work (chat read as a goal) or no longer wanted.", inputSchema: obj({ goal: int("goal number"), reason: str("why") }, ["goal", "reason"]) },
+  { name: "owner_item_link", description: "Root: point an item of the owner's own list at a step of an agent's current job.", inputSchema: obj({ item: int("item id"), agent: str("agent name"), step: int("step number") }, ["item", "agent", "step"]) },
+  { name: "owner_item_done", description: "Root: close an item root did itself. Needs proof that checks out: \"commit: <hash>\", \"check: <PASS line>\", \"shot: <path>\" or \"file: <path>\".", inputSchema: obj({ item: int("item id"), proof: str("one evidence line") }, ["item", "proof"]) },
+  { name: "list_checks", description: "Root: owner checks (question, options, agent, state pending|answered, answer, note). Default: pending only. Newest first, 25 per call (limit up to 100), long text cut; the answer has total and next_cursor.", inputSchema: obj({ state: { type: "string", enum: ["pending", "answered"] }, limit: int("checks per page, default 25, max 100"), cursor: str("next_cursor of the last answer") }) },
+  { name: "list_agents", description: "Root: one compact row per agent (id, name, gen, life, state, model, boss, project, goal, doing, progress, cost, contextPct, lastMsgAt, step, spawnedAt), newest first, live agents only unless all is true. 25 rows per call (limit up to 100); the answer has total and next_cursor: pass next_cursor as cursor for the next page. The whole snapshot of one agent is get_status.", inputSchema: obj({ all: { type: "boolean", description: "include gone and failed agents" }, limit: int("rows per page, default 25, max 100"), cursor: str("next_cursor of the last answer"), since: int("only agents spawned at or after this ms epoch"), life: { type: "string", enum: ["starting", "live", "stopping", "gone", "failed"], description: "only this life; gone and failed need no all" }, boss: str("only agents that report to this boss") }) },
+  { name: "get_status", description: "Root: one live agent's whole status snapshot (and its last events, at most 50). Steps of earlier closed jobs come without their evidence lines unless jobs is all; long text is cut with its length marked.", inputSchema: obj({ agent: str("agent name"), events: int("how many recent events, default 0, max 50"), jobs: { type: "string", enum: ["all"], description: "all: keep the evidence of every job" } }, ["agent"]) },
   { name: "spawn", description: "Root: create a new agent record and token (spawn.sh launches it). Name, boss, team and compact window are placed too (see plan_spawn). Picks model, effort and persona when not given; the reply has the audit line. Refused in reserve mode.", inputSchema: obj({ name: str("agent name, e.g. web-dev-1; omit for the next free <role>-N"), role: str("role when the name is omitted"), job: str("what it is for"), goal: str("REQUIRED, 8+ chars: the outcome that means this agent is done (what finished looks like), not what it does"), boss: str("its boss; omit to place by project"), model: str("model alias; omit to have agentnet pick it"), effort: str("effort; omit to have agentnet pick it"), soul: str("persona id; omit to have agentnet pick it"), scope: int("1-5 files/systems touched, default 2"), novelty: int("1-3 new ground, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner's words (expectation keywords)"), project: str("project folder"), team: str("team id to join"), brief: str("absolute path of the brief .md: its `## Steps` section (numbered lines, at most 7) becomes the agent's plan"), max_steps: int("plan size for a long recipe, up to 12; default 7") }, ["name", "job", "goal"]) },
   { name: "plan_spawn", description: "Root: where a new agent would land, with NO side effects: next free name, boss, team (joins the team on the same project, or proposes one), model, effort, soul, compact window, and one reason line per decision. spawn uses the same plan for every field you leave out.",
     inputSchema: obj({ job: str("what it is for"), goal: str("the outcome that means it is done (needed by spawn, ignored here)"), project: str("project folder"), role: str("role, else inferred from the job"), name: str("fixed name, else the next free <role>-N"), boss: str("explicit boss"), team: str("explicit team id"), model: str("explicit model"), effort: str("explicit effort"), soul: str("explicit persona id"), scope: int("1-5, default 2"), novelty: int("1-3, default 2"), risk: int("0-3, default 1"), need: str("persona keywords"), ask: str("the owner\'s words") }, ["job"]) },
   { name: "grade", description: "Root: grade a closed job of an agent (1-5) for its scorecard. Without job and gen it is the newest closed job of the newest run of that name; a wrong one is refused with the list of closed jobs. rework = root had to ask for a fix on it; owner_rounds = how many back-and-forth rounds the owner needed on the job before it was right (0 = right first time).",
     inputSchema: obj({ agent: str("agent name"), job: int("the job number, e.g. 2 for the agent's second job; default the newest closed one"), gen: int("which run of that name (web-dev-2#3 is gen 3); default the newest"), grade: int("1-5"), note: str("short note; a 'rework:' prefix also marks rework"), rework: { type: "boolean", description: "a fix was requested on this job" }, owner_rounds: int("rounds the owner needed, 0 = right first time"), task_id: int("only for a per-task record from before jobs existed") }, ["agent", "grade"]) },
   { name: "ask_close", description: "Root: close an open ask of an agent (a boss message it answered without reply_to, or one that no longer matters).", inputSchema: obj({ agent: str("agent name"), id: int("the message id of the ask") }, ["agent", "id"]) },
+  { name: "review_list", description: "Root: the auto grades waiting for review. A done report finishes its agent with a provisional auto grade; accept it with confirm or replace it with grade.", inputSchema: obj({}) },
+  { name: "confirm", description: "Root: accept an agent's auto grade as your own (it leaves the review list). Without job: the newest auto-graded job of that generation.", inputSchema: obj({ agent: str("agent name"), gen: int("its generation"), job: int("the job number, optional"), note: str("optional note") }, ["agent", "gen"]) },
   { name: "despawn", description: "Root: retire an agent (token revoked, session closed).", inputSchema: obj({ agent: str("agent name"), reason: str("why") }, ["agent"]) },
 ];
 const SCAN_TOOLS: ToolSpec[] = [
@@ -72,6 +91,17 @@ const SCAN_TOOLS: ToolSpec[] = [
   { name: "adopt_report", description: "Setup scan only: submit the findings (again later if the owner asks for changes: the newer report replaces the old one and the plan is reset). Every evidence signal must be a ref from adopt_facts; actions use the ops park-hook, park-mcp, disable-lines, register-souls, manual. Nothing is applied until the owner agrees (adopt_apply or the Apply button).", inputSchema: obj({ summary: str("what you found, 2-3 plain sentences"), findings: { type: "array", description: "findings, riskiest first, max 40", items: { type: "object" } } }, ["summary", "findings"]) },
   { name: "adopt_apply", description: "Setup scan only: apply the setup once the owner has said yes in this chat (go, yes, apply, finalize). Same as the Apply button: backups are kept and Rollback works. Moved lines are found again by themselves. Without a plan the default picks are used. Set ownerAgreed true only after the owner agreed. If it says files outside the workspace change, tell the owner which in plain words and call again with includeGlobal true after they agree. This session closes a moment later.", inputSchema: obj({ ownerAgreed: { type: "boolean", description: "true only after the owner agreed in this chat" }, includeGlobal: { type: "boolean", description: "true when the owner agreed to changes to files in ~/.claude" } }, ["ownerAgreed"]) },
 ];
+/** No tool answer passes whole above this many bytes: it becomes a short notice that says how to page. inbox is the one exception (its answer is already capped on the service, and what it returns is marked read). */
+export const ANSWER_MAX = 60_000;
+const PAGE_HINT: Record<string, string> = { list_agents: "pass limit (max 100), cursor, since, life or boss", owner_goals: "pass limit (max 20), cursor or goal", list_checks: "pass limit (max 100) or cursor", get_status: "pass a smaller events (max 50); jobs defaults to the compact form" };
+/** The answer text as the model gets it, or the notice when it is over ANSWER_MAX bytes. */
+export function guardAnswer(tool: string, text: string): string {
+  const bytes = new TextEncoder().encode(text).length;
+  if (tool === "inbox" || bytes <= ANSWER_MAX) return text;
+  return JSON.stringify({ truncated: true, tool, bytes, limit: ANSWER_MAX, hint: `This answer is ${bytes} bytes, over the ${ANSWER_MAX} byte limit, so it is not shown. Ask for less: ${PAGE_HINT[tool] ?? "use a limit, a cursor or a narrower filter"}.` });
+}
+/** The query string of a read: only the keys that are set. */
+const qs = (a: Json, keys: string[]) => { const p = keys.filter((k) => a[k] !== undefined && a[k] !== null && a[k] !== "" && a[k] !== false).map((k) => `${k}=${encodeURIComponent(String(a[k] === true ? 1 : a[k]))}`); return p.length ? "?" + p.join("&") : ""; };
 /** Tools the work gate never asks about: they only read. */
 const GATE_FREE = new Set(["ToolSearch", "Read", "Grep", "Glob"]);
 /** tool name → method + path (+ body) on the service. */
@@ -85,19 +115,71 @@ const ROUTES: Record<string, (a: Json) => { method: string; path: string; body?:
   team_tasks: (a) => { const t = encodeURIComponent(String(a.team)), act = String(a.action ?? "list"); return act === "list" ? { method: "GET", path: `/teams/${t}` } : act === "add" ? { method: "POST", path: `/teams/${t}/tasks`, body: { text: a.text, owner: a.owner } } : { method: "POST", path: `/teams/${t}/tasks/${Number(a.id)}/${act === "claim" ? "claim" : act === "start" ? "start" : "done"}` }; },
   trail_search: (a) => ({ method: "POST", path: "/trail/search", body: a }),
   ask_owner_check: (a) => ({ method: "POST", path: "/checks", body: { question: a.question, detail: a.detail, options: a.options } }),
-  list_checks: (a) => ({ method: "GET", path: `/checks?state=${encodeURIComponent(String(a.state ?? "pending"))}` }),
+  owner_goals: (a) => ({ method: "GET", path: `/owner-goals${qs({ ...a, compact: 1 }, ["compact", "since", "limit", "cursor", "goal"])}` }),
+  owner_goal_link: (a) => ({ method: "POST", path: `/owner-goals/${Number(a.goal)}/link`, body: { agent: a.agent } }),
+  owner_goal_drop: (a) => ({ method: "POST", path: `/owner-goals/${Number(a.goal)}/drop`, body: { reason: a.reason } }),
+  owner_item_link: (a) => ({ method: "POST", path: `/owner-items/${Number(a.item)}/link`, body: { agent: a.agent, step: a.step } }),
+  owner_item_done: (a) => ({ method: "POST", path: `/owner-items/${Number(a.item)}/done`, body: { proof: a.proof } }),
+  list_checks: (a) => ({ method: "GET", path: `/checks${qs({ ...a, state: a.state ?? "pending", compact: 1 }, ["state", "compact", "limit", "cursor"])}` }),
   set_status: (a) => ({ method: "POST", path: "/status", body: a }),
-  list_agents: (a) => ({ method: "GET", path: `/agents${a.all ? "?all=1" : ""}` }), get_status: (a) => ({ method: "GET", path: `/agents/${encodeURIComponent(String(a.agent))}${a.events ? `?events=${Number(a.events)}` : ""}` }),
+  list_agents: (a) => ({ method: "GET", path: `/agents${qs({ ...a, compact: 1 }, ["compact", "all", "limit", "cursor", "since", "life", "boss"])}` }),
+  get_status: (a) => ({ method: "GET", path: `/agents/${encodeURIComponent(String(a.agent))}${qs({ ...a, compact: 1 }, ["compact", "events", "jobs"])}` }),
   grade: (a) => { const { agent, ...rest } = a; return { method: "POST", path: `/agents/${encodeURIComponent(String(agent))}/grade`, body: rest }; },
   adopt_facts: () => ({ method: "GET", path: "/adopt/facts" }), adopt_report: (a) => ({ method: "POST", path: "/adopt/report", body: a }), adopt_apply: (a) => ({ method: "POST", path: "/adopt/apply", body: a }),
+  keep: (a) => ({ method: "POST", path: "/keep", body: a }), review_list: () => ({ method: "GET", path: "/review" }),
+  confirm: (a) => { const { agent, ...rest } = a; return { method: "POST", path: `/agents/${encodeURIComponent(String(agent))}/confirm`, body: rest }; },
+  self_upgrade: (a) => ({ method: "POST", path: "/self-upgrade", body: a }), upgrade_proof: (a) => ({ method: "POST", path: "/upgrade-proof/agent", body: { evidence: a.evidence } }),
+  propose_skill: (a) => ({ method: "POST", path: "/propose-skill", body: a }), propose_rule: (a) => ({ method: "POST", path: "/propose-rule", body: a }),
   spawn: (a) => ({ method: "POST", path: "/spawn", body: a }), plan_spawn: (a) => ({ method: "POST", path: "/plan-spawn", body: a }), despawn: (a) => ({ method: "POST", path: "/despawn", body: a }),
 };
 /** Secrets typed in a command must not reach the event log: blank values after token/key/secret/password/authorization words and long hex or base64 runs. */
 const redact = (v: string) => v.replace(/\b(authorization\s*[=:]\s*)(?:bearer\s+)?\S+/gi, "$1***").replace(/\b(bearer\s+)\S+/gi, "$1***").replace(/\b([\w-]*(?:token|api[-_]?key|secret|passw(?:or)?d)[\w-]*\s*[=:]\s*)\S+/gi, "$1***").replace(/\b[A-Za-z0-9+_-]{32,}={0,2}/g, "***");
+// ---- copy start (keep equal to src/net/lines.ts) ----
+/** Heredoc bodies out (they are data, not commands), then one entry per simple command, env prefixes and openers stripped. */
+export function cmdSegments(cmd: string): string[] {
+  const noDoc = cmd.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\s*\2[ \t]*(?=\n|$)/g, "<<DOC");
+  return noDoc.split(/&&|\|\||;|\||\n/).map((s) => s.trim().replace(/^[({!\s]+/, "").replace(/^(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, "").trim()).filter(Boolean);
+}
+/** A command that only prints: echo, printf, true, `:` or `cat <<`. Its text proves nothing. */
+export const printOnly = (seg: string) => /^(?:echo|printf|true|:)(?:\s|$)/.test(seg) || /^cat\s*<</.test(seg);
+const globRe = (g: string) => new RegExp((g.startsWith("/") ? "^" : "(?:^|/)") + g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*\/?/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\u0000/g, "(?:.*/)?") + "$");
+const around = (s: string, needle: string) => { const i = s.indexOf(needle); return (i < 0 ? s : s.slice(Math.max(0, i - 60), i + needle.length + 100)).replace(/\s+/g, " ").trim(); };
+const inputText = (input: Record<string, unknown>) => Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
+/** The evidence (at most 200 chars) when `call` satisfies `check`, else null. A judgment check never matches a call. */
+export function matchCheck(check: Check, call: Call): string | null {
+  if ("judgment" in check || call.isError) return null;
+  const cmd = call.tool === "Bash" && typeof call.input.command === "string" ? call.input.command : null;
+  let ev: string | null = null;
+  if ("file_glob" in check) {
+    const p = call.input.file_path ?? call.input.notebook_path;
+    if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(call.tool) && typeof p === "string" && globRe(check.file_glob).test(p)) ev = `${call.tool} ${p}`;
+  } else if ("commit_msg_includes" in check) {
+    if (cmd && cmd.includes(check.commit_msg_includes) && cmdSegments(cmd).some((s) => !printOnly(s) && /\bgit\b[\s\S]*\bcommit\b/.test(s)) && /\[[^\]\n]+ [0-9a-f]{7,40}\]/.test(call.output)) ev = `git commit: ${around(cmd, check.commit_msg_includes)}`;
+  } else if (call.tool === check.tool) {
+    const text = cmd ?? inputText(call.input);
+    const seg = cmd ? cmdSegments(cmd).find((s) => !printOnly(s) && s.includes(check.command_includes)) : text.includes(check.command_includes) ? text : undefined;
+    if (seg != null) {
+      if (!check.output_includes) ev = `${call.tool}: ${around(seg, check.command_includes)}`;
+      else if (call.output.includes(check.output_includes) && !text.includes(check.output_includes)) ev = `${call.tool}: ${around(seg, check.command_includes)} => ${around(call.output, check.output_includes)}`;
+    }
+  }
+  return ev == null ? null : redact(ev).slice(0, 200);
+}
+// ---- copy end ----
+type Check = { tool: string; command_includes: string; output_includes?: string } | { file_glob: string } | { commit_msg_includes: string } | { judgment: true };
+interface Call { tool: string; input: Record<string, unknown>; output: string; isError?: boolean }
+/** The text of a tool result record: a string, or its string fields (stdout, stderr, output, content, text), else its JSON. */
+export function resultText(res: unknown): string {
+  if (typeof res === "string") return res;
+  if (res && typeof res === "object") { const o = res as Json, parts = ["stdout", "stderr", "output", "content", "text"].map((k) => o[k]).filter((v): v is string => typeof v === "string"); if (parts.length) return parts.join("\n"); }
+  try { return JSON.stringify(res) ?? ""; } catch { return ""; }
+}
 const target = (e: Json): string | null => { for (const k of ["command", "file_path", "pattern", "description", "subject", "query", "url"]) { const v = e[k]; if (typeof v === "string" && v) return redact(v.replace(/\s+/g, " ")).slice(0, 80); } return null; };
 
 // Module state (reset on a reload: the server owns the cursor, so nothing is lost). `$` goes only to top-level functions (validator rule).
 const SCAN = { on: false, roots: [] as string[], home: "" };
+/** Step 8a: this generation's accepted upgrade, fetched once (hello) or taken from the self_upgrade answer. */
+const UP = { on: false, id: 0, text: "", check: null as Check | null, turn: "" };
 const S = { base: DEFAULT_URL, token: "", session: "", busy: false, alive: true, looping: false, registered: false, versionWarned: false, gateUntil: 0, downSince: 0, status: "" as string };
 /** Only these end reasons mean the process is going away; anything else (clear, resume, ...) keeps the agent and its poll loop. */
 const FINAL_END = new Set(["prompt_input_exit", "logout", "other"]);
@@ -159,6 +241,21 @@ function post($: $, events: Json[]) { if (S.token) void api($, "POST", "/events"
 /** The status line is drawn with a warning triangle whatever we write, so it exists only while something is wrong. */
 function status($: $, text: string | undefined) { const t = text ?? ""; if (t === S.status) return; S.status = t; $.ui.status(text); }
 async function note($: $) { try { await $.session.append({ message: { type: "user", content: [{ type: "text", text: NOTE }] } }); } catch { /* a session that refuses rows: the tool descriptions still carry the gist */ } }
+/** Cache the accepted upgrade (GET /agent/upgrade). Quiet when the service has none or does not answer. */
+async function fetchUpgrade($: $) {
+  const r = await api($, "GET", "/agent/upgrade").catch(() => null);
+  const u = r?.ok ? (r.json?.upgrade as Json | null) : null;
+  if (u && typeof u.text === "string" && u.check && typeof u.check === "object") { UP.id = Number(u.id); UP.text = u.text; UP.check = u.check as Check; }
+}
+/** One line in context: the upgrade this generation promised to follow. */
+async function upgradeNote($: $) { if (UP.text) try { await $.session.append({ message: { type: "user", content: [{ type: "text", text: `Your upgrade: ${UP.text}` }] } }); } catch { /* refused rows */ } }
+/** Post-call matcher: a call that satisfies the upgrade's check posts proof (fire and forget). */
+function upgradeMatch($: $, ev: Json, r: { result?: unknown; deny?: string; isError?: boolean }) {
+  if (!UP.check || r.deny !== undefined) return;
+  const { tool: _t, tool_use_id: _id, consent: _c, agentId: _a, ...input } = ev;
+  const hit = matchCheck(UP.check, { tool: String(ev.tool), input, output: resultText(r.result), isError: r.isError === true });
+  if (hit && typeof ev.tool_use_id === "string") void api($, "POST", "/upgrade-proof", { upgrade_id: UP.id, tool_use_id: ev.tool_use_id, evidence: hit }).catch(() => {}); // a claim: the server checks the id against the transcript
+}
 /** hello: binds this session id and pid to the agent; registers the tools once; appends the one-time note. */
 async function hello($: $): Promise<boolean> {
   S.session = await $.session.id();
@@ -166,7 +263,9 @@ async function hello($: $): Promise<boolean> {
   const h = await api($, "POST", "/hello", { session: S.session, pid, version: ver.version, model, client: "claude-code" }).catch(() => ({ ok: false, status: 0, json: null as Json | null }));
   if (!S.versionWarned && olderThan(String(ver.version ?? ""), MIN_VERSION)) { S.versionWarned = true; $.ui.log(`agentnet: Claude Code ${ver.version} is older than ${MIN_VERSION}. Use ${MIN_VERSION} or later (${RECOMMENDED_VERSION}+ recommended); tools and messages may not work.`); }
   if (!h.ok) { status($, `agentnet: hello failed (${h.status || "no service"})`); return false; }
-  if (!S.registered) { S.registered = true; const root = h.json?.root === true, scan = h.json?.scan === true; await Promise.all([...WORKER_TOOLS, ...(root ? ROOT_TOOLS : []), ...(scan ? SCAN_TOOLS : [])].map((t) => $.tool.register(t))); }
+  UP.on = h.json?.lines === true;
+  if (!S.registered) { S.registered = true; const root = h.json?.root === true, scan = h.json?.scan === true; await Promise.all([...WORKER_TOOLS, ...(root ? ROOT_TOOLS : []), ...(scan ? SCAN_TOOLS : []), ...(UP.on ? LINE_TOOLS : [])].map((t) => $.tool.register(t))); }
+  if (UP.on && !UP.check) await fetchUpgrade($);
   status($, undefined);
   await note($);
   return true;
@@ -242,9 +341,11 @@ export const register: Register = (on) => {
       if (!S.token) return { deny: "agentnet: this session has no agentnet identity" };
       const { tool: _t, tool_use_id: _id, consent: _c, ...args } = e as unknown as Json;
       S.gateUntil = 0;
+      if (name === "report" || name === "step_done") await upgradeNote($);
       const r = await api($, ROUTES[name]!(args).method, ROUTES[name]!(args).path, ROUTES[name]!(args).body);
       if (!r.ok) return { deny: String(r.json?.detail ?? r.json?.error ?? `agentnet: HTTP ${r.status}`) };
-      return { result: JSON.stringify(r.json) };
+      if (name === "self_upgrade") { const u = r.json?.upgrade as Json | undefined; if (u && typeof u.text === "string") { UP.id = Number(u.id); UP.text = u.text; UP.check = u.check as Check; } }
+      return { result: guardAnswer(name, JSON.stringify(r.json)) };
     });
   }
   /** The prompt as a person would say it: a channel turn's ~150-char <channel …> tag is replaced by "Telegram: " BEFORE clipping, so the message itself survives. */
@@ -254,7 +355,7 @@ export const register: Register = (on) => {
     return t.replace(/\s+/g, " ").trim().slice(0, 200);
   };
   on("turn.start", async ($, e, next) => {
-    if (!e.agentId) { S.busy = true; post($, [{ type: "TurnStarted", data: { turn: e.turnId, snippet: turnSnippet(e.text) }, dedup: `turn:${e.turnId}:start` }]); }
+    if (!e.agentId) { S.busy = true; post($, [{ type: "TurnStarted", data: { turn: e.turnId, snippet: turnSnippet(e.text) }, dedup: `turn:${e.turnId}:start` }]); if (UP.text && UP.turn !== e.turnId) { UP.turn = e.turnId; await upgradeNote($); } }
     return next(e);
   });
   on("turn.complete", async ($, e, next) => {
@@ -275,6 +376,7 @@ export const register: Register = (on) => {
     if (S.token && e.tool === "Agent") { BG.until = Date.now() + 15_000; bgPoll($); } // the subagent exists a moment after this call starts
     const r = await next(e);
     if (ev.agentId) { bgTool($, ev, r as { result?: unknown; deny?: string; isError?: boolean }); return r; }
+    upgradeMatch($, ev, r as { result?: unknown; deny?: string; isError?: boolean });
     const ok = r.deny === undefined && r.isError !== true, out: Json[] = [{ type: "ToolFinished", data: { tool: e.tool, target: t, tool_use_id: id, ok, ms: Date.now() - t0 }, dedup: `post:${S.session}:${id}` }];
     if (ok && e.tool === "TaskCreate") out.push({ type: "TaskAdded", data: { text: String(ev.subject ?? ev.description ?? "task").slice(0, 200) }, dedup: `task:${S.session}:${id}` });
     if (ok && e.tool === "TaskUpdate" && (ev.status === "in_progress" || ev.status === "completed")) out.push({ type: ev.status === "completed" ? "TaskDone" : "TaskStarted", data: { id: Number(ev.taskId) }, dedup: `task:${S.session}:${id}` });
@@ -300,7 +402,7 @@ export const register: Register = (on) => {
     if (out.length) post($, out);
     return next(e);
   });
-  on("session.compact", async ($, e, next) => { const r = await next(e); if (S.token) await note($); return r; }); // a compaction can drop the note
+  on("session.compact", async ($, e, next) => { const r = await next(e); if (S.token) { await note($); await upgradeNote($); } return r; }); // a compaction can drop the note and the upgrade line
   on("session.end", async ($, e, next) => {
     if (!S.token) return next(e);
     if (e.reason === "clear") { // the process goes on under a new session id, no session.start: re-bind instead of bye

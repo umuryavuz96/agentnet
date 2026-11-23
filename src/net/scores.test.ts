@@ -23,7 +23,7 @@ const panel = (path: string) => app.request(`/api/v1/agentnet${path}`);
 
 beforeAll(() => {
   useDatabase(new Database(":memory:")); st._reset(); sc.useScoreDb(new Database(":memory:"));
-  for (const [name, boss] of [["root", null], ["web-dev-1", "root"], ["web-dev-2", "root"]] as const) tok[name] = rt.createAgent({ name, boss: boss ?? undefined, job: "t", by: "test", model: "sonnet" }).token;
+  for (const [name, boss] of [["root", null], ["web-dev-1", "root"], ["web-dev-2", "root"]] as const) tok[name] = rt.createAgent({ name, boss: boss ?? undefined, job: "t", by: "test", model: "sonnet", standing: true }).token; // standing: root grades these by hand
 });
 
 /** An agent runs one job: a plan of one step (job 1: set by the agent; later jobs: opened by root), one priced turn, the step closed, the done report. */
@@ -91,7 +91,7 @@ describe("record, grade, score", () => {
   test("a name used twice: the grade lands on the generation that is named, by default the newest", async () => {
     await finish("web-dev-2", 1);
     expect((await call("root", "POST", "/despawn", { agent: "web-dev-2" })).status).toBe(200);
-    tok["web-dev-2"] = rt.createAgent({ name: "web-dev-2", boss: "root", job: "t", by: "test", model: "sonnet" }).token;
+    tok["web-dev-2"] = rt.createAgent({ name: "web-dev-2", boss: "root", job: "t", by: "test", model: "sonnet", standing: true }).token;
     expect(st.get("web-dev-2#2")).not.toBeNull();
     await finish("web-dev-2", 1, undefined, 2);
     const now = await j(await call("root", "POST", "/agents/web-dev-2/grade", { grade: 2, note: "second run" }));
@@ -118,4 +118,12 @@ describe("record, grade, score", () => {
     expect((await j(await panel("/agents/web-dev-1/score"))).body.tasks).toBe(before);
   });
   test("bad agent name on the panel read is 422", async () => { expect((await panel("/agents/BAD_NAME/score")).status).toBe(422); });
+  test("/scores groups brain jobs by brain name with the versions seen (soul = name@vN)", async () => {
+    tok["motion-1"] = rt.createAgent({ name: "motion-1", boss: "root", job: "t", by: "test", model: "sonnet", soul: "motion@v3", standing: true }).token;
+    await finish("motion-1", 1);
+    expect((await call("root", "POST", "/agents/motion-1/grade", { grade: 4, note: "ok" })).status).toBe(200);
+    const r = (await j(await panel("/scores"))).body;
+    expect(r.byBrain).toEqual([expect.objectContaining({ key: "motion", versions: [3], graded: 1 })]);
+    expect(r.bySoul.map((g: { key: string }) => g.key)).toContain("motion@v3");
+  });
 });

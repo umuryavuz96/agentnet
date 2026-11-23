@@ -120,4 +120,18 @@ describe("auth", () => {
     expect((await req(HELLO, { method: "POST", body: {} })).status).toBe(401);
     expect(((await (await req("/v1/health")).json()) as { houseFlags: string[] }).houseFlags).toEqual(["AGENTNET_PANEL_LOGIN=off"]);
   });
+  test("loopback: flag on logs deprecation and counts hits in /health", async () => {
+    const { logDeprecations } = await import("../src/net/health");
+    type H = { deprecations: string[]; loopbackRootHits: number };
+    const h0 = (await (await req("/v1/health")).json()) as H;
+    expect(h0.deprecations).toEqual([]); expect(logDeprecations(() => {})).toEqual([]);
+    process.env.AGENTNET_LOOPBACK_ROOT = "on";
+    const lines: string[] = [];
+    expect(logDeprecations((l) => lines.push(l))).toEqual(["AGENTNET_LOOPBACK_ROOT=on: deprecated: removed in 0.8; local scripts must send run/root.token"]);
+    expect(lines).toEqual(["agentnet: AGENTNET_LOOPBACK_ROOT=on: deprecated: removed in 0.8; local scripts must send run/root.token"]);
+    expect((await req(HELLO, { method: "POST", body: {} })).status).toBe(200); // served by the fallback
+    const h1 = (await (await req("/v1/health")).json()) as H;
+    expect(h1.loopbackRootHits).toBe(h0.loopbackRootHits + 1);
+    expect(h1.deprecations[0]).toContain("removed in 0.8");
+  });
 });

@@ -10,7 +10,9 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { ROOT } from "../core/config";
 
-export interface TrailHit { id: string; kind: "note" | "commit" | "checkpoint" | "session" | "cass"; repo: string; date: string; agent: string; title: string; files: string[]; snippet: string; checkpoint: string; commit: string; score: number; matched: number }
+export interface TrailHit { id: string; kind: "note" | "commit" | "checkpoint" | "session" | "cass"; repo: string; date: string; agent: string; title: string; files: string[]; snippet: string; checkpoint: string; commit: string; score: number; matched: number;
+  /** Step 8b graded memory (notes only): the job's reward 0-5 once it is settled, and the agent generation and job that wrote it. */
+  reward?: number | null; agentId?: string | null; job?: number | null }
 export interface TrailConfig { repos: string[]; inject: boolean; off_agents: string[]; min_terms: number; min_ratio: number }
 export interface Decision { chosen: string; rejected?: string; why?: string }
 export interface NoteFields { goal?: string; decisions?: (Decision | string)[] | string; files?: string[] | string; gotchas?: string[] | string; result?: string }
@@ -47,6 +49,9 @@ function init(d: Database) {
   d.run(`CREATE VIRTUAL TABLE IF NOT EXISTS trail_fts USING fts5(id UNINDEXED, kind UNINDEXED, repo UNINDEXED, date UNINDEXED, agent UNINDEXED,
     checkpoint UNINDEXED, commit_sha UNINDEXED, title, files, body, tokenize = 'porter unicode61')`);
   d.run("CREATE TABLE IF NOT EXISTS trail_src (id TEXT PRIMARY KEY, key TEXT NOT NULL)");
+  // Step 8b: a note's job and its reward. Not derived from the files alone (settle writes the reward), so the version reset below keeps it.
+  d.run("CREATE TABLE IF NOT EXISTS note_meta (id TEXT PRIMARY KEY, agent_id TEXT, job_id INTEGER, reward REAL)");
+  d.run("CREATE INDEX IF NOT EXISTS note_meta_job ON note_meta (agent_id, job_id)");
   // The index is derived data: when the way documents are built changes, bump INDEX_VERSION and it rebuilds from the sources.
   if ((d.query("SELECT key FROM trail_src WHERE id = '__version'").get() as { key: string } | null)?.key !== INDEX_VERSION) {
     d.run("DELETE FROM trail_fts"); d.run("DELETE FROM trail_src");
@@ -71,14 +76,14 @@ const decisionLine = (x: Decision | string) => typeof x === "string" ? x : [`cho
 export const hasNoteFields = (b: Record<string, unknown>) => ["goal", "decisions", "files", "gotchas", "result"].some((k) => b[k] != null && b[k] !== "" && !(Array.isArray(b[k]) && !(b[k] as unknown[]).length));
 const oneLine = (s: unknown, n: number) => String(s ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, n);
 /** Writes var/trails/<date>-<agent>-<slug>.md and indexes it at once. Returns the file path. */
-export function writeNote(meta: { agent: string; task: string; repo: string | null }, f: NoteFields, now = new Date()) {
+export function writeNote(meta: { agent: string; task: string; repo: string | null; agentId?: string | null; job?: number | null }, f: NoteFields, now = new Date()) {
   mkdirSync(trailsDir(), { recursive: true });
   const date = now.toISOString().slice(0, 10), slug = meta.task.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "task";
   let file = join(trailsDir(), `${date}-${meta.agent}-${slug}.md`);
   for (let i = 2; existsSync(file); i++) file = join(trailsDir(), `${date}-${meta.agent}-${slug}-${i}.md`);
   const decisions = (Array.isArray(f.decisions) ? f.decisions : list(f.decisions)).map(decisionLine).map((s) => oneLine(s, 400)).filter(Boolean);
   const sec = (h: string, items: string[]) => (items.length ? `\n## ${h}\n${items.map((x) => `- ${x}`).join("\n")}\n` : "");
-  const md = `---\nagent: ${oneLine(meta.agent, 40)}\ntask: ${oneLine(meta.task, 200)}\nrepo: ${oneLine(meta.repo ?? "", 200)}\ndate: ${now.toISOString()}\n---\n`
+  const md = `---\nagent: ${oneLine(meta.agent, 40)}\ntask: ${oneLine(meta.task, 200)}\nrepo: ${oneLine(meta.repo ?? "", 200)}\ndate: ${now.toISOString()}\n${meta.agentId ? `agent_id: ${oneLine(meta.agentId, 60)}\n` : ""}${meta.job != null ? `job: ${Math.floor(meta.job)}\n` : ""}---\n`
     + (f.goal ? `\n## Goal\n${oneLine(f.goal, 600)}\n` : "") + sec("Decisions", decisions) + sec("Files", list(f.files).map((s) => oneLine(s, 200)))
     + sec("Gotchas", list(f.gotchas).map((s) => oneLine(s, 400))) + (f.result ? `\n## Result\n${oneLine(f.result, 600)}\n` : "");
   writeFileSync(file, md);
@@ -97,7 +102,16 @@ function indexNote(d: Database, file: string) {
   if (known(d, id, key)) return;
   const { fm, body, files } = parseNote(readFileSync(file, "utf8"));
   upsert(d, { id, kind: "note", repo: fm.repo ?? "", date: (fm.date ?? "").slice(0, 10), agent: fm.agent ?? "", checkpoint: "", commit: "", title: fm.task ?? basename(file), files, body: body.replace(/^## /gm, "").trim() }, key);
+  if (fm.agent_id && /^\d+$/.test(fm.job ?? "")) d.run("INSERT INTO note_meta (id, agent_id, job_id) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, job_id = excluded.job_id", [id, fm.agent_id, Number(fm.job)]);
 }
+/** Settle and regrade: the reward of every note the job wrote. Returns how many notes it set. */
+export function setNoteReward(agentId: string, job: number, reward: number | null): number {
+  try { reindex(noResolver, true); } catch { /* the notes written by writeNote are indexed already */ }
+  return tdb().run("UPDATE note_meta SET reward = ? WHERE agent_id = ? AND job_id = ?", [reward, agentId, job]).changes;
+}
+/** Notes with a reward rank higher or lower: bm25 x (1 + 0.15 x (reward - 3)), between x0.7 and x1.3. */
+export const rewardFactor = (r: number | null | undefined) => r == null ? 1 : Math.max(0.7, Math.min(1.3, 1 + 0.15 * (r - 3)));
+export const AVOID_AT = 2;
 
 // ---------- Entire ----------
 /** Agentnet boilerplate that says nothing about the work: the boot line, the task-list rule, delivery lines, the mod note. */
@@ -209,12 +223,19 @@ export function search(query: string, opts: { repo?: string; limit?: number; max
   const rows = tdb().query(`SELECT id, kind, repo, date, agent, checkpoint, commit_sha, title, files, body,
       snippet(trail_fts, 9, '', '', '…', 20) AS snip, bm25(trail_fts, 0, 0, 0, 0, 0, 0, 0, 3.0, 2.0, 1.0) AS score
     FROM trail_fts WHERE trail_fts MATCH ? ${repo ? "AND (repo = ? OR repo = '')" : ""} ORDER BY score LIMIT 30`).all(...(repo ? [match, repo] : [match])) as Record<string, string | number>[];
+  const meta = new Map<string, { agent_id: string | null; job_id: number | null; reward: number | null }>();
+  const noteIds = rows.map((r) => String(r.id)).filter((id) => id.startsWith("note:"));
+  if (noteIds.length) for (const m of tdb().query(`SELECT id, agent_id, job_id, reward FROM note_meta WHERE id IN (${noteIds.map(() => "?").join(",")})`).all(...noteIds) as { id: string; agent_id: string | null; job_id: number | null; reward: number | null }[]) meta.set(m.id, m);
+  // bm25 is negative (lower is better): a factor above 1 moves a well-rewarded note up
+  rows.sort((a, b) => Number(a.score) * rewardFactor(meta.get(String(a.id))?.reward) - Number(b.score) * rewardFactor(meta.get(String(b.id))?.reward));
   const out: TrailHit[] = [];
   for (const r of rows) {
     const all = String(r.files).split("\n").filter(Boolean), files = all.filter((f) => exists(String(r.repo), f));
     if (all.length && !files.length) continue;
-    const hay = `${r.title}\n${r.files}\n${r.body}`.toLowerCase(), matched = ts.filter((t) => hay.includes(t)).length;
-    out.push({ id: String(r.id), kind: r.kind as TrailHit["kind"], repo: String(r.repo), date: String(r.date), agent: String(r.agent), title: String(r.title), files, snippet: String(r.snip).replace(/session:\S+/g, "").replace(/\s+/g, " ").trim(), checkpoint: String(r.checkpoint), commit: String(r.commit_sha), score: Number(r.score), matched });
+    const m = meta.get(String(r.id)), hay = `${r.title}\n${r.files}\n${r.body}`.toLowerCase(), matched = ts.filter((t) => hay.includes(t)).length;
+    out.push({ id: String(r.id), kind: r.kind as TrailHit["kind"], repo: String(r.repo), date: String(r.date), agent: String(r.agent), title: String(r.title), files, snippet: String(r.snip).replace(/session:\S+/g, "").replace(/\s+/g, " ").trim(), checkpoint: String(r.checkpoint), commit: String(r.commit_sha), score: Number(r.score) * rewardFactor(m?.reward), matched,
+      ...(m ? { reward: m.reward, agentId: m.agent_id, job: m.job_id } : {}) });
+    const h = out.at(-1)!; if (h.reward != null && h.reward <= AVOID_AT) h.snippet = `avoid: ${h.snippet}`;
     if (out.length >= limit) break;
   }
   return out;
@@ -228,7 +249,7 @@ export function format(hits: TrailHit[], label = "Past trails"): string {
     const ref = [h.checkpoint && `checkpoint ${h.checkpoint}`, h.commit && `commit ${h.commit}`].filter(Boolean).join(" ");
     lines.push(`[${i + 1}] ${h.date || "?"} ${h.agent || "?"} · ${h.kind}: ${h.title.replace(/\s+/g, " ").slice(0, 110)}`);
     if (files) lines.push(`  files: ${files}`);
-    if (h.snippet && !h.title.includes(h.snippet.replace(/…/g, "").trim().slice(0, 40))) lines.push(`  > ${h.snippet.slice(0, 220)}`);
+    if (h.snippet && (h.snippet.startsWith("avoid:") || !h.title.includes(h.snippet.replace(/…/g, "").trim().slice(0, 40)))) lines.push(`  > ${h.snippet.slice(0, 220)}`);
     if (ref) lines.push(`  ${ref}`);
   });
   let s = lines.join("\n");
@@ -250,7 +271,9 @@ export interface InjectResult { text: string; hits: TrailHit[]; skipped?: string
 /** `more` fills up to 3 from a second source (cass) after the FTS5 hits; its hits must clear the same bar. */
 export type More = (query: string, n: number, repo?: string) => Promise<TrailHit[]>;
 /** `since` = the agent's spawn time: its own hits from this spawn are its current work, not a past trail. */
-export async function inject(agent: string, source: "spawn" | "task_add" | "task_msg", text: string, repo?: string, resolver?: Resolver, more?: More, since = 0): Promise<InjectResult> {
+/** `self` = the asking agent generation and its current job: that job's notes are never injected back (the agent never sees its
+ *  current job's reward). Notes of its earlier jobs still show. */
+export async function inject(agent: string, source: "spawn" | "task_add" | "task_msg", text: string, repo?: string, resolver?: Resolver, more?: More, since = 0, self?: { agentId: string; job: number | null }): Promise<InjectResult> {
   const cfg = trailConfig(), ts = terms(text);
   let res: InjectResult;
   if (!cfg.inject) res = { text: "", hits: [], skipped: "off" };
@@ -258,7 +281,7 @@ export async function inject(agent: string, source: "spawn" | "task_add" | "task
   else {
     try { reindex(resolver); } catch { /* search the index as it is */ }
     const need = Math.max(cfg.min_terms, Math.ceil(ts.length * cfg.min_ratio));
-    const day = since ? new Date(since).toISOString().slice(0, 10) : "", past = (h: TrailHit) => h.matched >= need && !(h.agent === agent && day && h.date >= day);
+    const day = since ? new Date(since).toISOString().slice(0, 10) : "", past = (h: TrailHit) => h.matched >= need && !(h.agent === agent && day && h.date >= day) && !(self && h.agentId === self.agentId && h.job === self.job);
     const hits = search(text, { repo, limit: 10, max: 10 }).filter(past).slice(0, MAX_HITS);
     if (more && hits.length < MAX_HITS) { try { hits.push(...(await more(text, MAX_HITS - hits.length + 2, repo)).filter(past).slice(0, MAX_HITS - hits.length)); } catch { /* FTS5 hits alone */ } }
     res = hits.length ? { text: format(hits), hits } : { text: "", hits: [], skipped: "no hit above threshold" };

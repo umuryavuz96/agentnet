@@ -6,7 +6,7 @@ import { isAbsolute, join } from "node:path";
 import { db } from "../core/db";
 import { EVIDENCE_KINDS, type Evidence, type EvidenceKind } from "./jobs";
 
-export const EVIDENCE_HELP = 'evidence is a list of "kind: value": commit: <hash> | file: <path> | check: <the PASS line> | shot: <path> | msg: <message id> | none: <why there is no proof>';
+export const EVIDENCE_HELP = 'evidence is a list of "kind: value": commit: <hash> | file: <path> | check: <the PASS line> | shot: <path> | msg: <message id> | none: <why there is no proof> | expected: <the failure this step meant to show>';
 /** "commit: abc123" or {kind, value} to kind and value. Error text when a line has no known kind or no value. */
 export function parseEvidence(x: unknown): { kind: EvidenceKind; value: string }[] | { error: string } {
   const list = Array.isArray(x) ? x : x == null || x === "" ? [] : [x], out: { kind: EvidenceKind; value: string }[] = [];

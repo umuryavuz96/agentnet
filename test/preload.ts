@@ -11,3 +11,7 @@ const NO_USAGE = "/nonexistent/agentnet-test-usage.json";
 delete process.env.AGENTNET_USAGE_FILE; delete process.env.AGENTNET_USAGE_OVERRIDE;
 process.env.USAGE_GUARD_FILE ??= NO_USAGE;
 beforeEach(() => { process.env.USAGE_GUARD_FILE ??= NO_USAGE; });
+// Tests never load the owner's brains (~/.agents/brains): brains are off unless a test points AGENTNET_BRAINS_DIR at its own folder.
+const NO_BRAINS = "/nonexistent/agentnet-test-brains";
+process.env.AGENTNET_BRAINS_DIR = NO_BRAINS;
+beforeEach(() => { process.env.AGENTNET_BRAINS_DIR ??= NO_BRAINS; });

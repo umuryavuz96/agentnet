@@ -111,6 +111,19 @@ export function jobList() {
   return files.map((f) => jobDetail(f.slice(0, -5))).filter((j): j is NonNullable<typeof j> => !!j).map(({ log: _l, outputs: _o, ...rest }) => rest).sort((a, b) => b.started - a.started).slice(0, 40);
 }
 
+/** The running jobs a finished agent owns (finish.ts): card owner = its name, no exit file, pid alive. */
+export function ownedRunning(owner: string, isAlive: (pid: number) => boolean = alive): { id: string; pid: number; desc: string }[] {
+  let files: string[] = []; try { files = readdirSync(bgDirOf()).filter((f) => f.endsWith(".json")); } catch { return []; }
+  return files.map((f) => readCard(f.slice(0, -5))).filter((c): c is WatchCard => !!c && c.owner === owner && Number.isInteger(c.pid) && c.pid > 1 && exitOf(c.id) === null && isAlive(c.pid))
+    .map((c) => ({ id: c.id, pid: c.pid, desc: String(c.desc ?? "").slice(0, 120) }));
+}
+/** The stop path of a job: SIGTERM to its pid, SIGKILL `graceMs` later while it still runs. The card stays (it shows "stopped"). */
+export function stopJob(id: string, d: { signal: (pid: number, sig: "SIGTERM" | "SIGKILL") => void; alive: (pid: number) => boolean; later: (fn: () => void, ms: number) => void }, graceMs = 5000): boolean {
+  const card = readCard(id); if (!card || !Number.isInteger(card.pid) || card.pid <= 1) return false;
+  d.signal(card.pid, "SIGTERM"); d.later(() => { if (d.alive(card.pid)) d.signal(card.pid, "SIGKILL"); }, graceMs);
+  return true;
+}
+
 /** GET /bgjobs, /bgjobs/:id (open reads like the other panel reads); /bgjobs/:id/file is root only because job outputs can hold anything. */
 export function bgjobRoutes(api: Hono<Env>) {
   api.get("/bgjobs", (c) => c.json(jobList()));

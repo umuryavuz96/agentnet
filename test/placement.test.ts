@@ -23,10 +23,10 @@ const logLines = () => (existsSync(join(home, "logs", "model-routing.jsonl")) ? 
 test("plan_spawn has no side effects: no agent, no team, no routing log line", async () => {
   const before = (await agents()).length, log = await logLines();
   const p = await plan({ job: "build an api endpoint", project: "/tmp/proj-a", role: "backend" });
-  expect(p.name).toBe("backend-1"); expect(p.team).toBeNull(); expect(p.boss).toBe("root");
+  expect(p.name).toBe("backend-1"); expect(p.team).toMatchObject({ id: "proj-a-dev", action: "create", lead: null, members: ["backend-1"] }); expect(p.boss).toBe("root");
   expect((await agents()).length).toBe(before); expect(await logLines()).toBe(log);
   expect((await (await call("/v1/agent/teams")).json() as { teams: unknown[] }).teams.length).toBe(0);
-  expect(p.model).toBeTruthy(); expect(p.compactWindow).toBe(300000); expect(p.reasons.join("\n")).toContain("no team");
+  expect(p.model).toBeTruthy(); expect(p.compactWindow).toBe(300000); expect(p.reasons.join("\n")).toContain("first agent on this project");
 });
 
 test("naming picks the next free N", async () => {
@@ -58,9 +58,9 @@ test("role keywords are editable in placement.json", async () => {
   } finally { delete process.env.AGENTNET_PLACEMENT_FILE; }
 });
 
-test("a second agent on the same project proposes a team with no lead; spawn creates it with both members, boss root", async () => {
+test("the first agent on a project creates its lead-less team; a second joins it, boss root", async () => {
   const p = await plan({ job: "write tests", role: "qa", project: "/tmp/proj-a" });
-  expect(p.team).toMatchObject({ id: "proj-a-dev", action: "create", lead: null }); expect(p.boss).toBe("root");
+  expect(p.team).toMatchObject({ id: "proj-a-dev", action: "join", lead: null }); expect(p.boss).toBe("root");
   const r = await call("/v1/admin/spawn", { job: "write tests", role: "qa", project: "/tmp/proj-a" });
   expect(r.status).toBe(201);
   const j = await r.json() as { name: string; boss: string; team: string };
@@ -79,10 +79,15 @@ test("an existing team on the project is joined; with no lead the boss stays roo
 });
 
 test("explicit inputs win and the reasons say so", async () => {
-  const p = await plan({ job: "x", name: "lookup-7", boss: "root", model: "haiku", soul: "my/soul", project: "/tmp/proj-a" });
-  expect(p).toMatchObject({ name: "lookup-7", boss: "root", model: "haiku", soul: "my/soul" }); // auto team has no lead: explicit boss holds
+  const p = await plan({ job: "x", name: "lookup-7", boss: "root", model: "haiku", soul: "ws/my-soul", project: "/tmp/proj-a" });
+  expect(p).toMatchObject({ name: "lookup-7", boss: "root", model: "haiku", soul: "ws/my-soul" }); // auto team has no lead: explicit boss holds
   const r = p.reasons.join("\n");
-  expect(r).toContain("name lookup-7: explicit"); expect(r).toContain("boss root: explicit"); expect(r).not.toContain("overrides explicit"); expect(r).toContain("model haiku: explicit"); expect(r).toContain("soul my/soul: explicit");
+  expect(r).toContain("name lookup-7: explicit"); expect(r).toContain("boss root: explicit"); expect(r).not.toContain("overrides explicit"); expect(r).toContain("model haiku: explicit"); expect(r).toContain("soul ws/my-soul: explicit");
+});
+
+test("a catalog soul is ignored with a warning: the soul catalog is switched off", async () => {
+  const p = await plan({ job: "x", name: "lookup-8", soul: "my/soul", project: "/tmp/proj-a" });
+  expect(p.soul).toBeUndefined(); expect(p.warnings.join("\n")).toContain("soul my/soul ignored");
 });
 
 test("team-by-project off: no team", async () => {
@@ -101,5 +106,5 @@ test("a team with a lead is never auto-joined; its members are not pulled into a
   expect((await call("/v1/admin/spawn", { name: "architect-9", job: "lead", project: "/tmp/proj-led" })).status).toBe(201);
   (await import("../src/net/teams")).createTeam({ id: "led-team", name: "led-team", project: "/tmp/proj-led", lead: "architect-9", members: ["architect-9"] } as any);
   const p = await plan({ job: "make a logo", role: "designer", project: "/tmp/proj-led", boss: "root" });
-  expect(p.team).toBeNull(); expect(p.boss).toBe("root"); expect(p.reasons.join("\n")).toContain("no team");
+  expect(p.team).toMatchObject({ id: "proj-led-dev", action: "join", lead: null }); expect(p.team?.members).not.toContain("led-team"); expect(p.boss).toBe("root");
 });

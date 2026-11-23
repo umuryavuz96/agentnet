@@ -9,7 +9,7 @@ import { makeWorkspace } from "../../test/helpers/adoptFixture";
 
 let tmp = "", ws = "", home = "", oldHome: string | undefined, facts: Facts, report: AdoptReport;
 const none = { tmux: () => "", crontab: () => "", launchd: () => [] };
-const ctx = () => ({ runId: "run-20261110-101500", root: join(tmp, "agentnet"), workspaceDir: join(tmp, "agentnet/workspace") });
+const ctx = () => ({ runId: "run-20261110-101500", root: tmp, workspaceDir: join(tmp, "agentnet/workspace") }); // root = tmp: the workspace is inside the home, so file ops stay ops
 const ref = (id: string) => facts.signals.find((s) => s.id === id)!.ref;
 function mkReport(): AdoptReport {
   const ev = (id: string, path: string) => [{ signal: ref(id), path }];
@@ -105,7 +105,7 @@ test("souls: create list, preview, per-action opt-out, no side effects", () => {
 test("backup list, backup dir, rollback command, no global", () => {
   const p = plan();
   expect(p.willBackup.sort()).toEqual([join(ws, ".claude/settings.json"), join(ws, ".mcp.json"), join(ws, "CLAUDE.md")].sort());
-  expect(p.backupDir).toBe(join(tmp, "agentnet/adopt/run-20261110-101500"));
+  expect(p.backupDir).toBe(join(tmp, "adopt/run-20261110-101500")); // root is tmp now
   expect(p.rollbackCommand).toBe("agentnet adopt rollback run-20261110-101500");
   expect(p.needsConfirmGlobal).toBe(false);
 });

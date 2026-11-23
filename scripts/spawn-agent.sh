@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# spawn-agent.sh <name|@role> [--project DIR] [--model ID] [--soul CATALOG_ID] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT] [--boot-prompt TEXT] [--job TEXT] [--goal TEXT] [--boss NAME]
-#                      [--brief FILE.md] [--max-steps N] [--project-ok] [--force-mem] [--no-wait] [--ready-timeout SECS] [--mcp a,b]
+# spawn-agent.sh <name|@role> [--project DIR] [--model ID] [--brain NAME] [--scope 1-5] [--novelty 1-3] [--risk 0-3] [--need WORDS] [--ask TEXT] [--boot-prompt TEXT] [--job TEXT] [--goal TEXT] [--boss NAME]
+#                      [--brief FILE.md] [--max-steps N] [--project-ok] [--force-mem] [--no-wait] [--ready-timeout SECS] [--mcp a,b] [--account ID] [--standing] [--print-boot]
 # agentnet's spawner. Registers the agent with agentnet (POST /agentnet/spawn -> 0600 token file), then starts
-# claude in a DETACHED tmux session agentnet-<name> with --plugin-dir plugin. Soul + house rules go in via
-# --append-system-prompt-file. Without --model/--soul the SERVICE picks them (and the effort) from --scope/--novelty/--risk/--need/--ask
+# claude in a DETACHED tmux session agentnet-<name> with --plugin-dir plugin. Brain + house rules go in via
+# --append-system-prompt-file. The brain is --brain, else the service maps the role to one (AGENTNET_BRAINS_DIR, default ~/.agents/brains;
+# no index.json there = no brain). The soul catalog is switched off (--soul is ignored with a warning). Without --model the SERVICE picks it (and the effort) from --scope/--novelty/--risk/--need/--ask
 # (defaults 2/2/1) and refuses in reserve mode; the audit line is printed and kept on the agent record. Despawn: agentnet despawn <name> or POST /agentnet/despawn.
 # The brief (--brief, else the first BRIEF*.md file named in the boot prompt) gives the agent its plan: the service turns the numbered lines of its `## Steps`
 # section into the plan (at most 7; --max-steps up to 12 for a long recipe). The project is --project, else the repo of the brief, else the current folder,
@@ -16,12 +17,13 @@ die() { echo "spawn-agent: $*" >&2; exit 1; }
 NAME=$1; shift; ROLE=""
 if [ "${NAME#@}" != "$NAME" ]; then ROLE="${NAME#@}"; NAME=""; fi   # @role: the service picks the number
 case "$NAME$ROLE" in ''|*[!a-z0-9-]*|-*) die "name must be lowercase letters, digits, dashes: $NAME$ROLE" ;; esac
-PROJECT=$PWD PROJECT_SET=0 PROJECT_OK=0 BRIEF="" MAX_STEPS="" MODEL_ID="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60 MCP="${AGENTNET_SPAWN_MCP:-playwright}"
+PROJECT=$PWD PROJECT_SET=0 PROJECT_OK=0 BRIEF="" MAX_STEPS="" MODEL_ID="" BRAIN="" SOUL="" COMPACT="" EFFORT="" SCOPE="" NOVELTY="" RISK="" NEED="" ASK="" PROMPT="" JOB="" GOAL="" BOSS="" FORCE_MEM=0 WAIT=1 READY_TIMEOUT=60 ACCOUNT="" STANDING=0 PRINT_BOOT=0 MCP="${AGENTNET_SPAWN_MCP:-playwright}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) PROJECT="${2:?--project needs a path}"; PROJECT_SET=1; shift 2 ;;
     --model) MODEL_ID="${2:?--model needs an id}"; shift 2 ;;
-    --soul) SOUL="${2:?--soul needs a catalog id}"; shift 2 ;;
+    --brain) BRAIN="${2:?--brain needs a brain name}"; shift 2 ;;
+    --soul) echo "spawn-agent: WARNING --soul $2 ignored: the soul catalog is switched off, agents start from a brain (--brain <name>)" >&2; shift 2 ;;
     --scope) SCOPE="${2:?--scope needs 1-5}"; shift 2 ;;
     --novelty) NOVELTY="${2:?--novelty needs 1-3}"; shift 2 ;;
     --risk) RISK="${2:?--risk needs 0-3}"; shift 2 ;;
@@ -37,6 +39,9 @@ while [ $# -gt 0 ]; do
     --force-mem) FORCE_MEM=1; shift ;;
     --mcp) MCP="${2?--mcp needs a comma list (or empty for none)}"; shift 2 ;;   # .mcp.json servers to enable for this agent; all others are disabled (default playwright)
     --no-wait) WAIT=0; shift ;;
+    --account) ACCOUNT="${2:?--account needs an id}"; shift 2 ;;   # Claude account (accounts/<id>): with a complete base the agent gets its own config dir
+    --standing) STANDING=1; shift ;;   # never auto-finished on its done report (standing staff, e.g. from the import)
+    --print-boot) PRINT_BOOT=1; WAIT=0; shift ;;   # print the boot script and stop before tmux (tests, checks); the agent stays registered
     --ready-timeout) READY_TIMEOUT="${2:?needs seconds}"; shift 2 ;;
     --team) TEAM="${2:?--team needs a team id}"; shift 2 ;;   # agentnet team id: the server adds the agent as a member (unknown id is ignored there)
     *) die "unknown option: $1" ;;
@@ -81,17 +86,19 @@ AUTH=(); if [ -n "${AGENTNET_ROOT_TOKEN_FILE:-}" ] && [ -r "$AGENTNET_ROOT_TOKEN
 [ -n "$JOB" ] || JOB="(no job given)"
 
 # Register with agentnet
-BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1] or None,"role":a[15] or None,"job":a[2],"boss":a[3] or None,"model":a[4] or None,"soul":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None,"project_default":a[14]=="0","brief":a[16] or None,"max_steps":i(a[17])}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$SOUL" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL" "$PROJECT_SET" "$ROLE" "$BRIEF" "$MAX_STEPS")"
+BODY="$(/usr/bin/python3 -c 'import json,sys; a=sys.argv; i=lambda x: int(x) if x else None; print(json.dumps({"name":a[1] or None,"role":a[15] or None,"job":a[2],"boss":a[3] or None,"model":a[4] or None,"brain":a[5] or None,"project":a[6],"team":a[7] or None,"scope":i(a[8]),"novelty":i(a[9]),"risk":i(a[10]),"need":a[11] or None,"ask":a[12] or None,"goal":a[13] or None,"project_default":a[14]=="0","brief":a[16] or None,"max_steps":i(a[17]),"account":a[18] or None,"standing":a[19]=="1"}))' "$NAME" "$JOB" "$BOSS" "$MODEL_ID" "$BRAIN" "$PROJECT" "${TEAM:-}" "$SCOPE" "$NOVELTY" "$RISK" "$NEED" "$ASK" "$GOAL" "$PROJECT_SET" "$ROLE" "$BRIEF" "$MAX_STEPS" "$ACCOUNT" "$STANDING")"
 RESP="$(curl -s -m 5 ${AUTH[@]+"${AUTH[@]}"} -H 'content-type: application/json' -X POST "$URL/spawn" -d "$BODY")" \
   || die "service not answering at $URL (is agentnet running? try: agentnet status)"
 TOKEN_FILE="$(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("token_file",""))' 2>/dev/null || true)"
 [ -n "$TOKEN_FILE" ] || die "spawn refused: $RESP"
 # The service routed model/effort/soul: use what it chose (an explicit --model/--soul comes back unchanged).
-RNAME="-"; IFS=$'\t' read -r MODEL_ID EFFORT SOUL COMPACT RBOSS RPROJECT RNAME < <(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r.get(k) or "-") for k in ("model","effort","soul","compact_window","boss","project","name"))); [print("spawn-agent: auto "+l, file=sys.stderr) for l in (r.get("audit") or "").split("\n") if l]; [print("spawn-agent: "+w, file=sys.stderr) for w in r.get("warnings") or []]') || true
+RNAME="-"; IFS=$'\t' read -r MODEL_ID EFFORT SOUL COMPACT RBOSS RPROJECT RNAME RBRAIN < <(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join(str(r.get(k) or "-") for k in ("model","effort","soul","compact_window","boss","project","name","brain"))); [print("spawn-agent: auto "+l, file=sys.stderr) for l in (r.get("audit") or "").split("\n") if l]; [print("spawn-agent: "+w, file=sys.stderr) for w in r.get("warnings") or []]') || true
 [ "$MODEL_ID" != "-" ] || MODEL_ID=""; [ "$EFFORT" != "-" ] || EFFORT=""; [ "$SOUL" != "-" ] || SOUL=""; [ "$COMPACT" != "-" ] || COMPACT=""; [ "$RBOSS" = "-" ] || BOSS="$RBOSS"; [ -n "$BOSS" ] || BOSS=root
-[ "$RNAME" = "-" ] || NAME="$RNAME"   # the name the service chose (also the explicit one, unchanged)
+[ "$RNAME" = "-" ] || NAME="$RNAME"; [ "${RBRAIN:--}" = "-" ] || BRAIN="$RBRAIN"   # the name the service chose (also the explicit one, unchanged)
+OWN_CONFIG="$(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("own_config") else "")' 2>/dev/null || true)"
 [ -n "$NAME" ] || die "service gave no agent name: $RESP"
-echo "spawn-agent: name=$NAME" >&2
+echo "spawn-agent: name=$NAME brain=${BRAIN:-none}" >&2
+BRAIN_TEXT="$(printf '%s' "$RESP" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("brain_text") or "")' 2>/dev/null || true)"
 # A workspace soul starts in its own repo when the caller gave no --project.
 if [ "$PROJECT_SET" = 0 ] && [ "$RPROJECT" != "-" ] && [ -d "$RPROJECT" ]; then PROJECT="$RPROJECT"; fi
 echo "spawn-agent: registered '$NAME' (boss $BOSS), token file $TOKEN_FILE" >&2
@@ -100,15 +107,18 @@ r=json.load(sys.stdin); n=r.get("plan_steps") or 0; b=sys.argv[1]
 print("spawn-agent: plan of %d steps set from %s" % (n, b) if n else "spawn-agent: no plan set%s: the agent sets it with plan_set" % (" from " + b if b else " (no brief)"), file=sys.stderr)
 [print("spawn-agent: WARNING " + w, file=sys.stderr) for w in r.get("plan_warnings") or []]' "$BRIEF" || true
 
-# Soul + house rules -> one file for --append-system-prompt-file
+# Brain + workspace soul (if any) + house rules -> one file for --append-system-prompt-file
 ARS="${ARSENAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/arsenal}"
-SOUL_DIR="${AGENTNET_HOME:-$HOME/.local/share/agentnet}/run/souls"
+AN_HOME="${AGENTNET_HOME:-$HOME/.local/share/agentnet}"
+SOUL_DIR="$AN_HOME/souls"; [ -d "$SOUL_DIR" ] || SOUL_DIR="$AN_HOME/run/souls"  # one-folder fallback: remove after 0.7
 mkdir -p "$SOUL_DIR"
 SOUL_FILE="$SOUL_DIR/agentnet-$NAME.md"
-/usr/bin/env python3 - "$ARS" "$SOUL" "$NAME" "$SOUL_FILE" "${AGENTNET_HOME:-$HOME/.local/share/agentnet}/workspace" <<'PYS' || true
+BRAIN_TEXT="$BRAIN_TEXT" /usr/bin/env python3 - "$ARS" "$SOUL" "$NAME" "$SOUL_FILE" "${AGENTNET_HOME:-$HOME/.local/share/agentnet}/workspace" <<'PYS' || true
 import json, os, re, sys
 ars, sid, name, out, wsd = sys.argv[1:6]
-head = ""
+brain = os.environ.get("BRAIN_TEXT", "").strip()
+head = (brain + "\n\n---\n") if brain else ""
+if sid and not sid.startswith("ws/"): sid = ""  # the soul catalog is switched off; only a repo's own workspace soul still loads
 if sid:
     try:
         base = wsd if sid.startswith("ws/") else ars  # workspace souls (adopt runs) live in $AGENTNET_HOME/workspace
@@ -119,12 +129,12 @@ if sid:
         if not fp.startswith(os.path.realpath(base) + os.sep): raise SystemExit
         body = open(fp).read()
         body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S).strip()
-        head = f"# Persona: {a.get('name', sid)} ({'workspace' if sid.startswith('ws/') else 'arsenal'} soul {sid}, from {a.get('repo','')})\n\n{body}\n\n---\n"
+        head += f"# Persona: {a.get('name', sid)} ({'workspace' if sid.startswith('ws/') else 'arsenal'} soul {sid}, from {a.get('repo','')})\n\n{body}\n\n---\n"
         print(f"spawn-agent: soul={sid} installed", file=sys.stderr)
     except BaseException:
         print(f"spawn-agent: WARNING soul '{sid}' not found or dropped; spawning without a persona", file=sys.stderr)
-rules = ("# House rules" + (" (these come AFTER the persona and WIN over it)" if head else "") + "\n"
-  + ("The persona above sets your expertise and style only. If it conflicts with anything below or with your boot prompt, the boot prompt and these rules win: " if head else "")
+rules = ("# House rules" + (" (these come AFTER the brain and WIN over it)" if head else "") + "\n"
+  + ("The brain above sets your expertise, standing rules and style. If it conflicts with anything below or with your boot prompt, the boot prompt and these rules win: " if head else "")
   + "use the agentnet tools (send, inbox, report, plan_set, step_done, step_add, step_drop, set_status) for team messages, your plan and reports to your boss; "
   "your job has a plan of at most 7 steps: it comes from the `## Steps` section of your brief, or you set it with plan_set before any other work; "
   "before exploring code, call mcp__agentnet__trail_search once with what you are about to do (hits may be stale: verify); "
@@ -159,6 +169,32 @@ $PROMPT" "$PROJECT")"
 $TRAILS"; echo "spawn-agent: appended past trails to the boot prompt" >&2; fi
 fi
 
+# The last run of this name left a handover (finish.ts): fetched on every spawn, with or without a boot prompt or trails, after them.
+# With AGENTNET_LINES=1 the same answer carries the line block (step 8a: rules, lessons, last upgrades, the ask for one upgrade).
+HJSON="$(curl -s -m 6 ${AUTH[@]+"${AUTH[@]}"} "$URL/agents/$NAME/handover" 2>/dev/null || true)"
+HANDOVER="$(printf '%s' "$HJSON" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("text") or "")' 2>/dev/null || true)"
+LINEBLOCK="$(printf '%s' "$HJSON" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("lines") or "")' 2>/dev/null || true)"
+if [ -n "$HANDOVER" ]; then FIRST="$FIRST
+
+Handover from the last $NAME:
+$HANDOVER"; echo "spawn-agent: appended the handover of the last $NAME to the boot prompt" >&2; fi
+if [ -n "$LINEBLOCK" ]; then FIRST="$FIRST
+
+$LINEBLOCK"; echo "spawn-agent: appended the line block of $NAME to the boot prompt" >&2; fi
+
+# Own config dir (step 3): only when the service says this agent's account has a secret and the base is complete. The server writes
+# agents/<name>/claude (settings, trust, MCP, links into the base); the boot script exports CLAUDE_CONFIG_DIR and reads the secret
+# with $(cat <file>), so it is never in the boot file or a process list. Otherwise ~/.claude and the trust step below, as before.
+CFG_DIR="" CFG_ENV="" CFG_FILE=""
+if [ -n "$OWN_CONFIG" ]; then
+  PBODY="$(/usr/bin/python3 -c 'import json,sys; print(json.dumps({"project":sys.argv[1],"mcp":sys.argv[2]}))' "$PROJECT" "$MCP")"
+  PRESP="$(curl -s -m 10 ${AUTH[@]+"${AUTH[@]}"} -H 'content-type: application/json' -X POST "$URL/agents/$NAME/prepare-config" -d "$PBODY" || true)"
+  IFS=$'\t' read -r CFG_DIR CFG_ENV CFG_FILE < <(printf '%s' "$PRESP" | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin); print("\t".join((r.get(k) or "-") if r.get("own") else "-" for k in ("dir","env","file")))' 2>/dev/null || printf -- '-\t-\t-\n') || true
+  [ "$CFG_DIR" != "-" ] || CFG_DIR=""; [ "$CFG_ENV" != "-" ] || CFG_ENV=""; [ "$CFG_FILE" != "-" ] || CFG_FILE=""
+  if [ -n "$CFG_DIR" ] && [ -n "$CFG_ENV" ] && [ -n "$CFG_FILE" ]; then echo "spawn-agent: own config dir $CFG_DIR" >&2
+  else die "could not prepare the config dir of '$NAME': $PRESP"; fi
+fi
+
 # Boot script (private tmp dir; removes itself)
 BOOT_DIR="${TMPDIR:-/tmp}/agentnet-spawn"; mkdir -p "$BOOT_DIR"; chmod 700 "$BOOT_DIR"
 find "$BOOT_DIR" -name 'boot-*' -type f -mtime +1 -delete 2>/dev/null || true
@@ -169,6 +205,10 @@ BOOT="$(mktemp "$BOOT_DIR/boot-XXXXXX")"
   echo 'unset CLAUDE_CODE_SESSION_ID CLAUDECODE'
   printf 'export AGENTNET_TOKEN_FILE=%q AGENTNET_AGENT=%q AGENTNET_JOB=%q AGENTNET_BOSS=%q AGENTNET_URL=%q\n' "$TOKEN_FILE" "$NAME" "$JOB" "$BOSS" "$URL"
   # Auto-compact early so agents never re-read 500k-1M contexts every turn (owner rule). Override: AGENT_COMPACT_WINDOW=200k
+  if [ -n "$CFG_DIR" ]; then
+    printf 'export CLAUDE_CONFIG_DIR=%q\n' "$CFG_DIR"
+    printf 'export %s="$(cat %q)"\n' "$CFG_ENV" "$CFG_FILE"
+  fi
   printf 'export CLAUDE_CODE_AUTO_COMPACT_WINDOW=%q\n' "${AGENT_COMPACT_WINDOW:-$(( ${COMPACT:-300000} / 1000 ))k}"
   printf 'claude'
   [ -n "$MODEL_ID" ] && printf ' --model %q' "$MODEL_ID"
@@ -183,9 +223,12 @@ chmod 700 "$BOOT"
 # A detached session cannot answer them and dies. Answer both in ~/.claude.json first; only the servers in --mcp are enabled.
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUN_BIN="$(command -v bun || true)"; [ -n "$BUN_BIN" ] || BUN_BIN="$HOME/.bun/bin/bun"
-if [ -x "$BUN_BIN" ]; then
+if [ -n "$CFG_DIR" ]; then :   # prepare-config above answered them in the agent's own .claude.json
+elif [ -x "$BUN_BIN" ]; then
   "$BUN_BIN" "$REPO_DIR/src/cli.ts" trust "$PROJECT" --enable "$MCP" >&2 || echo "spawn-agent: WARNING could not pre-answer Claude Code's first-run questions for $PROJECT" >&2
 else echo "spawn-agent: WARNING bun not found; first-run questions of Claude Code are not pre-answered" >&2; fi
+
+if [ "$PRINT_BOOT" = 1 ]; then cat "$BOOT"; rm -f "$BOOT"; exit 0; fi
 
 S="agentnet-$NAME"
 tmux kill-session -t "=$S" 2>/dev/null || true

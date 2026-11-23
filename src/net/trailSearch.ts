@@ -119,5 +119,5 @@ export async function trailSearch(query: string, o: SearchOpts = {}): Promise<{ 
   if (o.cass !== false && hits.length < limit) hits.push(...await cassSearch(query, limit - hits.length, o.repo));
   return { hits, text: format(hits) };
 }
-export const trailInject = (agent: string, source: "spawn" | "task_add" | "task_msg", text: string, repo?: string, since = 0): Promise<InjectResult> =>
-  inject(agent, source, text, repo, makeResolver(), cassSearch, since);
+export const trailInject = (agent: string, source: "spawn" | "task_add" | "task_msg", text: string, repo?: string, since = 0, self?: { agentId: string; job: number | null }): Promise<InjectResult> =>
+  inject(agent, source, text, repo, makeResolver(), cassSearch, since, self);

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Scores, board page 06: average grade with bands, task discipline (10 days + today's five checks), grade next to cost per model,
-// best agents / roles / personas and the ones that need a look. Fixed to the window; the lists scroll inside.
+// best agents / roles / brains and the ones that need a look. Fixed to the window; the lists scroll inside.
 import { computed, onBeforeUnmount, ref } from "vue";
 import Icon from "../ui/Icon.vue";
+import MetricsTrend from "../components/MetricsTrend.vue";
 import { DISCIPLINE_CHECKS as CHK, scores, useScores, type AgentScoreRow, type GroupScoreRow } from "../net";
 
 const stop = useScores();
@@ -48,13 +49,18 @@ const pc = (n: number | null | undefined) => (n == null ? "–" : Math.round(n) 
 // the score counts the steps of closed jobs since the job model; a server from before it sends no job count, and then nothing is said
 const since = computed(() => { const f = d.value?.discipline.days[0]; return f && f.jobs != null ? new Date(f.day + "T12:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""; });
 
-type Kind = "agents" | "roles" | "souls";
-const KINDS = [["agents", "Agents"], ["roles", "Roles"], ["souls", "Personas"]] as const;
+type Kind = "agents" | "roles" | "brains" | "trends";
+const KINDS = [["agents", "Agents"], ["roles", "Roles"], ["brains", "Brains"], ["trends", "Trends"]] as const;
 const kind = ref<Kind>("agents");
-const phoneTab = ref<"best" | "low">("best");
+const phoneTab = ref<"best" | "low" | "trend">("best");
+/** On a phone the Trends tab is the first list switched to trends. */
+const phoneTrend = (on: boolean) => { phoneTab.value = on ? "trend" : "best"; kind.value = on ? "trends" : kind.value === "trends" ? "agents" : kind.value; };
 const best = computed(() => [...scored.value].sort((a, b) => b.score! - a.score! || b.graded - a.graded).slice(0, 20));
 const low = computed(() => [...scored.value].sort((a, b) => a.score! - b.score! || a.graded - b.graded).slice(0, 10));
-const groups = computed<GroupScoreRow[]>(() => ((kind.value === "roles" ? d.value?.byRole : d.value?.bySoul) ?? []).filter((g) => g.score != null).sort((a, b) => b.score! - a.score!));
+/** Brains: grouped by brain name, with the versions graded so far. Rows from the old persona catalog are not ranked here. */
+/*  Brains not yet scored (fewer graded tasks than minGraded) stay listed below the ranked ones, so a new brain is visible from its first job. */
+const groups = computed<(GroupScoreRow & { versions?: number[] })[]>(() => ((kind.value === "roles" ? d.value?.byRole : d.value?.byBrain) ?? [])
+  .filter((g) => g.score != null || kind.value === "brains").sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || b.graded - a.graded || b.tasks - a.tasks));
 const few = (n: number) => n <= 4;
 const minNote = computed(() => { const f = low.value.find((a) => few(a.graded)); return f ? `Amber "graded" means 4 or fewer graded tasks: the score can still move a lot. ${f.agent} has ${f.graded} graded of ${f.tasks}.` : `An agent gets a score after ${d.value?.minGraded ?? 3} graded tasks.`; });
 const err = computed(() => (scores.err && !d.value ? `Scores not available (${scores.err}).` : !d.value ? "Loading…" : ""));
@@ -95,20 +101,21 @@ const err = computed(() => (scores.err && !d.value ? `Scores not available (${sc
 
       <div class="lists">
         <section class="uc list" :class="{ off: phoneTab === 'low' }" aria-label="Best scores">
-          <h2><Icon name="trophy" :size="16" />Best scores<span class="sp" />
+          <h2><Icon :name="kind === 'trends' ? 'chart-line' : 'trophy'" :size="16" />{{ kind === "trends" ? "Is it improving?" : "Best scores" }}<span class="sp" />
             <div class="seg dk" role="tablist" aria-label="List"><button v-for="[id, l] in KINDS" :key="id" type="button" role="tab" :aria-selected="kind === id" :class="{ on: kind === id }" @click="kind = id">{{ l }}</button></div>
-            <div class="seg ph2" role="tablist" aria-label="List"><button type="button" role="tab" :aria-selected="phoneTab === 'best'" :class="{ on: phoneTab === 'best' }" @click="phoneTab = 'best'">Best</button><button type="button" role="tab" :aria-selected="phoneTab === 'low'" :class="{ on: phoneTab === 'low' }" @click="phoneTab = 'low'">Needs a look</button></div></h2>
+            <div class="seg ph2" role="tablist" aria-label="List"><button type="button" role="tab" :aria-selected="phoneTab === 'best'" :class="{ on: phoneTab === 'best' }" @click="phoneTrend(false)">Best</button><button type="button" role="tab" :aria-selected="phoneTab === 'trend'" :class="{ on: phoneTab === 'trend' }" @click="phoneTrend(true)">Trends</button><button type="button" role="tab" :aria-selected="phoneTab === 'low'" :class="{ on: phoneTab === 'low' }" @click="phoneTab = 'low'">Needs a look</button></div></h2>
           <div class="tb">
-            <template v-if="kind === 'agents'">
+            <MetricsTrend v-if="kind === 'trends'" />
+            <template v-else-if="kind === 'agents'">
               <div class="row hd"><span>#</span><span>Agent</span><span>Role</span><span>Model</span><span>Score</span><span class="r">Graded</span></div>
               <div v-for="(a, i) in best" :key="a.agent" class="row"><span class="n">{{ i + 1 }}</span><span class="nm">{{ a.agent }}</span><span class="ro">{{ a.role }}</span><span class="chip">{{ short(a.model) }}</span><span class="scb"><span class="mtr"><i :style="{ width: a.score + '%' }" /></span><b class="num">{{ a.score }}</b></span><span class="r num" :class="{ few: few(a.graded) }">{{ a.graded }}/{{ a.tasks }}</span></div>
             </template>
             <template v-else>
-              <div class="row hd g"><span>#</span><span>{{ kind === "roles" ? "Role" : "Persona" }}</span><span /><span /><span>Score</span><span class="r">Graded</span></div>
-              <div v-for="(g, i) in groups" :key="g.key" class="row g"><span class="n">{{ i + 1 }}</span><span class="nm">{{ g.key }}</span><span /><span /><span class="scb"><span class="mtr"><i :style="{ width: g.score + '%' }" /></span><b class="num">{{ g.score }}</b></span><span class="r num" :class="{ few: few(g.graded) }">{{ g.graded }}/{{ g.tasks }}</span></div>
-              <p v-if="!groups.length" class="rule pad">Nothing scored here yet.</p>
+              <div class="row hd g"><span>#</span><span>{{ kind === "roles" ? "Role" : "Brain" }}</span><span>{{ kind === "brains" ? "Versions" : "" }}</span><span /><span>Score</span><span class="r">Graded</span></div>
+              <div v-for="(g, i) in groups" :key="g.key" class="row g"><span class="n">{{ g.score != null ? i + 1 : "" }}</span><span class="nm">{{ g.key }}</span><span class="ro">{{ g.versions?.map((v) => "v" + v).join(", ") ?? "" }}</span><span /><span class="scb"><span class="mtr"><i :style="{ width: (g.score ?? 0) + '%' }" /></span><b class="num">{{ g.score ?? "–" }}</b></span><span class="r num" :class="{ few: few(g.graded) }">{{ g.graded }}/{{ g.tasks }}</span></div>
+              <p v-if="!groups.length" class="rule pad">{{ kind === "brains" ? "No job from a brain has closed yet." : "Nothing scored here yet." }}</p>
             </template>
-          <div class="pextra">
+          <div v-if="kind !== 'trends'" class="pextra">
             <section v-if="today" class="uc"><h2><Icon name="circle-check" :size="16" />Task discipline<span class="sp" /><small>today {{ today.score ?? "–" }}</small></h2>
               <div class="chk"><div v-for="[k, n] in CHK" :key="k" :class="{ bad: (today.checks?.[k] ?? 100) < 50 }"><span>{{ n }}</span><span class="mtr"><i :style="{ width: (today.checks?.[k] ?? 0) + '%' }" /></span><b class="num">{{ pc(today.checks?.[k]) }}</b></div></div></section>
             <section class="uc"><h2><Icon name="cpu" :size="16" />By model</h2>

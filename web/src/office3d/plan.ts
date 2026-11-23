@@ -24,6 +24,11 @@ export const clean = (s: string | null | undefined) => String(s || "").replace(/
 export const TINT: Record<string, number> = { director: 0x3a3a44, lead: 0xb8642e, dev: 0x2f7fa8, design: 0xa84e8e, craft: 0x6f9a44, other: 0x7a7a86 };
 export const roleOf = (n: string) => n === "root" ? "director" : /lead|architect/.test(n) ? "lead" : /dev|backend|devops/.test(n) ? "dev" : /design|art|logo|lab/.test(n) ? "design" : /qa|critic|research|writer|social/.test(n) ? "craft" : "other";
 
+/** Who the office draws: the live, placed agents. The office re-plans when this changes. `layoutKey` (boss, job) misses an agent
+ *  that was already in the table as "starting" and turns live later, and one that stops being live: the 3D page needs this key too. */
+export const peopleKey = (agents: Record<string, { name: string; life: string }>, placing: ReadonlySet<string>) =>
+  Object.values(agents).filter((a) => a.life === "live" && !placing.has(a.name)).map((a) => a.name).sort().join("|");
+
 /** Desks per row, back row first. Up to 6: two rows. 7 to 12: rows of three, the short row at the back. */
 export function rowsFor(n: number): number[] {
   if (n <= 2) return [n];

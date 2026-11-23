@@ -6,12 +6,13 @@ import { join } from "node:path";
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "sd-agentnet-"));
 const { Database } = await import("bun:sqlite");
 const { Hono } = await import("hono");
-const { useDatabase } = await import("../core/db");
+const { useDatabase, db } = await import("../core/db");
 const { tracing } = await import("../core/http");
 type Env = import("../core/http").Env;
 const st = await import("./store");
 const rt = await import("./routes");
 const tr = await import("./teamRoutes");
+const tm = await import("./teams");
 
 const app = new Hono<Env>(); app.use("*", tracing); const api = new Hono<Env>(); rt.agentnetRoutes(api); tr.agentnetTeamPanelRoutes(api); app.route("/api/v1", api);
 const tok: Record<string, string> = {};
@@ -149,5 +150,115 @@ describe("member bosses", () => {
     expect(r.body.bosses).toEqual({ "lead-1": "root", "dev-1": "lead-1" });
     await call("root", "POST", "/despawn", { name: "dev-1" });
     expect((await j(await call("root", "GET", "/teams/bosses"))).body.bosses["dev-1"]).toBe("lead-1");
+  });
+});
+
+describe("a reused agent name never inherits an old team", () => {
+  const mk = (name: string) => { tok[name] = rt.createAgent({ name, boss: "root", job: "t", by: "test" }).token; };
+  const team = async (id: string) => (await j(await call("root", "GET", `/teams/${id}`))).body.team;
+  const spawn = async (b: Record<string, unknown>) => j(await call("root", "POST", "/spawn", { boss: "root", goal: "reuse check done", ...b }));
+  const despawn = async (name: string) => j(await call("root", "POST", "/despawn", { agent: name }));
+
+  test("spawn wd-1 in team A, despawn it, spawn wd-1 in team B: it is in B only and A does not list it", async () => {
+    mk("wd-keep"); // keeps team A open after wd-1 leaves
+    await call("root", "POST", "/teams", { name: "Reuse A", goal: "first job", members: ["wd-keep"] });
+    expect((await spawn({ name: "wd-1", team: "reuse-a" })).status).toBe(201);
+    expect([...(await team("reuse-a")).members].sort()).toEqual(["wd-1", "wd-keep"]);
+    await despawn("wd-1");
+    const a = await team("reuse-a");
+    expect(a.state).toBe("active"); expect(a.members).toEqual(["wd-keep"]); expect(a.past).toEqual(["wd-1"]);
+    expect((await spawn({ name: "wd-1", team: "reuse-b" })).status).toBe(201); // reuse-b is new: created by the spawn
+    expect((await team("reuse-b")).members).toEqual(["wd-1"]);
+    const a2 = await team("reuse-a");
+    expect(a2.members).toEqual(["wd-keep"]); expect(a2.past).toEqual(["wd-1"]);
+  });
+
+  test("a despawned agent cannot message its old team; the name that comes back to the same team is a member again", async () => {
+    mk("wd-peer"); mk("wd-2");
+    await call("root", "POST", "/teams", { name: "Reuse C", goal: "talk", members: ["wd-peer", "wd-2"] });
+    expect(tm.sameTeam("wd-peer", "wd-2")).toBe(true);
+    await despawn("wd-2");
+    mk("wd-2"); // same name, different job, no team
+    expect(tm.sameTeam("wd-peer", "wd-2")).toBe(false);
+    await call("root", "POST", "/teams/reuse-c/members", { add: ["wd-2"] });
+    expect(tm.sameTeam("wd-peer", "wd-2")).toBe(true);
+    const c = await team("reuse-c"); expect([...c.members].sort()).toEqual(["wd-2", "wd-peer"]); expect(c.past).toEqual([]);
+  });
+
+  test("a lead that left leads nobody: a reused lead name opens no gate", async () => {
+    mk("wl-1"); mk("wl-m");
+    await call("root", "POST", "/teams", { name: "Reuse Led", goal: "led", lead: "wl-1", members: ["wl-m"] });
+    expect(tm.leadGate("wl-m")).toBe("wl-1");
+    await despawn("wl-1");
+    mk("wl-1");
+    expect(tm.leadGate("wl-m")).toBeNull();
+  });
+});
+
+describe("spawn --team <new id> creates the team", () => {
+  const spawn = async (b: Record<string, unknown>) => j(await call("root", "POST", "/spawn", { goal: "new team check", ...b }));
+  const team = async (id: string) => (await j(await call("root", "GET", `/teams/${id}`))).body.team;
+
+  test("id, name, goal and project come from the spawn; root as boss leaves it lead-less", async () => {
+    const r = await spawn({ name: "nt-1", boss: "root", team: "nt-room", goal: "ship the new team", project: "/tmp/nt-project" });
+    expect(r.status).toBe(201); expect(r.body.team).toBe("nt-room");
+    const t = await team("nt-room");
+    expect(t).toMatchObject({ id: "nt-room", name: "nt-room", goal: "ship the new team", project: "/tmp/nt-project", lead: null, members: ["nt-1"], state: "active" });
+  });
+
+  test("a boss that is not root leads the new team and is a member", async () => {
+    tok["nt-lead"] = rt.createAgent({ name: "nt-lead", boss: "root", job: "t", by: "test" }).token;
+    expect((await spawn({ name: "nt-2", boss: "nt-lead", team: "nt-led" })).status).toBe(201);
+    const t = await team("nt-led"); expect(t.lead).toBe("nt-lead"); expect([...t.members].sort()).toEqual(["nt-2", "nt-lead"]);
+  });
+
+  test("a second spawn into it joins; an id that is no team id is ignored", async () => {
+    expect((await spawn({ name: "nt-3", boss: "root", team: "nt-room" })).status).toBe(201);
+    expect((await team("nt-room")).members).toEqual(["nt-1", "nt-3"]);
+    const r = await spawn({ name: "nt-4", boss: "root", team: "Old Agmsg Team" });
+    expect(r.status).toBe(201); expect(r.body.team).toBeNull();
+  });
+});
+
+describe("stale teams close", () => {
+  const mk = (name: string) => { tok[name] = rt.createAgent({ name, boss: "root", job: "t", by: "test" }).token; };
+  const retired = (name: string) => { rt.retireAgent(rt.byName(name)!, "replaced"); }; // gone without the despawn hook: the data a pre-fix server left
+  const team = async (id: string) => (await j(await call("root", "GET", `/teams/${id}`))).body.team;
+  const root = (n: string) => n === "root";
+
+  test("closeStaleTeams moves gone members to past, archives a team with no live member, leaves unspawned names and live members alone; dry run changes nothing", async () => {
+    mk("st-live"); mk("st-gone-1"); mk("st-gone-2"); retired("st-gone-1"); retired("st-gone-2");
+    await call("root", "POST", "/teams", { name: "Stale Dead", goal: "dead job", members: ["st-gone-1", "st-gone-2"] });
+    await call("root", "POST", "/teams", { name: "Stale Mixed", goal: "mixed job", members: ["st-live", "st-gone-1"] });
+    await call("root", "POST", "/teams", { name: "Stale Waiting", goal: "waiting job", members: ["st-never-1", "st-gone-2"] });
+    const dry = tm.closeStaleTeams(root, { dry: true });
+    expect(dry.map((c) => c.team).sort()).toEqual(["stale-dead", "stale-mixed", "stale-waiting"]);
+    expect((await team("stale-dead")).members).toEqual(["st-gone-1", "st-gone-2"]); // untouched
+    const done = tm.closeStaleTeams(root);
+    expect(done.find((c) => c.team === "stale-dead")).toEqual({ team: "stale-dead", left: ["st-gone-1", "st-gone-2"], archived: true });
+    expect(done.find((c) => c.team === "stale-mixed")).toEqual({ team: "stale-mixed", left: ["st-gone-1"], archived: false });
+    expect(await team("stale-dead")).toMatchObject({ state: "archived", members: [], past: ["st-gone-1", "st-gone-2"] });
+    expect(await team("stale-mixed")).toMatchObject({ state: "active", members: ["st-live"], past: ["st-gone-1"] });
+    expect(await team("stale-waiting")).toMatchObject({ state: "archived", members: [], past: ["st-gone-2", "st-never-1"] }); // no live member: closed, whoever was planned too
+    expect(tm.closeStaleTeams(root)).toEqual([]); // once: a second run finds nothing
+  });
+
+  test("an archived team that still lists members (old data, or archived by hand) gets them moved to past, so a reused name is not shown in it", async () => {
+    mk("st-reuse-1");
+    await call("root", "POST", "/teams", { name: "Stale Old", goal: "finished long ago", members: ["st-reuse-1"] });
+    await call("root", "POST", "/teams/stale-old/archive");
+    expect(await team("stale-old")).toMatchObject({ state: "archived", members: [], past: ["st-reuse-1"] });
+    tm.closeStaleTeams(root); // nothing left to clean
+    expect(tm.closeStaleTeams(root).filter((c) => c.team === "stale-old")).toEqual([]);
+    db().run("UPDATE team_members SET left_at = NULL WHERE team_id = 'stale-old'"); // the old data: archived, names still listed
+    expect(tm.closeStaleTeams(root, { dry: true }).filter((c) => c.team === "stale-old")).toEqual([{ team: "stale-old", left: ["st-reuse-1"], archived: true, was: "archived" }]);
+    tm.closeStaleTeams(root);
+    expect(await team("stale-old")).toMatchObject({ state: "archived", members: [], past: ["st-reuse-1"] });
+  });
+
+  test("a team that never had an agent is never touched", async () => {
+    await call("root", "POST", "/teams", { name: "Stale Empty", goal: "agents join later" });
+    tm.closeStaleTeams(root);
+    expect((await team("stale-empty")).state).toBe("active");
   });
 });

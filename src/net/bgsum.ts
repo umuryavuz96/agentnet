@@ -1,7 +1,7 @@
 // One plain-English sentence for a background shell or monitor that came without a description: the job chip on the map
 // and the side panel show it instead of the raw command. It is made by Claude Code itself (`claude -p --model haiku`),
 // so it uses the subscription and never an API key. The command is redacted first: anything that looks like a secret
-// never leaves this process. The raw command stays on the row as the fallback and the tooltip.
+// never leaves this process. The raw command stays on the row as the fallback and the tooltip. Opt-in: AGENTNET_BG_SUMMARY=1.
 import { tmpdir } from "node:os";
 
 const MAX_CMD = 400, MAX_WORDS = 12, MAX_CHARS = 70, TIMEOUT_MS = 40_000, PARALLEL = 2, CACHE_MAX = 300;
@@ -52,7 +52,8 @@ type Ask = (redacted: string) => Promise<string | null>;
 let ask: Ask = (c) => askClaude(c);
 /** Tests swap the model call. */
 export const setAsk = (f: Ask | null) => { ask = f ?? ((c) => askClaude(c)); };
-export const enabled = () => process.env.AGENTNET_BG_SUMMARY !== "0";
+/** Off by default (it calls a model for every undescribed job); AGENTNET_BG_SUMMARY=1 turns it on. */
+export const enabled = () => process.env.AGENTNET_BG_SUMMARY === "1";
 
 const done = new Map<string, string | null>(), flight = new Map<string, Promise<string | null>>(), waiting: (() => void)[] = [];
 let running = 0;

@@ -10,34 +10,35 @@ import { noteHostHash, noteRoute, postRoute, readEmbed } from "./embed";
 import Agents from "./pages/Agents.vue";
 import { waitingItems } from "./waiting";
 import { useAgentnet, useUsage, usage } from "./net";
-import Waiting from "./pages/Waiting.vue";
+import Asks from "./pages/Asks.vue";
 import Usage from "./pages/Usage.vue";
 import Scores from "./pages/Scores.vue";
 import Trails from "./pages/Trails.vue";
+import Lines from "./pages/Lines.vue";
 import Search from "./pages/Search.vue";
 import Activity from "./pages/Activity.vue";
 import Hooks from "./pages/Hooks.vue";
 import Routing from "./pages/Routing.vue";
-import Personas from "./pages/Personas.vue";
+import Brains from "./pages/Brains.vue";
 import Settings from "./pages/Settings.vue";
 import BrandLockup from "./brand/BrandLockup.vue";
 import UpdatePill from "./components/UpdatePill.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 
 const em = readEmbed(location.search);
-const COMPONENTS: Record<Page, Component> = { agents: Agents, waiting: Waiting, usage: Usage, scores: Scores, trails: Trails, search: Search, activity: Activity, hooks: Hooks, routing: Routing, personas: Personas, settings: Settings };
+const COMPONENTS: Record<Page, Component> = { agents: Agents, asks: Asks, usage: Usage, scores: Scores, trails: Trails, lines: Lines, search: Search, activity: Activity, hooks: Hooks, routing: Routing, brains: Brains, settings: Settings };
 const NAV: Record<Page, [string, IconName]> = {
-  agents: ["Agents", "network"], waiting: ["Waiting for you", "circle-arrow-up"], usage: ["Usage", "chart-line"], scores: ["Scores", "gauge"], trails: ["Trails", "history"],
-  search: ["Search", "search"], activity: ["Activity", "activity"], hooks: ["Hooks", "webhook"], routing: ["Routing", "sliders"], personas: ["Personas", "sparkles"], settings: ["Settings", "settings"],
+  agents: ["Agents", "network"], asks: ["Asks", "circle-check"], usage: ["Usage", "chart-line"], scores: ["Scores", "gauge"], trails: ["Trails", "history"], lines: ["Lines", "layers"],
+  search: ["Search", "search"], activity: ["Activity", "activity"], hooks: ["Hooks", "webhook"], routing: ["Routing", "sliders"], brains: ["Brains", "brain"], settings: ["Settings", "settings"],
 };
 /** Rail groups (board page 01). Search stays a page until the palette lands. */
 const GROUPS: { title: string; pages: Page[] }[] = [
-  { title: "Network", pages: ["waiting", "agents", "activity", "search"] },
-  { title: "Insights", pages: ["usage", "scores", "trails"] },
-  { title: "Setup", pages: ["hooks", "routing", "personas"] },
+  { title: "Network", pages: ["asks", "agents", "activity", "search"] },
+  { title: "Insights", pages: ["usage", "scores", "trails", "lines"] },
+  { title: "Setup", pages: ["hooks", "routing", "brains"] },
 ];
-const TABS: Page[] = ["agents", "waiting", "activity", "usage"];
-const MORE: Page[] = ["search", "scores", "trails", "hooks", "routing", "personas", "settings"];
+const TABS: Page[] = ["agents", "asks", "activity", "usage"];
+const MORE: Page[] = ["search", "scores", "trails", "lines", "hooks", "routing", "brains", "settings"];
 const palette = ref(false);
 let stopNet: (() => void) | null = null, stopUsage: (() => void) | null = null; // the rail counts need the live stream and the usage poll on every page
 // Setup counts: hooks switched off or failing, and the routing mode when it is not normal. One light GET each, every 60 s.
@@ -56,12 +57,11 @@ onMounted(() => { stopNet = useAgentnet(); stopUsage = useUsage(); void loadRail
 onBeforeUnmount(() => { stopNet?.(); stopUsage?.(); clearInterval(railTimer); });
 const weekPct = computed(() => usage.data?.windows.weekly.accountPct ?? null);
 const count = (p: Page): string | number =>
-  p === "waiting" ? waitingItems.value.length
+  p === "asks" ? waitingItems.value.length
   : p === "usage" ? (weekPct.value != null ? Math.round(weekPct.value) + "%" : 0)
   : p === "hooks" ? hookBad.value
   : p === "routing" ? (routeMode.value && routeMode.value !== "normal" ? routeMode.value : 0)
   : 0;
-const TAB_NAME: Partial<Record<Page, string>> = { waiting: "Waiting" };
 const page = computed(() => route.value.page);
 /** The page on screen. The shell layout follows it when the new page enters, so the old page keeps its layout while it fades out (out-in). */
 const shownPage = ref(page.value);
@@ -98,7 +98,7 @@ watch(page, () => { menu.value = false; });
 </script>
 
 <template>
-  <div class="shell" :class="{ embed: em.embed, fixed: shownPage === 'agents' || shownPage === 'waiting' || shownPage === 'usage' || shownPage === 'scores' || shownPage === 'trails' || shownPage === 'search' || shownPage === 'activity' || shownPage === 'hooks' || shownPage === 'personas' || shownPage === 'routing' || shownPage === 'settings' }">
+  <div class="shell" :class="{ embed: em.embed, fixed: shownPage === 'agents' || shownPage === 'asks' || shownPage === 'usage' || shownPage === 'scores' || shownPage === 'trails' || shownPage === 'lines' || shownPage === 'search' || shownPage === 'activity' || shownPage === 'hooks' || shownPage === 'brains' || shownPage === 'routing' || shownPage === 'settings' }">
     <aside v-if="!em.embed" class="rail" aria-label="agentnet">
       <a class="brand" href="#/agents" aria-label="agentnet home"><BrandLockup :height="26" /></a>
       <button type="button" class="find" title="Find or run (⌘K)" @click="palette = true"><Icon name="search" :size="16" /><span>Find or run</span><kbd>⌘K</kbd></button>
@@ -135,7 +135,7 @@ watch(page, () => { menu.value = false; });
       </div>
     </Transition>
     <nav v-if="!em.embed" class="tabs" aria-label="Pages">
-      <a v-for="p in TABS" :key="p" :href="'#/' + p" :class="{ on: page === p }" :aria-current="page === p ? 'page' : undefined" @click="menu = false"><Icon :name="NAV[p][1]" :size="20" /><span>{{ TAB_NAME[p] ?? NAV[p][0] }}</span><i v-if="count(p)" class="cnt num">{{ count(p) }}</i></a>
+      <a v-for="p in TABS" :key="p" :href="'#/' + p" :class="{ on: page === p }" :aria-current="page === p ? 'page' : undefined" @click="menu = false"><Icon :name="NAV[p][1]" :size="20" /><span>{{ NAV[p][0] }}</span><i v-if="count(p)" class="cnt num">{{ count(p) }}</i></a>
       <button type="button" :class="{ on: menu || MORE.includes(page) }" :aria-expanded="menu" @click="menu = !menu"><Icon name="ellipsis" :size="20" /><span>More</span></button>
     </nav>
     <CommandPalette v-if="!em.embed" :open="palette" :nav="NAV" @close="palette = false" />

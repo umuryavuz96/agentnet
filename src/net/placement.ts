@@ -6,10 +6,11 @@ import { homedir } from "node:os";
 import { db } from "../core/db";
 import { dir } from "../core/config";
 import { ensureSchema, live } from "./store";
-import { listTeams, getTeam, TEAM_ID } from "./teams";
+import { listTeams, getTeam, TEAM_ID, NAME_RE } from "./teams";
 import { compactFor, windowTokens } from "./compact";
 import { routeSpawn, type RouteInput, type Routed } from "./autoroute";
 import { wsRoleSoul } from "./workspace";
+import { pickBrain, type Brain } from "./brains";
 
 /** Keywords per role for inferring the role from a job. Key order = tie-break order. */
 export const ROLE_KEYWORDS: Record<string, string[]> = {
@@ -46,7 +47,7 @@ export function placementConfig(): PlacementConfig {
   } catch { return { ...PLACEMENT_DEFAULTS }; }
 }
 
-export interface PlanInput extends Omit<RouteInput, "name"> { name?: string; role?: string; project?: string; /** the project is only the caller's cwd fallback, a workspace soul may replace it */ projectDefault?: boolean; boss?: string; team?: string }
+export interface PlanInput extends Omit<RouteInput, "name"> { name?: string; role?: string; /** explicit brain name (brains.ts); else from the role */ brain?: string; project?: string; /** the project is only the caller's cwd fallback, a workspace soul may replace it */ projectDefault?: boolean; boss?: string; team?: string }
 export interface TeamPlan { id: string; action: "join" | "create"; lead: string | null; members: string[] }
 export interface Plan extends Routed {
   name: string; role: string; boss: string; project: string | null; team: TeamPlan | null; reasons: string[];
@@ -54,6 +55,8 @@ export interface Plan extends Routed {
   compactWindow: number;
   /** true when a workspace soul chose the project (its repo) */
   workspaceProject?: true;
+  /** The brain this agent starts from (null: brains are off on this machine). */
+  brain: Brain | null;
 }
 
 const normPath = (p?: string) => (p ? resolve(p.replace(/^~(?=$|\/)/, homedir())).replace(/\/+$/, "") : null);
@@ -100,8 +103,11 @@ function placeTeam(name: string, project: string | null, cfg: PlacementConfig, r
     reasons.push(`new team ${id}: ${other.name} already works on this project; no lead, boss root`);
     return { boss: "root", team: { id, action: "create", lead: null, members: [other.name, name] } };
   }
-  reasons.push("no team: nobody else works on this project; boss root");
-  return { boss: "root", team: null };
+  // Every agent on a project is in that project's team, even alone: the first one creates it, lead-less.
+  const base = (basename(project).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") + cfg.team_suffix).slice(0, 40);
+  let id = base, k = 2; while (!TEAM_ID.test(id) || getTeam(id)) id = `${base.slice(0, 36)}-${k++}`;
+  reasons.push(`new team ${id}: first agent on this project; no lead, boss root`);
+  return { boss: "root", team: { id, action: "create", lead: null, members: [name] } };
 }
 
 /** The plan. No side effects: nothing is created and the pick scripts do not log. Explicit inputs win and say so in `reasons`. */
@@ -115,16 +121,27 @@ export async function planSpawn(i: PlanInput, opts: { log?: boolean } = {}): Pro
     else { const r = inferRole(i.job ?? "", cfg); role = r.role; reasons.push(r.why); }
     name = nextName(role, cfg.naming); reasons.push(`name ${name}: lowest ${role} number no live agent holds`);
   }
-  // A workspace role (a repo agent registered by an adopt run) starts in its repo with its own soul. Explicit soul/project win.
-  let soul = i.soul;
-  const ws = !i.soul && (!i.project || i.projectDefault) ? wsRoleSoul(role) : null;
+  // Brains replace the soul catalog: a catalog soul (explicit or picked) is no longer used. Only a workspace soul (ws/..., a repo's own
+  // agent registered by an adopt run) still loads, after the brain, and starts the agent in its repo.
+  const brain = pickBrain(role, i.brain);
+  if (brain) reasons.push(brain.why);
+  const warnings: string[] = [];
+  let soul = i.soul?.startsWith("ws/") ? i.soul : undefined;
+  if (i.soul && !soul) warnings.push(`soul ${i.soul} ignored: the soul catalog is switched off, use a brain`);
+  const ws = !soul && (!i.project || i.projectDefault) ? wsRoleSoul(role) : null;
   if (ws) { soul = ws.id; project = normPath(ws.project); reasons.push(`soul ${ws.id}: workspace soul from run ${ws.run}`, `project ${project}: the soul's repo`); }
   let boss: string, team: TeamPlan | null;
   if (i.team) {
-    const t = getTeam(i.team);
-    team = t ? { id: t.id, action: "join", lead: t.lead, members: [...t.members, name] } : null;
-    boss = i.boss ?? (t?.lead ?? "root");
-    reasons.push(`team ${i.team}: explicit${t ? "" : " (unknown id, ignored)"}`);
+    const t = getTeam(i.team), lead = t?.lead && t.members.includes(t.lead) ? t.lead : null; // a lead that left (despawned) leads nobody
+    if (t) team = { id: t.id, action: "join", lead, members: [...t.members, name] };
+    else if (TEAM_ID.test(i.team)) {
+      // An explicit team that does not exist yet is created by this spawn (council and job teams are named at spawn time). A boss that is not
+      // root leads it; with root as boss it stays lead-less. An id that cannot be a team id (an old agmsg team name) is still ignored.
+      const bossName = i.boss && i.boss !== "root" && NAME_RE.test(i.boss) ? i.boss : null;
+      team = { id: i.team, action: "create", lead: bossName, members: [...(bossName ? [bossName] : []), name] };
+    } else team = null;
+    boss = i.boss ?? lead ?? "root";
+    reasons.push(`team ${i.team}: explicit${t ? "" : team ? `; new team, ${team.lead ? `lead ${team.lead}` : "no lead"}` : " (not a valid team id, ignored)"}`);
     if (i.boss) reasons.push(`boss ${i.boss}: explicit`);
   } else {
     const p = placeTeam(name, project, cfg, reasons);
@@ -133,8 +150,8 @@ export async function planSpawn(i: PlanInput, opts: { log?: boolean } = {}): Pro
   }
   // A member of a team with a lead reports to that lead, whatever boss was asked for (the lead itself keeps its own boss).
   if (team?.lead && team.lead !== name && boss !== team.lead) { reasons.push(`boss ${team.lead}: lead of team ${team.id}${i.boss ? ` (overrides explicit ${i.boss})` : ""}`); boss = team.lead; }
-  const routed = await routeSpawn({ ...i, soul, name, noLog: !(opts.log ?? false) });
+  const routed = await routeSpawn({ ...i, soul, name, brainName: brain?.name, noLog: !(opts.log ?? false) });
   if (i.model) reasons.push(`model ${i.model}: explicit`); else if (routed.model) reasons.push(`model ${routed.model}, effort ${routed.effort}: routed`);
-  if (i.soul) reasons.push(`soul ${i.soul}: explicit`); else if (!ws && routed.soul) reasons.push(`soul ${routed.soul}: routed`);
-  return { ...routed, ...(ws ? { workspaceProject: true as const } : {}), name, role, boss, project, team, reasons: [...reasons, `compact window ${compactFor(name)}`], compactWindow: windowTokens(compactFor(name)) };
+  if (soul && !ws) reasons.push(`soul ${soul}: explicit`);
+  return { ...routed, warnings: [...warnings, ...routed.warnings], brain, ...(ws ? { workspaceProject: true as const } : {}), name, role, boss, project, team, reasons: [...reasons, `compact window ${compactFor(name)}`], compactWindow: windowTokens(compactFor(name)) };
 }

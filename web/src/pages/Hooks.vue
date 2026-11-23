@@ -9,9 +9,9 @@ import Icon from "../ui/Icon.vue";
 import HookAddSheet from "./HookAddSheet.vue";
 
 interface Run { at: number; ms: number | null; ok: boolean; text: string }
-interface HookInfo { id: string; event: string; matcher: string | null; command: string; script: string; timeout: number | null; enabled: boolean; name: string; about: string; log: string | null; runs: number; failures: number; avgMs: number | null; p95Ms: number | null; lastAt: number | null; recent: Run[] }
+interface HookInfo { id: string; source: "agentnet" | "user" | "plugin"; plugin: string | null; readOnly: boolean; event: string; matcher: string | null; command: string; script: string; timeout: number | null; enabled: boolean; name: string; about: string; log: string | null; runs: number; failures: number; avgMs: number | null; p95Ms: number | null; lastAt: number | null; recent: Run[] }
 interface Res { hooks: HookInfo[]; backups: string[]; error?: string }
-interface HG { key: string; name: string; about: string; events: string[]; entries: HookInfo[]; script: string; command: string; timeout: number | null; enabled: boolean; logged: boolean; runs: number; failures: number; avgMs: number | null; p95Ms: number | null; lastAt: number | null; recent: Run[] }
+interface HG { key: string; source: HookInfo["source"]; plugin: string | null; readOnly: boolean; name: string; about: string; events: string[]; entries: HookInfo[]; script: string; command: string; timeout: number | null; enabled: boolean; logged: boolean; runs: number; failures: number; avgMs: number | null; p95Ms: number | null; lastAt: number | null; recent: Run[] }
 
 const hooks = ref<HookInfo[]>([]), backups = ref<string[]>([]), err = ref(""), loaded = ref(false), busy = ref<string | null>(null), open = ref<string | null>(null);
 const ORDER = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Notification", "Stop", "StopFailure", "SubagentStop", "PreCompact", "SessionEnd"];
@@ -19,11 +19,11 @@ const rank = (e: string) => { const i = ORDER.indexOf(e); return i < 0 ? 99 : i;
 /** One group per hook: entries with the same name and script (set on several events) are one hook. Failing first, then most runs; a switch never moves a row. */
 const groups = computed<HG[]>(() => {
   const m = new Map<string, HookInfo[]>();
-  for (const h of hooks.value) { const k = h.name + "\u0000" + h.script; (m.get(k) ?? m.set(k, []).get(k)!).push(h); }
+  for (const h of hooks.value) { const k = h.source + "\u0000" + (h.plugin ?? "") + "\u0000" + h.name + "\u0000" + h.script; (m.get(k) ?? m.set(k, []).get(k)!).push(h); }
   const out: HG[] = [...m.entries()].map(([key, es]) => {
     const runs = es.reduce((a, h) => a + h.runs, 0), withAvg = es.filter((h) => h.avgMs != null && h.runs), w = withAvg.reduce((a, h) => a + h.runs, 0);
     return {
-      key, name: es[0].name, about: es[0].about, entries: es, script: es[0].script, command: es[0].command, timeout: es[0].timeout,
+      key, source: es[0].source, plugin: es[0].plugin, readOnly: es[0].readOnly, name: es[0].name, about: es[0].about, entries: es, script: es[0].script, command: es[0].command, timeout: es[0].timeout,
       events: [...new Set(es.map((h) => h.event))].sort((a, b) => rank(a) - rank(b)),
       enabled: es.every((h) => h.enabled), logged: es.some((h) => !!h.log), runs, failures: es.reduce((a, h) => a + h.failures, 0),
       avgMs: w ? withAvg.reduce((a, h) => a + (h.avgMs ?? 0) * h.runs, 0) / w : null,
@@ -72,6 +72,8 @@ const ms = (n: number | null) => (n == null ? "—" : n < 1000 ? `${Math.round(n
 const lim = (g: HG) => (g.timeout ? g.timeout * 1000 : null);
 const frac = (v: number | null, g: HG) => (v == null ? 0 : Math.min(1, v / (lim(g) ?? Math.max(v, 1))));
 const hot = (g: HG) => !!lim(g) && (g.p95Ms ?? 0) / lim(g)! > 0.6;
+/** Where a hook is set: agentnet's own settings, the owner's Claude Code settings, or an enabled plugin. */
+const srcOf = (g: { source: HookInfo["source"]; plugin: string | null }) => (g.source === "plugin" ? `${g.plugin} plugin` : g.source === "user" ? "Your settings" : "agentnet");
 const runsOn = (g: HG) => (g.events.length === 1 ? g.events[0] : `${g.events.length} events`);
 const lastFail = (g: HG) => g.recent.find((r) => !r.ok) ?? null;
 const showRuns = ref(false);
@@ -157,7 +159,7 @@ const rid = (g: HG) => "hk-" + g.key.replace(/\W/g, "_");
       <section class="hk-t t3" aria-label="Set up">
         <h2>Set up</h2>
         <p class="hk-big num"><b>{{ loaded ? groups.length : "–" }}</b><span>hooks on {{ new Set(hooks.map((h) => h.event)).size }} events</span></p>
-        <p class="hk-sm">{{ hooks.length }} entries in settings{{ hooks.length > groups.length ? ": a hook set on several events is one hook" : "" }}. <span class="num">{{ loggedCount }}</span> of {{ groups.length }} write a log this page can read. {{ offCount ? offCount + " switched off." : "All switched on." }}</p>
+        <p class="hk-sm">{{ hooks.length }} entries across agentnet settings, your settings and plugins{{ hooks.length > groups.length ? ": a hook set on several events is one hook" : "" }}. <span class="num">{{ loggedCount }}</span> of {{ groups.length }} write a log this page can read. {{ offCount ? offCount + " switched off." : "All switched on." }}</p>
       </section>
     </div>
 
@@ -171,7 +173,7 @@ const rid = (g: HG) => "hk-" + g.key.replace(/\W/g, "_");
         <ul class="hk-rows">
           <li v-for="g in groups" :id="rid(g)" :key="g.key" class="hk-r" :class="{ on: open === g.key, off: !g.enabled, hl: hl === g.key }" role="row">
             <button type="button" class="hk-pick" :aria-expanded="open === g.key" :aria-label="`${g.name}: details`" @click="pick(g)">
-              <span class="c-n"><b>{{ g.name }}</b><span class="hk-ab">{{ g.about || "No description yet" }}</span><small class="hk-ph2 num">{{ runsOn(g) }}<template v-if="g.logged"> · <span :class="{ bad: g.failures }">{{ g.failures }} of {{ g.runs }} failed</span><template v-if="g.p95Ms != null"> · p95 {{ ms(g.p95Ms) }}</template></template><template v-else> · no log</template></small></span>
+              <span class="c-n"><b>{{ g.name }}</b><span class="hk-ab"><span class="hk-src">{{ srcOf(g) }}</span> · {{ g.about || "No description yet" }}</span><small class="hk-ph2 num"><span class="hk-src">{{ srcOf(g) }}</span> · {{ runsOn(g) }}<template v-if="g.logged"> · <span :class="{ bad: g.failures }">{{ g.failures }} of {{ g.runs }} failed</span><template v-if="g.p95Ms != null"> · p95 {{ ms(g.p95Ms) }}</template></template><template v-else> · no log</template></small></span>
               <span class="c-e"><code class="hk-chip">{{ runsOn(g) }}</code></span>
               <span class="c-f num"><template v-if="g.logged"><b :class="{ bad: g.failures }">{{ g.failures }} failed</b><small>of last {{ g.runs }}</small></template><small v-else>none logged</small></span>
               <span class="c-t num">
@@ -180,7 +182,7 @@ const rid = (g: HG) => "hk-" + g.key.replace(/\W/g, "_");
               </span>
               <span class="c-l num">{{ g.lastAt ? ago(g.lastAt / 1000) : "never seen" }}</span>
             </button>
-            <button type="button" class="sw" role="switch" :aria-checked="g.enabled" :aria-label="`${g.name}: ${g.enabled ? 'on' : 'off'}`" :class="{ busy: busy === g.key }" :disabled="!!busy" @click="toggle(g)"></button>
+            <button type="button" class="sw" role="switch" :aria-checked="g.enabled" :aria-label="`${g.name}: ${g.enabled ? 'on' : 'off'}`" :class="{ busy: busy === g.key }" :disabled="!!busy || g.readOnly" :title="g.readOnly ? 'Set by the ' + g.plugin + ' plugin. Switch the plugin off to stop it.' : undefined" @click="toggle(g)"></button>
           </li>
         </ul>
       </div>
@@ -191,6 +193,7 @@ const rid = (g: HG) => "hk-" + g.key.replace(/\W/g, "_");
         <p class="hk-pa">{{ picked.about || "No description yet" }}</p>
         <dl class="hk-dl">
           <dt>Runs on</dt><dd>{{ picked.events.join(", ") }}<template v-if="picked.entries[0].matcher"> · on {{ picked.entries[0].matcher }}</template></dd>
+          <dt>Set in</dt><dd>{{ picked.readOnly ? `The ${picked.plugin} plugin (read only)` : picked.source === "user" ? "Your Claude Code settings" : "agentnet settings" }}</dd>
           <dt>Script</dt><dd class="mono">{{ picked.script }}</dd>
           <dt>Time limit</dt><dd class="num">{{ picked.timeout ? picked.timeout + " s" : "none set" }}</dd>
           <dt>Last run</dt><dd class="num">{{ picked.lastAt ? ago(picked.lastAt / 1000) : "never seen" }}</dd>
@@ -210,8 +213,8 @@ const rid = (g: HG) => "hk-" + g.key.replace(/\W/g, "_");
         <code class="hk-cmd">{{ tilde(picked.command) }}</code>
         <div class="hk-acts">
           <button v-if="picked.logged" type="button" class="hk-btn" :aria-pressed="showRuns" @click="showRuns = !showRuns"><Icon name="file-text" :size="14" /> {{ showRuns ? "Hide log" : "Open log" }}</button>
-          <button type="button" class="hk-btn" :disabled="!!busy" @click="toggle(picked)">{{ picked.enabled ? "Switch off" : "Switch on" }}</button>
-          <button type="button" class="hk-btn bad" :disabled="!!busy" @click="remove(picked)"><Icon name="trash" :size="14" /> {{ confirmRm === picked.key ? "Click again to remove for good" : "Remove" }}</button>
+          <button v-if="!picked.readOnly" type="button" class="hk-btn" :disabled="!!busy" @click="toggle(picked)">{{ picked.enabled ? "Switch off" : "Switch on" }}</button>
+          <button v-if="picked.source === 'agentnet'" type="button" class="hk-btn bad" :disabled="!!busy" @click="remove(picked)"><Icon name="trash" :size="14" /> {{ confirmRm === picked.key ? "Click again to remove for good" : "Remove" }}</button>
         </div>
         <p class="hk-sm">A change applies to new sessions. Settings are backed up first; Undo stays for 10 s.</p>
       </aside>
@@ -223,6 +226,7 @@ const rid = (g: HG) => "hk-" + g.key.replace(/\W/g, "_");
 .hk{flex:1;min-height:0;gap:12px}
 .hk-ttl{display:flex;align-items:baseline;gap:12px}
 .hk-meta{color:var(--muted);font-size:13px}
+.hk-src{font-weight:600}
 .bad{color:var(--bad)}
 .num{font-variant-numeric:tabular-nums}
 .mono{font-family:var(--mono)}

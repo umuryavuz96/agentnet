@@ -6,6 +6,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { themePref, setThemePref, type ThemePref } from "../theme";
 import { officeBlur, setOfficeBlur } from "../office3d/prefs";
 import UpdateSheet from "../components/UpdateSheet.vue";
+import AgentnetImportAccount from "../components/AgentnetImportAccount.vue";
 import Icon from "../ui/Icon.vue";
 import { api, toast } from "../ui/api";
 import { useUpdate } from "../ui/useUpdate";
@@ -102,6 +103,10 @@ async function reset() {
             <div v-if="dir?.precheck?.repos != null"><dt>Repos it can see<small>Folders with a git repo under its folder</small></dt><dd class="mono num">{{ dir.precheck.repos }}</dd></div>
           </dl>
           <div class="up-act"><a class="btn sm" href="#/agents"><Icon name="layout-grid" :size="15" />Open its window</a><a class="btn sm ghost" href="#/agents?setup=1"><Icon name="settings" :size="15" />Setup again</a></div>
+        </section>
+        <section class="sc" aria-label="Claude account">
+          <h2><Icon name="lock" :size="15" /> Claude account</h2>
+          <AgentnetImportAccount />
         </section>
         <section class="sc dz" aria-label="Danger zone">
           <h2 class="dz-h"><Icon name="triangle-alert" :size="15" /> Danger zone</h2>

@@ -60,7 +60,7 @@ const job = (name: string, gen = 1) => st.get(`${name}#${gen}`)!.jobs!.at(-1)!;
 const refused = (name: string) => st.events(`${name}#1`, 0, 500).filter((e) => e.type === "Refused").map((e) => e.data.rule);
 const REPO = join(import.meta.dir, "..", ".."), HEAD = new TextDecoder().decode(Bun.spawnSync(["git", "-C", REPO, "rev-parse", "HEAD"]).stdout).trim();
 let prev: string | undefined;
-const spawn = (name: string, o: { boss?: string; at?: number; project?: string } = {}) => { tok[name] = rt.createAgent({ name, boss: o.boss ?? "root", job: "t", goal: "g", by: "test", project: o.project }, o.at ?? Date.now() - 3600_000).token; };
+const spawn = (name: string, o: { boss?: string; at?: number; project?: string } = {}) => { tok[name] = rt.createAgent({ name, boss: o.boss ?? "root", job: "t", goal: "g", by: "test", project: o.project, standing: true }, o.at ?? Date.now() - 3600_000).token; }; // standing: the plan tests go on after a done report
 beforeAll(() => {
   prev = process.env.AGENTNET_TASK_STRICT; process.env.AGENTNET_TASK_STRICT = "1";
   useDatabase(new Database(":memory:")); st._reset(); sc.useScoreDb(new Database(":memory:"));

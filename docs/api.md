@@ -50,6 +50,19 @@ A check is a thing only the owner can verify in the real world. It outlives the 
 - `POST /v1/panel/checks/{id}/resolve {option, note?}` (the label or index of one of the check's options; note is optional on every answer): a panel write (root only). It sends root a `report` from `owner`, subject `Owner answered "<label>": <question>`, with the note. It never spawns or closes anything: root decides. 409 when already resolved.
 - The panel stream sends a `check` frame (whole row) on every create and resolve; the snapshot carries `checks` (pending plus those answered in the last 30 s).
 
+## Paging (tool answers)
+
+No MCP tool answer may flood an agent's context. The plugin asks the service for `compact=1`; the service then answers a page, newest first, with `total` (all matches, before the cursor) and `next_cursor` (null on the last page; pass it back as `cursor`). Without `compact` every route answers as before (whole snapshots, no paging), so scripts and the web app are unchanged: the web app reads `/v1/panel/*`, not these routes. Long text in a compact answer is cut and ends `…[+N chars]`.
+
+| Route (`/v1/agent/...`) | Tool | Compact answer |
+|---|---|---|
+| `GET agents?compact=1` | `list_agents` | one row per agent (id, name, gen, life, state, model, boss, project, goal, doing, progress, cost, contextPct, lastMsgAt, step, spawnedAt); `limit` default 25, max 100; filters `since` (spawnedAt ms, at or after), `life` (starting, live, stopping, gone, failed; gone and failed need no `all`), `boss`; live agents only unless `all=1` |
+| `GET agents/{name}?compact=1` | `get_status` | the snapshot with the evidence lines of earlier closed jobs dropped (`evidenceCount` stays) unless `jobs=all`; `events` at most 50 |
+| `GET /api/v1/agentnet/owner-goals?compact=1` | `owner_goals` | `limit` default 8, max 20; text cut at 200 characters; `goal=N` answers that one goal whole |
+| `GET checks?compact=1` | `list_checks` | `limit` default 25, max 100; text cut at 600 characters |
+
+`POST inbox` returns at most 40,000 characters of message bodies per call (the first message always comes); the rest stays unread, `unread_left` says how many, and the next call returns it. The plugin cuts any other tool answer over 60,000 bytes to a short notice (`{truncated, tool, bytes, limit, hint}`) that says how to page.
+
 ## Errors
 
 RFC 9457 `application/problem+json`: `{type, title, status, detail, trace_id}`.

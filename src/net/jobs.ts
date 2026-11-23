@@ -4,8 +4,10 @@
 // them is `legacy` and has no caps. Doc: docs/task-discipline.md.
 import type { Event, Snapshot, Task } from "./store";
 
-export type EvidenceKind = "commit" | "file" | "check" | "shot" | "msg" | "none";
-export const EVIDENCE_KINDS: EvidenceKind[] = ["commit", "file", "check", "shot", "msg", "none"];
+export type EvidenceKind = "commit" | "file" | "check" | "shot" | "msg" | "none" | "expected";
+/** `expected: <text>` marks a failure the step meant to show (a forged proof on a scratch server). Never verified on its own; it only
+ *  keeps a failed `check:` line of the same step that it names out of the auto grade (finish.ts signalsOf). */
+export const EVIDENCE_KINDS: EvidenceKind[] = ["commit", "file", "check", "shot", "msg", "none", "expected"];
 /** `ok`: what the server could verify (true / false), null when it cannot be checked (`none`, an unknown project). */
 export interface Evidence { kind: EvidenceKind; value: string; ok: boolean | null }
 export type Origin = "brief" | "boss" | "self";

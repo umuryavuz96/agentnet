@@ -48,15 +48,19 @@ test("scan (static) -> plan -> apply -> rollback restores every byte", async () 
   expect((await call("/v1/panel/adopt/plan", { scanId: "scan-nope", picks: { findings: picks } })).status).toBe(409);
   const p = await call("/v1/panel/adopt/plan", { scanId: st.scanId, picks: { findings: picks } });
   expect(p.status).toBe(200);
-  const plan = (await p.json()) as { planId: string; ops: unknown[] };
+  const plan = (await p.json()) as { planId: string; ops: { op: string }[]; manual?: { text: string }[] };
   expect(plan.ops.length).toBeGreaterThan(0);
+  // the workspace is outside agentnet's folder: its file edits are offered as manual steps, not ops
+  expect(plan.ops.some((o) => ["park-hook", "park-mcp", "disable-lines"].includes(o.op))).toBe(false);
+  expect(plan.manual?.length).toBeGreaterThan(0);
+  expect(plan.manual![0].text).toContain("agentnet no longer edits files outside its folder; do this by hand: ");
   expect(snap(ws)).toEqual(before); // preview changes nothing
   expect((await call("/v1/panel/adopt/apply", { planId: "plan-other" })).status).toBe(409);
   const a = await call("/v1/panel/adopt/apply", { planId: plan.planId });
   expect(a.status).toBe(200);
   expect(loadState().phase).toBe("applied");
   expect(started.length).toBe(1);
-  expect(snap(ws)).not.toEqual(before);
+  expect(snap(ws)).toEqual(before); // was not.toEqual: apply no longer edits files outside the home
   const rb = await call("/v1/panel/adopt/rollback", {});
   expect(rb.status).toBe(200);
   expect(snap(ws)).toEqual(before);

@@ -9,6 +9,7 @@ import { LAN, LOOP, asRoot } from "../../test/helpers";
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-hooks-"));
 
 let d = "";
+const REAL_HOME = process.env.HOME;
 // The catalogue is data, not code: a test catalogue that names the hooks of `base` and the logs the other tests write.
 const CATALOG = [
   { match: "skill-dispatch\\.js", name: "Skill router", about: "Adds a hint for the skills that fit the prompt." },
@@ -23,12 +24,13 @@ const base = { env: { SECRET: "x" }, model: "opus", hooks: {
 } };
 beforeEach(() => {
   d = mkdtempSync(join(tmpdir(), "hooks-"));
+  process.env.HOME = join(d, "home"); // never read the real user settings
   process.env.CLAUDE_SETTINGS_FILE = join(d, "settings.json"); process.env.AGENTNET_HOOKS_DATA = join(d, "data"); process.env.AGENTNET_HOOK_LOGS = join(d, "logs");
   writeFileSync(process.env.CLAUDE_SETTINGS_FILE, JSON.stringify(base, null, 2));
   process.env.AGENTNET_HOOK_CATALOG = join(d, "hook-catalog.json");
   writeFileSync(process.env.AGENTNET_HOOK_CATALOG, JSON.stringify(CATALOG));
 });
-afterEach(() => { delete process.env.AGENTNET_HOOK_CATALOG; rmSync(d, { recursive: true, force: true }); });
+afterEach(() => { process.env.HOME = REAL_HOME; delete process.env.AGENTNET_HOOK_CATALOG; rmSync(d, { recursive: true, force: true }); });
 
 test("list gives names, ids, timeouts", async () => {
   const { listHooks } = await import("./hooks");
@@ -189,4 +191,34 @@ test("scriptOf: quoted, spaced and trailing-arg commands", async () => {
   expect(scriptOf("node x.js --fast")).toBe("x.js");
   expect(scriptOf("python3 /a/b.py")).toBe("/a/b.py");
   expect(scriptOf("/opt/homebrew/bin/python3 -u /a/b.py arg/1")).toBe("/a/b.py");
+});
+
+test("user settings and plugin hooks are listed; a user hook toggles with a backup and rolls back; a plugin hook is read only", async () => {
+  const home = join(d, "home");
+  try {
+    mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+    const userFile = join(home, ".claude", "settings.json");
+    writeFileSync(userFile, JSON.stringify({ model: "x", enabledPlugins: { "demo@mk": true, "off@mk": false }, hooks: { Stop: [{ hooks: [{ type: "command", command: "/u/notify.sh", timeout: 3 }] }] } }, null, 2) + "\n");
+    const root = join(home, ".claude", "plugins", "cache", "demo");
+    mkdirSync(join(root, "hooks"), { recursive: true });
+    writeFileSync(join(root, "hooks", "hooks.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "${CLAUDE_PLUGIN_ROOT}/start.sh" }] }] } }));
+    writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ plugins: { "demo@mk": [{ scope: "user", installPath: root }], "off@mk": [{ scope: "user", installPath: root }] } }));
+    const { listHooks, setHookEnabled, rollback, backups } = await import("./hooks");
+    const l = listHooks();
+    expect(l.filter((h) => h.source === "agentnet").length).toBe(3);
+    const u = l.find((h) => h.source === "user")!, p = l.filter((h) => h.source === "plugin");
+    expect(u.command).toBe("/u/notify.sh");
+    expect(p.length).toBe(1); // the disabled plugin adds nothing
+    expect(p[0].plugin).toBe("demo"); expect(p[0].readOnly).toBe(true);
+    expect(() => setHookEnabled(p[0].id, false)).toThrow(/read only/);
+    const before = readFileSync(userFile, "utf8");
+    const off = setHookEnabled(u.id, false);
+    expect(off.find((h) => h.id === u.id)?.enabled).toBe(false);
+    const mid = JSON.parse(readFileSync(userFile, "utf8"));
+    expect(mid.hooks).toEqual({}); expect(mid.model).toBe("x");
+    expect(backups("user").length).toBe(1);
+    rollback();
+    expect(readFileSync(userFile, "utf8")).toBe(before);
+    expect(listHooks().find((h) => h.id === u.id)?.enabled).toBe(true);
+  } finally { /* afterEach restores HOME */ }
 });

@@ -4,6 +4,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ROOT } from "../core/config";
+import { assertInHome, inHome, OutsideHomeError } from "../core/paths";
 import { sha256File, writeAtomic } from "./adopt-safe";
 import { putMember } from "./adopt-json";
 import { computeChanges, planIdFor, type OpDesc, type Parked, type Plan } from "./adopt-plan";
@@ -52,6 +53,8 @@ export async function applyPlan(plan: Plan, opts: ApplyOpts = {}): Promise<Apply
   try {
     if (planIdFor(plan) !== plan.planId) return { ok: false, status: 409, error: "The plan was changed after it was made. Preview again." };
     if (plan.needsConfirmGlobal && !opts.confirmGlobal) return { ok: false, status: 400, error: "The plan changes a global file (~/.claude). Confirm it to continue." };
+    // one-folder rule: a plan made before it (or edited by hand) may still hold an op on a file outside the home
+    try { for (const o of plan.ops) if ("file" in o && o.file) assertInHome(o.file, o.op, root); } catch (e) { return { ok: false, status: 400, error: (e as Error).message }; }
     if (existsSync(join(adoptDir(root), plan.runId))) return { ok: false, status: 409, error: `run ${plan.runId} already exists. Preview again.` };
 
     // 1. stale check: the files must still be what the preview saw, and recomputing must give the same result
@@ -165,6 +168,14 @@ export function noteLateFile(runId: string, file: string, root: string = ROOT): 
   } catch (e) { return (e as Error).message; }
 }
 
+/** Rollback may write outside the home only to put back a file the run's own manifest lists, from a backup inside the home. */
+export function assertRestorable(file: string, m: Pick<Manifest, "files">, root: string): void {
+  if (inHome(file, root)) return;
+  const f = m.files.find((x) => x.file === file);
+  if (f && (f.backup === null || inHome(f.backup, root))) return;
+  throw new OutsideHomeError(`agentnet: refusing to write outside its folder: ${file} (rollback: not in the run's manifest)`);
+}
+
 function restore(m: Manifest, root: string, wsd: string, force: boolean): { restored: string[]; removed: string[]; kept: RollbackResult["kept"] } {
   const restored: string[] = [], removed: string[] = [], kept: RollbackResult["kept"] = [];
   const only = m.state === "rolledback" && m.kept?.length ? new Set(m.kept) : null; // a forced second pass handles only what was kept
@@ -172,6 +183,7 @@ function restore(m: Manifest, root: string, wsd: string, force: boolean): { rest
     if (only && !only.has(f.file)) continue;
     const cur = shaOrNull(f.file);
     if (cur === f.beforeSha) continue; // already original (or never written)
+    try { assertRestorable(f.file, m, root); } catch (e) { kept.push({ file: f.file, backup: f.backup, why: (e as Error).message }); continue; }
     const mine = cur === f.afterSha;
     if (f.members?.length && !mine && cur !== null) {
       // the file moved on since apply (Claude Code rewrites ~/.claude.json all the time): put back only our entries, touch nothing else

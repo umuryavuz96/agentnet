@@ -5,6 +5,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, s
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { redactText } from "./bgsum";
+import { configDirOf } from "./agent-config";
 
 export interface FeedItem {
   id: string; ts: number;
@@ -180,7 +181,8 @@ export class FeedParser {
 
 // ---------- which file is the agent's transcript ----------
 export const claudeHome = () => process.env.AGENTNET_CLAUDE_HOME ?? join(homedir(), ".claude");
-export const projectDir = (cwd: string) => join(claudeHome(), "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+/** The transcript folder of a working dir; with an agent, inside that agent's own config dir when it runs on one (agent-config.ts). */
+export const projectDir = (cwd: string, agent?: string | null) => join(agent ? configDirOf(agent) : claudeHome(), "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
 function newest(dir: string): string | null {
   if (!existsSync(dir)) return null;
   let best: string | null = null, bt = 0;
@@ -188,14 +190,14 @@ function newest(dir: string): string | null {
   return best;
 }
 /** Status-row session -> its jsonl; else ~/.claude/sessions/<pid>.json -> session + cwd; else the newest jsonl of the project folder. */
-export function transcriptFor(a: { session: string | null; project: string | null; pid: number | null }): string | null {
-  const ok = (p: string) => (existsSync(p) ? p : null);
-  if (a.session && a.project) { const p = ok(join(projectDir(a.project), `${a.session}.jsonl`)); if (p) return p; }
+export function transcriptFor(a: { session: string | null; project: string | null; pid: number | null; name?: string }, o: { strict?: boolean } = {}): string | null {
+  const ok = (p: string) => (existsSync(p) ? p : null), who = a.name ?? null;
+  if (a.session && a.project) { const p = ok(join(projectDir(a.project, who), `${a.session}.jsonl`)); if (p) return p; }
   if (a.pid) {
     try {
-      const j = JSON.parse(readFileSync(join(claudeHome(), "sessions", `${a.pid}.json`), "utf8")) as { sessionId?: string; cwd?: string };
-      if (j.sessionId && j.cwd) { const p = ok(join(projectDir(j.cwd), `${j.sessionId}.jsonl`)); if (p) return p; }
+      const j = JSON.parse(readFileSync(join(who ? configDirOf(who) : claudeHome(), "sessions", `${a.pid}.json`), "utf8")) as { sessionId?: string; cwd?: string };
+      if (j.sessionId && j.cwd) { const p = ok(join(projectDir(j.cwd, who), `${j.sessionId}.jsonl`)); if (p) return p; }
     } catch { /* no pid file */ }
   }
-  return a.project ? newest(projectDir(a.project)) : null;
+  return a.project && !o.strict ? newest(projectDir(a.project, who)) : null; // strict (proof checks): only the session's own file
 }

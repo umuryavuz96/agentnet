@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { allowedRead, capFor, sha256Text, userClaudeJson } from "./adopt-safe";
 import { cutMember, mcpHolders } from "./adopt-json";
 import { ROOT } from "../core/config";
+import { inHome } from "../core/paths";
+import { soulsDir } from "../core/layout";
 import { soulBody, wsCatalog, wsDir } from "./workspace";
 import { lineHash, type Action, type AdoptReport, type Finding } from "./adopt-report";
 
@@ -32,7 +34,16 @@ export interface Plan {
   files: { file: string; beforeSha: string; afterSha: string; global: boolean }[];
   willBackup: string[]; create: string[]; backupDir: string; rollbackCommand: string;
   needsConfirmGlobal: boolean; warnings: string[];
+  /** picks whose target file is outside agentnet's folder: agentnet does not edit them, the user does (not part of planId) */
+  manual?: ManualStep[];
 }
+export interface ManualStep { actionId: string; findingId: string; op: "park-hook" | "park-mcp" | "disable-lines"; file: string; text: string }
+export const MANUAL_TEXT = "agentnet no longer edits files outside its folder; do this by hand: ";
+/** What a file op asks the user to do by hand, in plain words. */
+const manualWhat = (a: Extract<Action, { op: "park-hook" | "park-mcp" | "disable-lines" }>): string =>
+  a.op === "park-hook" ? `remove the ${a.event} hook whose command contains "${a.commandIncludes}" from ${a.file}`
+  : a.op === "park-mcp" ? `remove the MCP server "${a.server}" from ${a.file}`
+  : `remove or rewrite lines ${a.fromLine}-${a.toLine} of ${a.file}`;
 /** What a change of one file looks like before it is written. `parked` holds the removed hook / MCP entry (env and header values blanked). */
 export interface FileChange { file: string; beforeText: string; afterText: string; beforeSha: string; afterSha: string; steps: { opIndex: number; beforeSha: string; afterSha: string; diff: string; parked?: Parked; /** the exact removed member text of ~/.claude.json (may hold secrets: goes to a 0600 file in the run, never into the manifest or the plan) */ member?: Member }[] }
 export interface Member { path: string[]; server: string; raw: string }
@@ -43,7 +54,7 @@ export const planIdFor = (p: Pick<Plan, "workspace" | "scanId" | "runId" | "ops"
 export type PlanResult = { ok: true; plan: Plan } | { ok: false; errors: string[] };
 
 /** Where the composed adopt-mode director prompt lives. Same path as director.ts promptPath("adopt"); duplicated so plan and rollback do not pull in the server modules (a test keeps them equal). */
-export const directorPromptFile = (root: string): string => join(root, "run", "souls", "agentnet-director.md");
+export const directorPromptFile = (root: string): string => join(soulsDir(root), "agentnet-director.md");
 const home = () => process.env.HOME ?? homedir();
 const isGlobal = (f: string) => f === join(home(), ".claude.json") || f === join(home(), ".claude") || f.startsWith(join(home(), ".claude") + "/");
 type Obj = Record<string, unknown>;
@@ -189,7 +200,7 @@ export function buildPlan(report: AdoptReport, picks: Picks, ctx: PlanCtx): Plan
   const sel = selected(report, picks, errors);
   const readRoots = [report.workspace, join(home(), ".claude"), join(home(), ".claude.json")];
   const descs: OpDesc[] = [], meta: { actions: string[]; finding: string | null }[] = [];
-  const seen = new Map<string, number>();
+  const seen = new Map<string, number>(), manual: ManualStep[] = [];
   const add = (d: OpDesc, a: string | null, f: string | null) => {
     const key = JSON.stringify(d);
     const at = seen.get(key);
@@ -197,6 +208,7 @@ export function buildPlan(report: AdoptReport, picks: Picks, ctx: PlanCtx): Plan
     seen.set(key, descs.length); descs.push(d); meta.push({ actions: a ? [a] : [], finding: f });
   };
   for (const { f, a } of sel) {
+    if ((a.op === "park-hook" || a.op === "park-mcp" || a.op === "disable-lines") && !inHome(a.file, root)) { manual.push({ actionId: a.id, findingId: f.id, op: a.op, file: a.file, text: MANUAL_TEXT + manualWhat(a) }); continue; }
     if (a.op === "park-hook") add({ op: a.op, file: a.file, event: a.event, matcher: a.matcher ?? null, commandIncludes: a.commandIncludes }, a.id, f.id);
     else if (a.op === "park-mcp") add({ op: a.op, file: a.file, server: a.server }, a.id, f.id);
     else if (a.op === "disable-lines") add({ op: a.op, file: a.file, fromLine: a.fromLine, toLine: a.toLine }, a.id, f.id);
@@ -233,7 +245,7 @@ export function buildPlan(report: AdoptReport, picks: Picks, ctx: PlanCtx): Plan
   const willBackup = [...changes.map((c) => c.file), ...(existsSync(dirPrompt) ? [dirPrompt] : [])];
   const create = ops.flatMap((o) => (o.create && !o.replaces ? o.create : []));
   const planId = planIdFor({ workspace: report.workspace, scanId: report.scanId, runId: ctx.runId, ops, files });
-  return { ok: true, plan: { planId, workspace: report.workspace, scanId: report.scanId, runId: ctx.runId, ops, files, willBackup, create, backupDir: join(root, "adopt", ctx.runId), rollbackCommand: `agentnet adopt rollback ${ctx.runId}`, needsConfirmGlobal: globalFiles.length > 0, warnings } };
+  return { ok: true, plan: { planId, workspace: report.workspace, scanId: report.scanId, runId: ctx.runId, ops, files, willBackup, create, backupDir: join(root, "adopt", ctx.runId), rollbackCommand: `agentnet adopt rollback ${ctx.runId}`, needsConfirmGlobal: globalFiles.length > 0, warnings, ...(manual.length ? { manual } : {}) } };
 }
 
 /** CLI `adopt plan --accept`: the picks for a report. "all" applies every finding. "recommended" skips high-risk findings and never rewrites instruction lines (decision 4: neutralising is a per-line opt-in, off by default). */

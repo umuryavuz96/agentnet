@@ -48,6 +48,14 @@ export const panelToken = (): string => read(panelFile());
 export const loopbackRoot = () => process.env.AGENTNET_LOOPBACK_ROOT === "on";
 export const panelLoginOff = () => process.env.AGENTNET_PANEL_LOGIN === "off";
 export const houseFlags = (): string[] => [...(loopbackRoot() ? ["AGENTNET_LOOPBACK_ROOT=on"] : []), ...(panelLoginOff() ? ["AGENTNET_PANEL_LOGIN=off"] : [])];
+/** AGENTNET_LOOPBACK_ROOT is deprecated (step 7): it still works in this release, logs this at boot and shows it in the panel. */
+export const LOOPBACK_DEPRECATION = "deprecated: removed in 0.8; local scripts must send run/root.token";
+let loopbackHits = 0;
+/** Requests that became root through the loopback fallback since boot: root watches it fall to 0 as house scripts move to the token. */
+export const countLoopbackHit = () => { loopbackHits++; };
+export const loopbackRootHits = () => loopbackHits;
+/** Deprecation lines for the panel's banner and /health. */
+export const deprecations = (): string[] => (loopbackRoot() ? [`AGENTNET_LOOPBACK_ROOT=on: ${LOOPBACK_DEPRECATION}`] : []);
 
 // ---------- one-time login codes (memory only) ----------
 const codes = new Map<string, number>(); // code -> expiry ms

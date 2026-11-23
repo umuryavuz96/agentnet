@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Agent scorecard (docs/agent-score.md). Two shapes of one component:
 //  - with `only`: the compact Score block of the side panel (big number, five sub-score bars, cost per task, last 5 grades);
-//  - without: the Scores section of the Agents page (sortable agent table + the by role / model / soul table for self-improvement).
+//  - without: the Scores section of the Agents page (sortable agent table + the by role / model / brain table for self-improvement).
 // Every number comes from the server; "n/a" until the agent has the minimum number of graded tasks.
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import Icon from "../ui/Icon.vue";
@@ -59,7 +59,7 @@ const openNa = ref<Record<string, boolean>>({});
 const split = (id: (typeof GROUPS)[number][0]) => { const l = scores.data?.[id] ?? []; return { scored: l.filter((r) => r.score != null), na: l.filter((r) => r.score == null) }; };
 const nm = (k: string) => { const i = k.lastIndexOf("/"); return i < 0 ? { pre: "", name: k } : { pre: k.slice(0, i), name: k.slice(i + 1) }; };
 const BANDS = [[40, "fair"], [60, "good"], [80, "great"]] as const;
-const GROUPS = [["byRole", "Role"], ["byModel", "Model"], ["bySoul", "Soul"]] as const;
+const GROUPS = [["byRole", "Role"], ["byModel", "Model"], ["byBrain", "Brain"]] as const;
 const grp = ref<(typeof GROUPS)[number][0]>("byRole");
 </script>
 

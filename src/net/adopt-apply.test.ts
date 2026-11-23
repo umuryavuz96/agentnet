@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collectFacts, type Facts } from "./adopt-scan";
 import { validateReport, type AdoptReport } from "./adopt-report";
 import { buildPlan, type Plan } from "./adopt-plan";
-import { applyPlan, listRuns, rollbackRun, KEEP_RUNS } from "./adopt-apply";
+import { applyPlan, assertRestorable, listRuns, rollbackRun, KEEP_RUNS } from "./adopt-apply";
 import { makeWorkspace } from "../../test/helpers/adoptFixture";
 
 let tmp = "", ws = "", home = "", root = "", wsd = "", oldHome: string | undefined, facts: Facts, report: AdoptReport;
@@ -35,7 +35,7 @@ const snap = (dir: string, out = new Map<string, string>()): Map<string, string>
 };
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "adopt-apply-")); ({ ws, home } = makeWorkspace(tmp)); oldHome = process.env.HOME; process.env.HOME = home;
-  root = join(tmp, "agentnet"); wsd = join(root, "workspace");
+  root = tmp; wsd = join(root, "workspace"); // the workspace and HOME sit inside the home: these tests cover the edit and undo mechanics
   facts = collectFacts(ws, none); report = mkReport();
 });
 afterEach(() => { process.env.HOME = oldHome; rmSync(tmp, { recursive: true, force: true }); });
@@ -156,4 +156,44 @@ test("the 6th run prunes the oldest only", async () => {
   expect(ids.length).toBe(KEEP_RUNS);
   expect(ids).not.toContain("run-20261111-000000");
   expect(ids[0]).toBe("run-20261116-000000");
+});
+
+// ---------- one-folder rule: files outside the home ----------
+test("a pick on a file outside the home becomes a manual step; register-souls stays an op", () => {
+  const out = join(tmp, "agentnet"); // a home that does not hold the workspace
+  const r = buildPlan(report, { findings: { f1: "apply", f2: "apply", f3: "apply" } }, { runId: "run-20261110-101500", root: out, workspaceDir: join(out, "workspace") });
+  expect(r.ok).toBe(true); if (!r.ok) return;
+  expect(r.plan.ops.map((o) => o.op).sort()).toEqual(["register-souls", "write-director-prompt"]);
+  expect(r.plan.files).toEqual([]);
+  expect(r.plan.manual!.map((m) => [m.actionId, m.op])).toEqual([["a1", "park-hook"], ["a2", "park-mcp"], ["a3", "disable-lines"]]);
+  for (const m of r.plan.manual!) expect(m.text.startsWith("agentnet no longer edits files outside its folder; do this by hand: ")).toBe(true);
+});
+
+test("apply refuses an old plan that still holds an op on a file outside the home, and changes nothing", async () => {
+  const before = snap(ws), p = plan(); // made with the workspace inside the home (root = tmp)
+  const out = join(tmp, "agentnet");
+  const r = await applyPlan(p, { root: out, workspaceDir: join(out, "workspace") });
+  expect(r).toMatchObject({ ok: false, status: 400 });
+  if (!r.ok) expect(r.error).toStartWith("agentnet: refusing to write outside its folder: ");
+  expect(snap(ws)).toEqual(before);
+  expect(existsSync(join(out, "adopt"))).toBe(false);
+});
+
+test("rollback of an old run restores a file outside the home only because its manifest lists it", async () => {
+  const before = snap(ws);
+  const r = await applyPlan(plan(), { root, workspaceDir: wsd }); // an old run: it edited the workspace
+  expect(r.ok).toBe(true);
+  // move the run into a home that does not hold the workspace, as if the home had moved since
+  const out = join(tmp, "agentnet"); mkdirSync(out, { recursive: true });
+  renameSync(join(root, "adopt"), join(out, "adopt"));
+  const mf = join(out, "adopt", "run-20261110-101500", "manifest.json");
+  writeFileSync(mf, readFileSync(mf, "utf8").replaceAll(join(root, "adopt") + "/", join(out, "adopt") + "/"));
+  const rb = rollbackRun("run-20261110-101500", { root: out, workspaceDir: wsd });
+  expect(rb.ok).toBe(true); expect(rb.kept).toEqual([]);
+  expect(snap(ws)).toEqual(before);
+  // the same outside file without a manifest entry is refused
+  const f = join(ws, "CLAUDE.md");
+  expect(() => assertRestorable(f, { files: [] }, out)).toThrow("refusing to write outside its folder");
+  expect(() => assertRestorable(f, { files: [{ file: f, beforeSha: null, afterSha: "", backup: join(tmp, "elsewhere.bak"), mode: 0o600, opIds: [] }] }, out)).toThrow("refusing to write outside its folder");
+  expect(() => assertRestorable(f, { files: [{ file: f, beforeSha: null, afterSha: "", backup: join(out, "adopt", "x"), mode: 0o600, opIds: [] }] }, out)).not.toThrow();
 });

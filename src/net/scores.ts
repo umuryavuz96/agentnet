@@ -31,7 +31,22 @@ function init(d: Database) {
     open_at_close INTEGER NOT NULL DEFAULT 0, no_work INTEGER NOT NULL DEFAULT 0, verified INTEGER NOT NULL DEFAULT 0,
     tokens INTEGER, cost_usd REAL, cost_settled INTEGER NOT NULL DEFAULT 0, grade INTEGER, note TEXT, rework INTEGER NOT NULL DEFAULT 0, rework_at INTEGER, owner_rounds INTEGER, graded_at INTEGER, UNIQUE (agent_id, job_id))`);
   d.run("CREATE INDEX IF NOT EXISTS job_scores_agent ON job_scores (agent, closed_at)");
+  // step 7b: the server's own provisional grade at auto-finish (grade_source auto, provisional 1) until root confirms or regrades; the cost record of the run
+  for (const col of ["grade_source TEXT NOT NULL DEFAULT 'root'", "provisional INTEGER NOT NULL DEFAULT 0", "tokens_in INTEGER", "tokens_out INTEGER", "cache_read INTEGER", "wall_ms INTEGER", "effort TEXT", "report TEXT"])
+    try { d.run(`ALTER TABLE job_scores ADD COLUMN ${col}`); } catch { /* there already */ }
+  // step 8a (lines.ts): one row per upgrade a generation proposed, the proofs the hooks or the agent posted, and one row per spawn pick
+  d.run(`CREATE TABLE IF NOT EXISTS line_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, line TEXT NOT NULL, version INTEGER NOT NULL, parent_version INTEGER NOT NULL, upgrade_json TEXT NOT NULL,
+    born_gen INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', reward REAL, adherence INTEGER, baseline REAL, lesson TEXT, created INTEGER NOT NULL, settled_at INTEGER, UNIQUE (line, born_gen))`);
+  d.run(`CREATE TABLE IF NOT EXISTS upgrade_proofs (id INTEGER PRIMARY KEY AUTOINCREMENT, line TEXT NOT NULL, gen INTEGER NOT NULL, upgrade_id INTEGER NOT NULL, source TEXT NOT NULL, evidence TEXT NOT NULL, at INTEGER NOT NULL)`);
+  d.run("CREATE INDEX IF NOT EXISTS upgrade_proofs_gen ON upgrade_proofs (line, gen)");
+  // step 8 proof fix: a hook proof is a claim (tool_use_id) the server verifies against the agent's own transcript; agent rows stay verified
+  for (const col of ["status TEXT NOT NULL DEFAULT 'verified'", "tool_use_id TEXT", "agent_id TEXT", "call_at INTEGER", "reason TEXT"])
+    try { d.run(`ALTER TABLE upgrade_proofs ADD COLUMN ${col}`); } catch { /* there already */ }
+  d.run("CREATE UNIQUE INDEX IF NOT EXISTS upgrade_proofs_call ON upgrade_proofs (line, gen, tool_use_id)");
+  d.run(`CREATE TABLE IF NOT EXISTS picks (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL, context_json TEXT, candidates_json TEXT, chosen TEXT, prob REAL)`);
 }
+/** The score database (lines.ts writes its step 8 tables here). */
+export const scoreDb = (): Database => sdb();
 function sdb(): Database {
   if (handle) return handle;
   mkdirSync(join(ROOT, "data"), { recursive: true });
@@ -41,19 +56,19 @@ function sdb(): Database {
 
 // ---------- reading the event log ----------
 /** Tokens (input+output+cache write) and list-price dollars of the agent's finished turns in [from, to]. Null cost when no turn had a priced model. */
-export function windowCost(agentId: string, from: number, to: number): { tokens: number; costUsd: number | null } {
+export function windowCost(agentId: string, from: number, to: number): { tokens: number; costUsd: number | null; tokensIn: number; tokensOut: number; cacheRead: number } {
   const rows = db().query("SELECT data FROM agent_events WHERE agent_id = ? AND type = 'TurnEnded' AND ts >= ? AND ts <= ?").all(agentId, from, to) as { data: string }[];
-  const prices = loadPrices(); let tokens = 0, usd = 0, priced = 0;
+  const prices = loadPrices(); let tokens = 0, usd = 0, priced = 0, tokensIn = 0, tokensOut = 0, cacheRead = 0;
   for (const r of rows) {
     let u: Record<string, unknown> | null = null; try { u = (JSON.parse(r.data) as { usage?: Record<string, unknown> | null }).usage ?? null; } catch { /* skip */ }
     if (!u) continue;
     const n = (k: string) => (typeof u![k] === "number" && Number.isFinite(u![k]) ? (u![k] as number) : 0);
     const t: Tok = [n("input_tokens"), n("output_tokens"), n("cache_read_input_tokens"), n("cache_creation_input_tokens"), 0, 1];
-    tokens += t[0] + t[1] + t[3];
+    tokens += t[0] + t[1] + t[3]; tokensIn += t[0]; tokensOut += t[1]; cacheRead += t[2];
     const p = typeof u.model === "string" ? priceFor(u.model, prices) : null;
     if (p) { usd += costUsd(t, p); priced++; }
   }
-  return { tokens, costUsd: priced ? usd : null };
+  return { tokens, costUsd: priced ? usd : null, tokensIn, tokensOut, cacheRead };
 }
 
 interface Row { id: number; agent: string; agent_id: string; role: string; model: string | null; soul: string | null; project: string | null; task_id: number; text: string; started_at: number | null; done_at: number; tokens: number | null; cost_usd: number | null; cost_settled: number; listed_first: number; prompt_start: number; prompt_done: number; note_filled: number; grade: number | null; grade_raw: number | null; penalty: number | null; note: string | null; rework: number; rework_at: number | null; owner_rounds: number | null; graded_at: number | null }
@@ -118,10 +133,50 @@ export function grade(agent: string, i: GradeInput, now = Date.now()): { record:
   }
   const gen = i.gen != null ? Number(i.gen) : rows[0]?.gen, row = rows.find((r) => r.gen === gen && (i.job == null || r.job_id === Number(i.job)));
   if (!row) return { error: `no closed job${i.job != null ? ` ${Number(i.job)}` : ""}${i.gen != null ? ` in generation ${gen}` : ""} of ${agent}. ${valid}`, status: 404 };
-  sdb().run("UPDATE job_scores SET grade = ?, note = ?, rework = ?, rework_at = ?, owner_rounds = COALESCE(?, owner_rounds), graded_at = ? WHERE id = ?", [...set, row.id]);
+  const auto = (row as JobRow & AutoCols).provisional === 1 || (row as JobRow & AutoCols).grade_source === "auto";
+  if (auto) set[1] = [note, `auto was ${row.grade}${row.note ? ` (${row.note})` : ""}`].filter(Boolean).join("; ").slice(0, 800); // root's grade replaces the auto grade; the auto value stays in the note
+  sdb().run("UPDATE job_scores SET grade = ?, note = ?, rework = ?, rework_at = ?, owner_rounds = COALESCE(?, owner_rounds), graded_at = ?, grade_source = 'root', provisional = 0 WHERE id = ?", [...set, row.id]);
+  regraded({ agent: row.agent, gen: row.gen, job: row.job_id, grade: g, was: row.grade, source: "root" }); // replacing an auto grade or root's own earlier one: step 8a re-settles on both
   emit({ agent: row.agent_id, type: "JobGraded", data: { job: row.job_id, grade: g, note }, source: "service", ts: now }); flush(); // the card of that run shows the grade
   return { record: jobRec(sdb().query("SELECT * FROM job_scores WHERE id = ?").get(row.id) as JobRow), job: { agent_id: row.agent_id, job: row.job_id } };
 }
+
+// ---------- auto grades (step 7b, finish.ts) ----------
+interface AutoCols { grade_source: string; provisional: number; report: string | null }
+export interface Regrade { agent: string; gen: number; job: number; grade: number; was: number | null; source: "root" | "root-confirmed" }
+const regradeFns: ((r: Regrade) => void | Promise<void>)[] = [];
+/** Called once each time root grades a closed job (replacing an auto grade or an earlier grade) or confirms an auto grade. Step 8a hooks in here. Returns an unsubscribe. */
+export function onRegrade(fn: (r: Regrade) => void | Promise<void>): () => void { regradeFns.push(fn); return () => { const i = regradeFns.indexOf(fn); if (i >= 0) regradeFns.splice(i, 1); }; }
+function regraded(r: Regrade) {
+  for (const fn of regradeFns) try { void Promise.resolve(fn(r)).catch((e) => logEvent("warn", "onRegrade handler failed", { error: String(e) })); } catch (e) { logEvent("warn", "onRegrade handler failed", { error: String(e) }); }
+}
+export interface AutoGradeInput { grade: number; note: string; report: string; tokensIn: number; tokensOut: number; cacheRead: number; tokens: number; costUsd: number | null; wallMs: number; model: string | null; effort: string | null }
+/** Store the server's provisional grade and the cost record on the closed job. False when the job has no row. */
+export function setAutoGrade(agentId: string, job: number, g: AutoGradeInput, now = Date.now()): boolean {
+  return sdb().run(`UPDATE job_scores SET grade = ?, note = ?, graded_at = ?, grade_source = 'auto', provisional = 1, report = ?, tokens_in = ?, tokens_out = ?, cache_read = ?, wall_ms = ?,
+    model = COALESCE(?, model), effort = ?, tokens = ?, cost_usd = ?, cost_settled = 1 WHERE agent_id = ? AND job_id = ?`,
+    [g.grade, g.note, now, g.report.slice(0, 300), g.tokensIn, g.tokensOut, g.cacheRead, g.wallMs, g.model, g.effort, g.tokens, g.costUsd, agentId, job]).changes > 0;
+}
+/** Undo an auto grade (the finish failed after it was stored): the job is back to ungraded. */
+export const clearAutoGrade = (agentId: string, job: number) => { sdb().run("UPDATE job_scores SET grade = NULL, note = NULL, graded_at = NULL, grade_source = 'root', provisional = 0 WHERE agent_id = ? AND job_id = ? AND grade_source = 'auto'", [agentId, job]); };
+export interface ReviewItem { agent: string; gen: number; job: number; grade: number | null; note: string | null; report: string | null; closedAt: number; gradedAt: number | null }
+/** The review bucket: auto grades root has not confirmed or replaced. */
+export const reviewBucket = (): ReviewItem[] => (sdb().query("SELECT * FROM job_scores WHERE grade_source = 'auto' AND provisional = 1 ORDER BY closed_at").all() as (JobRow & AutoCols)[])
+  .map((r) => ({ agent: r.agent, gen: r.gen, job: r.job_id, grade: r.grade, note: r.note, report: r.report, closedAt: r.closed_at, gradedAt: r.graded_at }));
+/** Root accepts the auto grade as its own. Without job: the newest auto-graded job of that gen. */
+export function confirmGrade(agent: string, i: { gen?: unknown; job?: unknown; note?: unknown }, now = Date.now()): { agent: string; gen: number; job: number; grade: number | null } | GradeError {
+  const int = (x: unknown) => x == null || Number.isInteger(Number(x));
+  if (!int(i.job) || !int(i.gen)) return { error: "job and gen must be integers", status: 422 };
+  const rows = sdb().query("SELECT * FROM job_scores WHERE agent = ? AND grade_source = 'auto' AND provisional = 1 ORDER BY gen DESC, job_id DESC").all(agent) as JobRow[];
+  const row = rows.find((r) => (i.gen == null || r.gen === Number(i.gen)) && (i.job == null || r.job_id === Number(i.job)));
+  if (!row) return { error: `no auto grade of ${agent} waits for review${rows.length ? `: open are ${rows.map((r) => `gen ${r.gen} job ${r.job_id}`).join(", ")}` : ""}`, status: 404 };
+  const add = typeof i.note === "string" && i.note.trim() ? i.note.trim().slice(0, 300) : null;
+  sdb().run("UPDATE job_scores SET grade_source = 'root-confirmed', provisional = 0, note = ?, graded_at = ? WHERE id = ?", [[row.note, add].filter(Boolean).join("; ") || null, now, row.id]);
+  regraded({ agent, gen: row.gen, job: row.job_id, grade: row.grade ?? 0, was: row.grade, source: "root-confirmed" });
+  return { agent, gen: row.gen, job: row.job_id, grade: row.grade };
+}
+/** One job row with the step 7b columns (tests, finish.ts). */
+export const jobScoreRow = (agentId: string, job: number) => sdb().query("SELECT * FROM job_scores WHERE agent_id = ? AND job_id = ?").get(agentId, job) as (JobRow & AutoCols & { tokens_in: number | null; tokens_out: number | null; cache_read: number | null; wall_ms: number | null; effort: string | null }) | null;
 
 // ---------- reading ----------
 const taskRecords = (where = "", ...args: string[]) => (sdb().query(`SELECT * FROM agent_scores ${where} ORDER BY done_at`).all(...args) as Row[]).map(rec);
@@ -175,7 +230,12 @@ export function allScores(now = Date.now()) {
   const names = [...new Set(recs.map((r) => r.agent))];
   const agents = names.map((n) => { const mine = recs.filter((r) => r.agent === n), l = mine.reduce((a, b) => (b.doneAt >= a.doneAt ? b : a)); return { agent: n, role: l.role, model: l.model, soul: l.soul, project: l.project, ...computeScore(mine, meds, cfg, staleOpen(n, now)), discipline: agentDiscipline(n) }; })
     .sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || b.tasks - a.tasks);
-  return { at: now, minGraded: cfg.minGraded, weights: cfg.weights, agents, byRole: group((r) => r.role), byModel: group((r) => r.model ?? "unknown"), bySoul: group((r) => r.soul ?? "none"), discipline: disciplineSummary(now) };
+  // brains: the soul column holds "<brain>@v<n>" since brains replaced personas; grouped by brain name, the versions seen listed
+  const brainOf = (soul: string | null) => /^([a-z0-9][a-z0-9-]*)@v(\d+)$/.exec(soul ?? "");
+  const vers = new Map<string, Set<number>>();
+  for (const r of recs) { const m = brainOf(r.soul); if (m) (vers.get(m[1]!) ?? vers.set(m[1]!, new Set()).get(m[1]!)!).add(Number(m[2])); }
+  const byBrain = group((r) => brainOf(r.soul)?.[1] ?? null).map((g) => ({ ...g, versions: [...(vers.get(g.key) ?? [])].sort((a, b) => a - b) }));
+  return { at: now, minGraded: cfg.minGraded, weights: cfg.weights, agents, byRole: group((r) => r.role), byModel: group((r) => r.model ?? "unknown"), bySoul: group((r) => r.soul ?? "none"), byBrain, discipline: disciplineSummary(now) };
 }
 
 /** Panel-auth reads (same auth as /agentnet/usage). The grade POST is root-only and lives in routes.ts with the other admin routes. */

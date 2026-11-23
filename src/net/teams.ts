@@ -1,22 +1,24 @@
 // Teams v1: a real team record on top of the implicit "same boss" grouping. Data only (no routes): routes.ts imports sameTeam for the
-// message rule, teamRoutes.ts builds the HTTP surface. Members are agent NAMES (a respawn keeps its seat). The lead is always a member.
+// message rule, teamRoutes.ts builds the HTTP surface. Members are agent NAMES, and only LIVE ones: a despawn moves the name to `past`
+// (team_members.left_at), so a later agent that reuses the name never inherits the seat. The lead is a member while it is live.
 import { db } from "../core/db";
 import { ensureSchema } from "./store";
 
 export const TEAM_ID = /^[a-z0-9][a-z0-9-]{1,39}$/;
 export const NAME_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
-export interface Team { id: string; name: string; goal: string | null; lead: string | null; project: string | null; created: number; state: "active" | "archived"; members: string[] }
+export interface Team { id: string; name: string; goal: string | null; lead: string | null; project: string | null; created: number; state: "active" | "archived"; members: string[]; /** names that left (despawned): history only, never counted */ past: string[] }
 export interface TeamTask { id: number; team: string; text: string; owner: string | null; status: "pending" | "in_progress" | "done"; created: number; updated: number }
 interface TRow { id: string; name: string; goal: string | null; lead: string | null; project: string | null; created_at: number; state: string }
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-const members = (id: string) => (db().query("SELECT agent FROM team_members WHERE team_id = ? ORDER BY added_at, agent").all(id) as { agent: string }[]).map((r) => r.agent);
-const toTeam = (r: TRow): Team => ({ id: r.id, name: r.name, goal: r.goal, lead: r.lead, project: r.project, created: r.created_at, state: r.state === "archived" ? "archived" : "active", members: members(r.id) });
+const names = (id: string, left: boolean) => (db().query(`SELECT agent FROM team_members WHERE team_id = ? AND left_at IS ${left ? "NOT " : ""}NULL ORDER BY added_at, agent`).all(id) as { agent: string }[]).map((r) => r.agent);
+const members = (id: string) => names(id, false);
+const toTeam = (r: TRow): Team => ({ id: r.id, name: r.name, goal: r.goal, lead: r.lead, project: r.project, created: r.created_at, state: r.state === "archived" ? "archived" : "active", members: members(r.id), past: names(r.id, true) });
 
 /** Last known boss of each member, from its newest agents row (despawned rows keep their boss), so a retired member stays under its boss in the crew tree. */
 export function memberBosses(id: string): Record<string, string | null> {
   const out: Record<string, string | null> = {};
-  for (const n of members(id)) { const r = db().query("SELECT boss FROM agents WHERE name = ? ORDER BY gen DESC LIMIT 1").get(n) as { boss: string | null } | null; if (r) out[n] = r.boss; }
+  for (const n of [...members(id), ...names(id, true)]) { const r = db().query("SELECT boss FROM agents WHERE name = ? ORDER BY gen DESC LIMIT 1").get(n) as { boss: string | null } | null; if (r) out[n] = r.boss; }
   return out;
 }
 export function getTeam(id: string): Team | null { ensureSchema(); const r = db().query("SELECT * FROM teams WHERE id = ?").get(id) as TRow | null; return r ? toTeam(r) : null; }
@@ -46,32 +48,72 @@ export function updateTeam(id: string, p: { name?: string; goal?: string | null;
   if (lead) addMember(id, lead);
   return getTeam(id);
 }
-export function archiveTeam(id: string): Team | null { if (!getTeam(id)) return null; db().run("UPDATE teams SET state = 'archived' WHERE id = ?", [id]); return getTeam(id); }
+/** An archived team has no members: whoever sat in it moves to `past`, so a name that is reused later never shows as a member of a finished team. */
+export function archiveTeam(id: string, now = Date.now()): Team | null {
+  if (!getTeam(id)) return null;
+  db().run("UPDATE teams SET state = 'archived' WHERE id = ?", [id]);
+  db().run("UPDATE team_members SET left_at = ? WHERE team_id = ? AND left_at IS NULL", [now, id]);
+  return getTeam(id);
+}
 /** An agent joining an archived team brings it back (a finished team that gets new work is active again). */
 export function addMember(id: string, agent: string, now = Date.now()) {
-  db().run("INSERT OR IGNORE INTO team_members (team_id, agent, added_at) VALUES (?, ?, ?)", [id, agent, now]);
+  db().run("INSERT INTO team_members (team_id, agent, added_at) VALUES (?, ?, ?) ON CONFLICT (team_id, agent) DO UPDATE SET left_at = NULL, added_at = excluded.added_at WHERE left_at IS NOT NULL", [id, agent, now]); // a name that left and comes back is a new seat
   db().run("UPDATE teams SET state = 'active' WHERE id = ? AND state = 'archived'", [id]);
 }
 export function removeMember(id: string, agent: string) { db().run("DELETE FROM team_members WHERE team_id = ? AND agent = ?", [id, agent]); const t = getTeam(id); if (t?.lead === agent) db().run("UPDATE teams SET lead = NULL WHERE id = ?", [id]); }
 /** Active teams an agent sits in. */
-export function teamsOf(agent: string): Team[] { ensureSchema(); return (db().query("SELECT t.* FROM teams t JOIN team_members m ON m.team_id = t.id WHERE m.agent = ? AND t.state = 'active' ORDER BY t.created_at").all(agent) as TRow[]).map(toTeam); }
+export function teamsOf(agent: string): Team[] { ensureSchema(); return (db().query("SELECT t.* FROM teams t JOIN team_members m ON m.team_id = t.id WHERE m.agent = ? AND m.left_at IS NULL AND t.state = 'active' ORDER BY t.created_at").all(agent) as TRow[]).map(toTeam); }
 /** The message rule: two agents may talk, whoever their boss is, when they share an active team (the lead is a member). */
 export function sameTeam(a: string, b: string): boolean {
   ensureSchema();
-  return !!db().query("SELECT 1 FROM team_members x JOIN team_members y ON y.team_id = x.team_id JOIN teams t ON t.id = x.team_id WHERE x.agent = ? AND y.agent = ? AND t.state = 'active' LIMIT 1").get(a, b);
+  return !!db().query("SELECT 1 FROM team_members x JOIN team_members y ON y.team_id = x.team_id JOIN teams t ON t.id = x.team_id WHERE x.agent = ? AND y.agent = ? AND x.left_at IS NULL AND y.left_at IS NULL AND t.state = 'active' LIMIT 1").get(a, b);
 }
 const liveAgent = (name: string) => !!db().query("SELECT 1 FROM agents WHERE name = ? AND archived_at IS NULL").get(name);
-/** After `agent` was despawned: archive every active team it sat in that has no live member left (an unarchived agent row counts as live,
- *  so channel bots keep their team open). `isDirector` names the director, which is always live and so never keeps a team open alone.
- *  Only called on a despawn, so a team that never had an agent is never touched. Returns the archived ids. */
-export function archiveAbandoned(agent: string, isDirector: (name: string) => boolean = () => false): string[] {
+const everAgent = (name: string) => !!db().query("SELECT 1 FROM agents WHERE name = ?").get(name);
+type Director = (name: string) => boolean;
+/** Archive the active team when no live member is left (an unarchived agent row counts as live, so channel bots keep their team open;
+ *  `isDirector` names the director, which is always live and so never keeps a team open alone). Returns whether it was archived. */
+function closeIfDead(t: Team, isDirector: Director): boolean {
+  if (t.state !== "active" || t.members.some((m) => !isDirector(m) && liveAgent(m))) return false;
+  archiveTeam(t.id); return true;
+}
+/** After `agent` was despawned: it leaves every active team it sat in (the name moves to `past`, so an agent that reuses the name starts
+ *  clean), and each of those teams with no live member left is archived. Only called on a despawn, so a team that never had an agent is
+ *  never touched. Returns the archived ids. */
+export function leaveTeams(agent: string, isDirector: Director = () => false, now = Date.now()): string[] {
   const done: string[] = [];
-  for (const t of teamsOf(agent)) if (!t.members.some((m) => !isDirector(m) && liveAgent(m))) { archiveTeam(t.id); done.push(t.id); }
+  for (const t of teamsOf(agent)) {
+    db().run("UPDATE team_members SET left_at = ? WHERE team_id = ? AND agent = ? AND left_at IS NULL", [now, t.id, agent]);
+    if (closeIfDead(getTeam(t.id)!, isDirector)) done.push(t.id);
+  }
   return done;
+}
+export interface StaleChange { team: string; left: string[]; archived: boolean; /** the team was archived already: only its member list is cleaned */ was?: "archived" }
+/** One sweep for data from before members left on despawn: a member that has an agents row but no live one is gone, so it moves to `past`,
+ *  and a team left with no live member is archived. An archived team that still lists members gets them moved to `past`. A name with no agents row at all (planned, not spawned yet) stays. `dry` only lists. */
+export function closeStaleTeams(isDirector: Director = () => false, opts: { dry?: boolean; now?: number } = {}): StaleChange[] {
+  ensureSchema();
+  const out: StaleChange[] = [], now = opts.now ?? Date.now();
+  for (const t of listTeams(true)) {
+    if (t.state === "archived") { // a finished team lists nobody: before this rule a despawn left the names in
+      if (t.members.length) { if (!opts.dry) archiveTeam(t.id, now); out.push({ team: t.id, left: t.members, archived: true, was: "archived" }); }
+      continue;
+    }
+    const gone = t.members.filter((m) => everAgent(m) && !liveAgent(m));
+    if (!gone.length) continue;
+    const rest = t.members.filter((m) => !gone.includes(m));
+    const archived = !rest.some((m) => !isDirector(m) && liveAgent(m));
+    if (!opts.dry) {
+      for (const m of gone) db().run("UPDATE team_members SET left_at = ? WHERE team_id = ? AND agent = ? AND left_at IS NULL", [now, t.id, m]);
+      if (archived) archiveTeam(t.id);
+    }
+    out.push({ team: t.id, left: gone, archived });
+  }
+  return out;
 }
 /** Teams where `agent` is a non-lead member of a team that has a live lead: the lead is the only door into them for outsiders.
  *  A lead that was despawned (no live agent row) opens no door, so the gate lifts and the boss chain and root reach the members. */
-const gatedTeams = (agent: string) => teamsOf(agent).filter((t) => t.lead && t.lead !== agent && liveAgent(t.lead));
+const gatedTeams = (agent: string) => teamsOf(agent).filter((t) => t.lead && t.lead !== agent && t.members.includes(t.lead) && liveAgent(t.lead));
 /** The lead of the active team `to` belongs to, when `to` is not that lead; else null. */
 export const leadGate = (to: string): string | null => gatedTeams(to)[0]?.lead ?? null;
 /** Does the lead gate let `from` reach `to`? Yes when `to` is gated by no team, or `from` sits in one of the teams that gate it. */
@@ -79,7 +121,7 @@ export function gatePasses(from: string, to: string): boolean {
   const g = gatedTeams(to);
   return !g.length || g.some((t) => t.members.includes(from));
 }
-export const isMember = (id: string, agent: string) => !!db().query("SELECT 1 FROM team_members WHERE team_id = ? AND agent = ?").get(id, agent);
+export const isMember = (id: string, agent: string) => !!db().query("SELECT 1 FROM team_members WHERE team_id = ? AND agent = ? AND left_at IS NULL").get(id, agent);
 
 // ---------- board ----------
 const toTask = (r: { id: number; team_id: string; text: string; owner: string | null; status: string; created_at: number; updated_at: number }): TeamTask =>
