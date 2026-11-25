@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.AGENTNET_HOME ??= mkdtempSync(join(tmpdir(), "an-sweep-"));
+delete process.env.AGENTNET_SWEEP; // CI sets AGENTNET_SWEEP=0 for the whole run; these tests are about the sweep itself
 const { Database } = await import("bun:sqlite");
 const { db, useDatabase } = await import("../src/core/db");
 useDatabase(new Database(":memory:"));
