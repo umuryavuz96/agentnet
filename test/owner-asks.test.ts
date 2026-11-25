@@ -278,6 +278,15 @@ test("owner-asks: a follow-up detail lands as an owner item on its open goal; co
   await oa.coverageTick(Date.now() + 60_000);
   expect(seen).toContain("make the chart wider"); expect(seen.split("Items:")[1]).not.toContain("make the chart wider");
 });
+test("owner-asks: an owner item added after the brief items never takes a step that has an item (no unique-key crash)", async () => {
+  const g = (await oa.ingest(msg("97", "redraw the agents map with rounded cards and motion"), cfg, T0))!;
+  await agent(["redraw the agents map with rounded cards", "motion on state change"], `Goal: G${g}\n`);
+  expect(oa.itemsOf(g).map((i) => [i.origin, i.step_n])).toEqual([["brief", 1], ["brief", 2]]);
+  const it = oa.ownerMissing(g, "redraw the agents map with rounded cards and soft lines");
+  expect("error" in it).toBe(false);
+  expect(() => oa.syncGoal(g)).not.toThrow();
+  expect(oa.itemsOf(g).find((i) => i.origin === "owner")!.step_n).toBeNull();
+});
 test("owner-asks: a follow-up that names nothing of its goal starts a new goal", async () => {
   reply = (_s, input) => input.includes("His open goals") ? `{"kind":"goal","list":[],"about":null,"follow_up":${/^(\d+):/m.exec(input.split("His open goals:\n")[1]!)![1]}}` : '{"kind":"goal","list":[],"about":null}';
   const g = (await oa.ingest(msg("97", "https://x.com/someone/status/1 look at this tool"), cfg, T0))!;

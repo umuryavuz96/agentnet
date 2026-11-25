@@ -4,7 +4,7 @@
 // The request body carries one thing, the project folder: it must be an existing absolute directory and is quoted
 // for the shell. No command text from a request ever reaches a shell.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Hono } from "hono";
@@ -37,7 +37,7 @@ export const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 /** How the director session starts. clean: own home, the project attached with --add-dir. adopt: runs in the workspace, its instructions stay, agentnet precedence is appended.
  *  scan: adopt's folder, read-only phase (the plugin gate reads the env). No mode = the plain legacy command, no soul. */
 export type DirectorMode = "clean" | "adopt" | "scan";
-export interface CommandOpts { mode?: DirectorMode; repo?: string; port?: number; host?: string; resume?: string; promptFile?: string; home?: string; roots?: string[] }
+export interface CommandOpts { mode?: DirectorMode; repo?: string; port?: number; host?: string; resume?: string; promptFile?: string; home?: string; roots?: string[]; rootToken?: string }
 
 /** First message of the scan session: an interactive claude waits at an empty prompt otherwise (D8). It is the last argument, after every flag, because --add-dir style flags are variadic and would swallow it.
  *  --setting-sources user: the workspace's project and local settings (hooks, MCP approvals) never load, so claude has nothing to ask or to write into the workspace (D6, D9). --strict-mcp-config: project .mcp.json servers are ignored. */
@@ -46,8 +46,9 @@ export const SCAN_PROMPT = "Begin the scan.";
 /** The command that makes a Claude Code session the director: join as "root", then start claude with the plugin.
  *  AGENTNET_URL goes inside the substitution (a prefix before eval would apply too late for it) and only when the server is not on the default port, so a scratch instance never points at the real one. */
 export function directorCommand(dir: string, o: CommandOpts = {}): string {
-  const { mode, repo = REPO, port = PORT, host = HOST, resume, promptFile, home = join(ROOT, "director"), roots } = o;
-  const url = port === 3096 && host === "127.0.0.1" ? "" : `AGENTNET_URL=${sq(`http://${host}:${port}/api/v1/agentnet`)} `;
+  const { mode, repo = REPO, port = PORT, host = HOST, resume, promptFile, home = join(ROOT, "director"), roots, rootToken = join(ROOT, "run", "root.token") } = o;
+  // The join must carry run/root.token: without it /spawn answers 401 and the pane dies (the Resume / Start fresh buttons did nothing, owner msg 8154).
+  const url = `AGENTNET_ROOT_TOKEN_FILE=${sq(rootToken)} ` + (port === 3096 && host === "127.0.0.1" ? "" : `AGENTNET_URL=${sq(`http://${host}:${port}/api/v1/agentnet`)} `);
   // eval of an empty string succeeds, so a refused join used to fall through to claude with an empty --plugin-dir. unset first (a stale tmux env must not pass the test), then require the path join exports.
   const join_ = (p: string, who = "root Director") => `unset AGENTNET_MOD && eval "$(${url}${sq(join(repo, "scripts", "agentnet-join.sh"))} ${who} ${sq(p)})" && [ -n "$AGENTNET_MOD" ]`;
   const tail = `claude --plugin-dir "$AGENTNET_MOD"${promptFile ? ` --append-system-prompt-file ${sq(promptFile)}` : ""}`;
@@ -108,6 +109,19 @@ export function killScanSession(session: string = scanSession(), t: Tmux = realT
 /** claude keeps a conversation at <config>/projects/<cwd with every non-alphanumeric char as "-">/<session>.jsonl. */
 export const transcriptSlug = (dir: string): string => dir.replace(/[^A-Za-z0-9]/g, "-");
 export const transcriptPath = (dir: string, session: string, home = homedir()): string => join(directorOwnDir() ? agentConfigDir(DIRECTOR_DIR) : join(home, ".claude"), "projects", transcriptSlug(dir), `${session}.jsonl`);
+/** Resume needs the transcript where claude will look for it. On its own config dir the director used to run on ~/.claude (the env never reached claude),
+ *  so a conversation found only there is copied into the own dir (the original stays). Without an own dir: ~/.claude as before. */
+export function ensureTranscript(dir: string, session: string, own: string | null = directorOwnDir() ? agentConfigDir(DIRECTOR_DIR) : null, home = homedir()): boolean {
+  const name = join("projects", transcriptSlug(dir), `${session}.jsonl`), legacy = join(home, ".claude", name);
+  if (!own) return existsSync(legacy);
+  const mine = join(own, name);
+  if (existsSync(mine)) return true;
+  if (!existsSync(legacy)) return false;
+  try { mkdirSync(dirname(mine), { recursive: true, mode: 0o700 }); copyFileSync(legacy, mine); return true; } catch { return false; }
+}
+/** Give the whole command the config dir and the account secret. A prefix (`VAR=x cd ...`) applies to `cd` only and claude never saw them:
+ *  it ran on ~/.claude, sat at the login screen when that was not signed in, and Resume found no transcript. The secret is read by the shell, never put in the text. */
+export const withConfigEnv = (cmd: string, configDir: string, env: string, file: string): string => `export CLAUDE_CONFIG_DIR=${shq(configDir)} ${env}="$(cat ${shq(file)})" && ${cmd}`;
 /** The director's own config dir name under agents/ (step 3): used only when the default account has a secret and the base is complete. */
 const DIRECTOR_DIR = "director";
 const directorOwnDir = () => usesOwnDir({ account: DEFAULT_ACCOUNT });
@@ -159,7 +173,7 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
   let resume: string | undefined, why: string | undefined;
   if (opts.resume) {
     if (!SESSION_ID.test(opts.resume)) why = "The last session id is not valid.";
-    else if (!(opts.hasTranscript ?? ((dir, id) => existsSync(transcriptPath(dir, id))))(d.dir, opts.resume)) why = "The last conversation file was not found.";
+    else if (!(opts.hasTranscript ?? ((dir, id) => ensureTranscript(dir, id)))(d.dir, opts.resume)) why = "The last conversation file was not found.";
     else resume = opts.resume;
   }
   const mode = opts.mode, root = opts.root ?? ROOT;
@@ -178,7 +192,7 @@ export function startDirector(rawDir: unknown, run: (cmd: string, args: string[]
   if (directorOwnDir()) { // its own config dir (agents/director/claude), logged in from the default account; the secret is read by the shell, never put in the command
     try {
       const p = prepareConfig(DIRECTOR_DIR, { project: cwd, account: DEFAULT_ACCOUNT });
-      if (p.env && p.file) cmd = `CLAUDE_CONFIG_DIR=${shq(p.dir)} ${p.env}="$(cat ${shq(p.file)})" ${cmd}`;
+      if (p.env && p.file) cmd = withConfigEnv(cmd, p.dir, p.env, p.file);
     } catch (e) { logEvent("warn", "director config dir not prepared", { error: (e as Error).message }); }
   } else {
     const tr = acceptTrust([cwd]); // no account or no complete base: ~/.claude as before (removed at step 6)

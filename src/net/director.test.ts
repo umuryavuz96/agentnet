@@ -6,16 +6,20 @@ const { pickFolder, triageState, directorCommand, checkDir, startDirector, sq, S
 const { directorRoutes } = await import("./director");
 const { Hono } = await import("hono");
 const { isPanelWrite, toLegacy } = await import("./mount");
+const { ROOT } = await import("../core/config");
 
 const all = { bun: true, claude: true, tmux: true, python3: true };
 describe("director setup", () => {
   test("sq quotes a quote", () => expect(sq("a'b")).toBe(`'a'\\''b'`));
   test("command joins as root and starts claude with the plugin", () => {
-    const c = directorCommand("/tmp/my proj", { repo: "/r", port: 3096, host: "127.0.0.1" });
-    expect(c).toBe(`cd '/tmp/my proj' && unset AGENTNET_MOD && eval "$('/r/scripts/agentnet-join.sh' root Director '/tmp/my proj')" && [ -n "$AGENTNET_MOD" ] && claude --plugin-dir "$AGENTNET_MOD"`);
+    const c = directorCommand("/tmp/my proj", { repo: "/r", port: 3096, host: "127.0.0.1", rootToken: "/h/run/root.token" });
+    expect(c).toBe(`cd '/tmp/my proj' && unset AGENTNET_MOD && eval "$(AGENTNET_ROOT_TOKEN_FILE='/h/run/root.token' '/r/scripts/agentnet-join.sh' root Director '/tmp/my proj')" && [ -n "$AGENTNET_MOD" ] && claude --plugin-dir "$AGENTNET_MOD"`);
   });
   test("a non-default port is carried in AGENTNET_URL", () => {
-    expect(directorCommand("/x", { repo: "/r", port: 4321, host: "127.0.0.1" })).toContain(`eval "$(AGENTNET_URL='http://127.0.0.1:4321/api/v1/agentnet' '/r/scripts/agentnet-join.sh' root`);
+    expect(directorCommand("/x", { repo: "/r", port: 4321, host: "127.0.0.1", rootToken: "/t" })).toContain(`eval "$(AGENTNET_ROOT_TOKEN_FILE='/t' AGENTNET_URL='http://127.0.0.1:4321/api/v1/agentnet' '/r/scripts/agentnet-join.sh' root`);
+  });
+  test("the join carries the home's root token by default (a join without it gets 401 and the pane dies)", () => {
+    expect(directorCommand("/x", { repo: "/r", port: 3096, host: "127.0.0.1" })).toContain(`AGENTNET_ROOT_TOKEN_FILE=${sq(join(ROOT, "run", "root.token"))} '/r/scripts/agentnet-join.sh' root`);
   });
   test("checkDir: relative, missing, file, ok", () => {
     const d = mkdtempSync(join(tmpdir(), "dir-"));
@@ -127,10 +131,10 @@ describe("moveDirector (a hand-started director goes into agentnet-root)", () =>
 });
 
 describe("director modes", () => {
-  const o = { repo: "/r", port: 3096, host: "127.0.0.1", promptFile: "/p/d.md" };
+  const o = { repo: "/r", port: 3096, host: "127.0.0.1", promptFile: "/p/d.md", rootToken: "/t" };
   test("adopt: workspace cwd, prompt file, no --add-dir", () => {
     const c = directorCommand("/w", { ...o, mode: "adopt" });
-    expect(c).toBe(`cd '/w' && unset AGENTNET_MOD && eval "$('/r/scripts/agentnet-join.sh' root Director '/w')" && [ -n "$AGENTNET_MOD" ] && claude --plugin-dir "$AGENTNET_MOD" --append-system-prompt-file '/p/d.md'`);
+    expect(c).toBe(`cd '/w' && unset AGENTNET_MOD && eval "$(AGENTNET_ROOT_TOKEN_FILE='/t' '/r/scripts/agentnet-join.sh' root Director '/w')" && [ -n "$AGENTNET_MOD" ] && claude --plugin-dir "$AGENTNET_MOD" --append-system-prompt-file '/p/d.md'`);
     expect(c).not.toContain("--add-dir");
   });
   test("clean: own home as cwd, workspace via --add-dir", () => {

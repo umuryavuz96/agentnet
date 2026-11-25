@@ -3,15 +3,21 @@
 // director to every region and from each lead to its reports, a message as light running up to the nearest shared boss and
 // down. Ported from docs/redesign/proto/fiber-2d.js onto live data (net.agents, teams, net.messages). Fit to view: try stage
 // widths, keep the largest scale that fits with a 24 px margin (0.7 to 1.6); rerun on resize and when agents change.
+// Look (2026-11-23): a team is a line in its own colour, an agent is a card on it (AgentCard.vue). The line docks at the height
+// of the card's monogram; it steps back while the agent is idle and carries one soft pulse every few seconds while it works. A
+// message is one beam of light in its kind's colour that runs the lines from sender to receiver. GSAP runs the camera glide and the team-name intro;
+// card and fiber motion stay on the Web Animations code below (one system per property).
+import gsap from "gsap";
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from "vue";
 import { net, teams, layoutKey, teamsKey, placing, ctxView, type AgentRow } from "../net";
 import { crewState, modelShort, type CrewState } from "../crewTree";
 import { agoWords } from "../trail";
-import FiberCard from "./FiberCard.vue";
+import AgentCard from "./AgentCard.vue";
+import Icon from "../ui/Icon.vue";
 import TrailPeek from "./TrailPeek.vue";
 
-const props = defineProps<{ selected: string | null; cover?: number; hadRoot?: boolean }>();
-const emit = defineEmits<{ select: [id: string] }>();
+const props = defineProps<{ selected: string | null; cover?: number; hadRoot?: boolean; last?: { dir: string | null; at: number } | null }>();
+const emit = defineEmits<{ select: [id: string]; details: [id: string]; resume: []; fresh: [] }>();
 
 const strip = (n: string) => n.replace(/#\d+$/, "");
 const live = computed(() => Object.values(net.agents).filter((a) => a.life === "live" && !placing.has(a.name)));
@@ -95,7 +101,14 @@ let userView = false;
 function applyView() {
   const v = view.value, t = phone.value && v.k === 1 ? "none" : `translate(${v.x}px,${v.y}px) scale(${v.k})`;
   if (st.value) st.value.style.transform = t;
+  // the plan grid moves with the camera (paint only): position and cell size follow the view
+  const h = host.value, on = t !== "none";
+  if (h) { h.style.setProperty("--gx", (on ? v.x : 0) + "px"); h.style.setProperty("--gy", (on ? v.y : 0) + "px"); h.style.setProperty("--g1", 28 * (on ? v.k : 1) + "px"); h.style.setProperty("--g5", 140 * (on ? v.k : 1) + "px"); }
 }
+/** Camera glide (GSAP, transform only): Fit and bringing a picked card into view travel there; a touch of the map stops it. */
+let camTween: gsap.core.Tween | null = null, glide = false;
+const stopCam = () => { camTween?.kill(); camTween = null; };
+const gctx = gsap.context(() => {});
 const KMIN = 0.4, KMAX = 2;
 function zoomAt(f: number, cx: number, cy: number) {
   const v = view.value, k = Math.max(KMIN, Math.min(KMAX, v.k * f)), r = k / v.k;
@@ -109,6 +122,7 @@ const ptrs = new Map<number, { x: number; y: number }>();
 let drag: { x: number; y: number; vx: number; vy: number; moved: boolean } | null = null, pinch: { d: number; k: number } | null = null, panned = false;
 const local = (e: { clientX: number; clientY: number }) => { const r = host.value!.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
 const onDown = (e: PointerEvent) => {
+  stopCam();
   ptrs.set(e.pointerId, local(e));
   if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, k: view.value.k }; drag = null; panned = true; }
   else if (ptrs.size === 1 && !phone.value) drag = { x: e.clientX, y: e.clientY, vx: view.value.x, vy: view.value.y, moved: false };
@@ -135,22 +149,25 @@ const onUp = (e: PointerEvent) => {
 /** Trackpad like Figma/Maps: two-finger scroll pans, pinch (sent as ctrl+wheel) zooms at the cursor. */
 const onWheel = (e: WheelEvent) => {
   if (phone.value) return;
-  e.preventDefault();
+  e.preventDefault(); stopCam();
   const m = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? H.value : 1, dx = e.deltaX * m, dy = e.deltaY * m;
   if (e.ctrlKey || e.metaKey) { const p = local(e); zoomAt(Math.exp(-dy * 0.01), p.x, p.y); return; }
   userView = true; view.value = { ...view.value, x: view.value.x - dx, y: view.value.y - dy }; applyView();
 };
 const swallow = (e: MouseEvent) => { if (panned) { e.stopPropagation(); e.preventDefault(); } };
-const refit = () => { userView = false; needFit = true; if (phone.value) { host.value!.scrollLeft = 0; } void layout(); };
+const refit = () => { userView = false; needFit = true; glide = true; if (phone.value) { host.value!.scrollLeft = 0; } void layout(); };
 const onDbl = (e: MouseEvent) => { if (!(e.target as Element).closest(".fcard, .fquiet, .fit")) refit(); };
-const paths = ref<{ key: string; d: string; sel: boolean; hot: boolean }[]>([]);
+const paths = ref<{ key: string; d: string; sel: boolean; hot: boolean; th: number | null; q: boolean; len: number }[]>([]);
 /** Fibers and ports that just left: drawn once more at their last place while they fade out. */
 const ghosts = ref<{ key: string; d: string; x: number; y: number }[]>([]);
 let ghostN = 0;
 type Pt = [number, number];
 const link = new Map<string, { up: string; pts: Pt[]; rg: string }>();
 const chainOf = (n: string) => { const c = [n]; while (link.has(c[0])) c.unshift(link.get(c[0])!.up); return c; };
-function dPath(pts: Pt[], rad = 10) {
+/** Where a line enters a card: the height of the middle of its dot mark. A line leaves a card (or a team node) from a ring on its
+ *  bottom edge, SPINE px in from the left, and runs down past the cards under it. */
+const DOCK = 28, SPINE = 20;
+function dPath(pts: Pt[], rad = 14) {
   let s = `M${pts[0][0]},${pts[0][1]}`;
   for (let i = 1; i < pts.length - 1; i++) {
     const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], [x2, y2] = pts[i + 1];
@@ -166,10 +183,11 @@ function lbox(el: HTMLElement) { const s = st.value!; let x = 0, y = 0, e: HTMLE
 async function layout() {
   const me = ++seq; await nextTick(); const h = host.value, s = st.value; if (!h || !s || me !== seq) return;
   W.value = h.clientWidth; H.value = h.clientHeight;
-  const M = 24, BOT = 52, aw = W.value - 2 * M, ah = H.value - BOT - 2 * M, hr = () => h.getBoundingClientRect();
+  stopCam(); const from = { ...view.value };
+  const M = 24, TOP = 44, BOT = 52, aw = W.value - 2 * M, ah = H.value - TOP - BOT - 2 * M, hr = () => h.getBoundingClientRect();
   const oldW = s.offsetWidth;
   s.style.transform = "none"; s.style.left = "0px"; s.style.top = "0px"; s.style.width = "";
-  let fit = { x: 0, y: 0, k: 1 };
+  let fit = { x: 0, y: 0, k: 1 }, best_h = 0;
   const rsEls = () => [...s.querySelectorAll<HTMLElement>(".frg:not(.fm-gone), .fdir > .fcard")];
   if (!phone.value) {
     const measure = (): [number, number] => { const rs = rsEls().map(lbox); if (!rs.length) return [1, 1]; return [Math.max(...rs.map((r) => r.r)) - Math.min(...rs.map((r) => r.l)) + 4, Math.max(...rs.map((r) => r.b)) + 4]; };
@@ -179,10 +197,14 @@ async function layout() {
       if (!best || kk > best.k + 0.01 || (Math.abs(kk - best.k) <= 0.01 && fill > best.fill)) best = { sw, w, h: hh, k: kk, fill };
     }
     const k = Math.max(0.7, best!.k); s.style.width = best!.sw + "px"; s.style.width = measure()[0] + "px";
-    fit = { k, x: M + Math.max(0, (aw - best!.w * k) / 2), y: M + Math.max(0, (ah - best!.h * k) / 2) };
+    fit = { k, x: M + Math.max(0, (aw - best!.w * k) / 2), y: TOP + M + Math.max(0, (ah - best!.h * k) / 2) }; // TOP: the page's controls float over the map's top edge
+    best_h = best!.h;
   } else s.style.width = W.value + "px";
-  // fit only on open, resize and Fit; a live change keeps the camera where it is (the stage stays centred on the same point)
-  if (needFit && !userView) view.value = fit;
+  // fit on open, resize and Fit; a live change keeps the camera where it is (the stage stays centred on the same point), unless
+  // the user has not moved the camera and the map no longer fits: a card grew or an agent joined, so the lowest card would
+  // slide under the Recent strip (verifier-4, 1440x900)
+  const spill = !phone.value && !userView && (view.value.y + best_h * view.value.k > H.value - BOT - M + 1 || view.value.k > fit.k + 0.01);
+  if ((needFit || spill) && !userView) { if (spill && !needFit) glide = true; view.value = fit; }
   else if (!phone.value && oldW) view.value = { ...view.value, x: view.value.x + ((oldW - s.offsetWidth) / 2) * view.value.k };
   if (rsEls().length) needFit = false;
   applyView();
@@ -192,10 +214,16 @@ async function layout() {
     const m = hr(), r = sc.getBoundingClientRect();
     if (phone.value) h.scrollTop += r.top - m.top - 40;
     // the side panel floats over the right of the map (the map keeps its size): keep the picked card in the part it leaves free
-    else if (!userView && (r.left < m.left + M || r.right > m.right - (props.cover ?? 0) - M || r.top < m.top + M || r.bottom > m.bottom - BOT)) {
-      view.value = { ...view.value, x: view.value.x + (m.left + (W.value - (props.cover ?? 0)) / 2 - (r.left + r.width / 2)), y: view.value.y + (m.top + (H.value - BOT) / 2 - (r.top + r.height / 2)) }; applyView();
+    else if (!userView && (r.left < m.left + M || r.right > m.right - (props.cover ?? 0) - M || r.top < m.top + TOP + M || r.bottom > m.bottom - BOT)) {
+      view.value = { ...view.value, x: view.value.x + (m.left + (W.value - (props.cover ?? 0)) / 2 - (r.left + r.width / 2)), y: view.value.y + (m.top + (H.value - BOT) / 2 - (r.top + r.height / 2)) }; applyView(); glide = true;
     }
   }
+  const to = { ...view.value };
+  if (glide && booted && !reduce && !phone.value && (Math.abs(to.x - from.x) > 1 || Math.abs(to.y - from.y) > 1 || Math.abs(to.k - from.k) > 0.005)) {
+    const cam = { ...from }; view.value = from; applyView();
+    camTween = gsap.to(cam, { ...to, duration: 0.55, ease: "power3.out", onUpdate: () => { view.value = { ...cam }; applyView(); }, onComplete: () => { camTween = null; fibers(); } });
+  }
+  glide = false;
   fibers(); flip(); drawNew(); watchBoxes();
 }
 /** Fibers in stage coordinates from the cards as drawn (FLIP transforms included), so they follow moving cards every frame.
@@ -204,7 +232,7 @@ function fibers() {
   const s = st.value, h = host.value; if (!s || !h) return;
   const o = s.getBoundingClientRect(), kk = phone.value ? 1 : view.value.k, box = (el: Element) => { const r = el.getBoundingClientRect(); return { l: (r.left - o.left) / kk, t: (r.top - o.top) / kk, r: (r.right - o.left) / kk, b: (r.bottom - o.top) / kk }; };
   link.clear(); const extra: { key: string; pts: Pt[]; rg: string }[] = [];
-  const rootEl = root.value ? cardEl(root.value.id) : null, rc = rootEl ? box(rootEl) : null;
+  const rootEl = cardEl(ROOT_ID()), rc = rootEl ? box(rootEl) : null;
   const rbox = regions.value.map((r) => { const el = s.querySelector<HTMLElement>(`.frg[data-r="${CSS.escape(r.id)}"]`); if (!el) return null; const b = box(el), [ox, oy] = running(el); return { r, el, b: { l: b.l + ox, t: b.t + oy, r: b.r + ox, b: b.b + oy }, row: el.offsetTop }; }).filter((x): x is NonNullable<typeof x> => !!x);
   // rows of regions (same layout top), so a wrapped row's fiber drops through a gap that is clear in every row above it
   const rowTops = [...new Set(rbox.map((x) => x.row))].sort((a, b) => a - b), rowOf = (t: number) => rowTops.indexOf(t);
@@ -215,21 +243,21 @@ function fibers() {
   };
   const clean = (pts: Pt[]) => pts.filter((p0, j) => !j || p0[0] !== pts[j - 1][0] || p0[1] !== pts[j - 1][1]);
   for (const { r, el, b, row } of rbox) {
-    const dot = box(el.querySelector(".frg-h .fdot")!), dx = (dot.l + dot.r) / 2; // the region's entry dot sits on its top edge above the team dot
-    if (rc && phone.value) { const tx = rc.l - 14; link.set("rg:" + r.id, { up: ROOT_ID(), rg: r.id, pts: clean([[rc.l, rc.t + 21], [tx, rc.t + 21], [tx, b.t - 12], [dx, b.t - 12], [dx, b.t]]) }); }
+    const hb0 = box(el.querySelector(".frg-h")!), hb = { l: hb0.l + (b.l - box(el).l), t: hb0.t + (b.t - box(el).t), r: hb0.r + (b.l - box(el).l), b: hb0.b + (b.t - box(el).t) }, dx = (hb.l + hb.r) / 2, sx = hb.l + SPINE; // the trunk enters the team node at its top centre
+    if (rc && phone.value) { const tx = rc.l - 14; link.set("rg:" + r.id, { up: ROOT_ID(), rg: r.id, pts: clean([[rc.l, rc.t + DOCK], [tx, rc.t + DOCK], [tx, hb.t - 12], [dx, hb.t - 12], [dx, hb.t]]) }); }
     else if (rc) {
-      const cx = (rc.l + rc.r) / 2, bus = rc.b + 13, ri = rowOf(row), gx = ri > 0 ? viaFor(dx, ri) : null;
-      link.set("rg:" + r.id, { up: ROOT_ID(), rg: r.id, pts: clean(gx == null ? [[cx, rc.b], [cx, bus], [dx, bus], [dx, b.t]] : [[cx, rc.b], [cx, bus], [gx, bus], [gx, b.t - 13], [dx, b.t - 13], [dx, b.t]]) });
+      const cx = (rc.l + rc.r) / 2, bus = rc.b + 20, ri = rowOf(row), gx = ri > 0 ? viaFor(dx, ri) : null;
+      link.set("rg:" + r.id, { up: ROOT_ID(), rg: r.id, pts: clean(gx == null ? [[cx, rc.b], [cx, bus], [dx, bus], [dx, hb.t]] : [[cx, rc.b], [cx, bus], [gx, bus], [gx, hb.t - 13], [dx, hb.t - 13], [dx, hb.t]]) });
     }
     el.querySelectorAll<HTMLElement>(".fcard, .fquiet").forEach((c) => {
       const id = c.dataset.id, cb = box(c), nested = c.parentElement!.classList.contains("fkids");
       let x: number, up: string;
       // one continuous line: a top card hangs off the region's entry dot down the gutter; a report hangs off its lead's own dot,
-      // stepping 9 px out into the gap left of the lead and down, so every dot carries a line in and a line out (leaf cards only in)
-      const y = cb.t + (c.classList.contains("fquiet") ? 15 : 21);
+      // stepping 14 px out into the gap left of the lead and down, so every dot carries a line in and a line out (leaf cards only in)
+      const y = cb.t + (c.classList.contains("fquiet") ? 16 : DOCK);
       let pts: Pt[];
-      if (nested) { const be = c.parentElement!.previousElementSibling as HTMLElement, pb = box(be), py = pb.t + 21; x = pb.l - 9; up = be.dataset.id!; pts = [[pb.l, py], [x, py], [x, y], [cb.l, y]]; }
-      else { x = dx; up = "rg:" + r.id; pts = [[x, b.t], [x, y], [cb.l, y]]; }
+      if (nested) { const be = c.parentElement!.previousElementSibling as HTMLElement, pb = box(be); x = pb.l + SPINE; up = be.dataset.id!; pts = [[x, pb.b], [x, y], [cb.l, y]]; }
+      else { x = sx; up = "rg:" + r.id; pts = [[x, hb.b], [x, y], [cb.l, y]]; }
       if (id) link.set(id, { up, rg: r.id, pts }); else extra.push({ key: "q" + extra.length + r.id, pts, rg: r.id });
     });
   }
@@ -244,17 +272,29 @@ const fiberGeo = ref<{ links: { key: string; pts: Pt[]; rg: string }[]; extra: {
 const fine = typeof matchMedia === "function" && matchMedia("(hover: hover) and (pointer: fine)").matches;
 const hover = ref<{ id: string; x: number; y: number; on: boolean; ox?: string } | null>(null), pop = ref<HTMLElement | null>(null);
 let hoverT = 0, leaveT = 0;
+// One clock for hover: nothing changes until `hover.on` flips, and every part (card, lines, ports, neighbours, peek) reads that
+// one flag in the same render, with the same duration and easing (--hv-d, --hv-e). In waits HV_IN so a pass-over does nothing;
+// out waits HV_OUT so the pointer can reach the peek.
+const HV_IN = 70, HV_OUT = 120;
+const hotId = computed(() => (hover.value?.on ? hover.value.id : null));
+const shown = ref<{ id: string; x: number; y: number; ox?: string } | null>(null);
+watch(hover, (v) => { if (v) shown.value = v; }, { flush: "sync" });
 function onHover(id: string, on: boolean, el: HTMLElement) {
   if (!fine || phone.value) return;
   clearTimeout(leaveT); clearTimeout(hoverT);
-  if (!on) { leaveT = window.setTimeout(() => { hover.value = null; }, 160); return; }
-  hoverT = window.setTimeout(() => void place(id, el), hover.value ? 60 : 250);
+  if (!on) { leaveT = window.setTimeout(() => { hover.value = null; }, HV_OUT); return; }
+  if (hotId.value === id) return;
+  hoverT = window.setTimeout(() => void place(id, el), HV_IN);
 }
+// a team's field lights with a hovered card inside it, or with its own header, on the same clock
+const rgHov = ref<string | null>(null); let rgT = 0;
+const onRgHover = (id: string, on: boolean) => { if (!fine || phone.value) return; clearTimeout(rgT); rgT = window.setTimeout(() => { rgHov.value = on ? id : null; }, on ? HV_IN : HV_OUT); };
+const hotRg = computed(() => { const id = hotId.value; return (id && people.value.find((p) => p.id === id)?.team) || rgHov.value; });
 const popIn = () => clearTimeout(leaveT);
-const popOut = () => { leaveT = window.setTimeout(() => { hover.value = null; }, 160); };
+const popOut = () => { leaveT = window.setTimeout(() => { hover.value = null; }, HV_OUT); };
 async function place(id: string, el: HTMLElement) {
   if (drag?.moved || !el.isConnected) return;
-  hover.value = { id, x: 0, y: 0, on: false }; await nextTick(); const pe = pop.value, h = host.value; if (!pe || !h) return;
+  const was = hover.value; hover.value = { id, x: was?.x ?? 0, y: was?.y ?? 0, on: false, ox: was?.ox }; await nextTick(); const pe = pop.value, h = host.value; if (!pe || !h) return;
   const m = h.getBoundingClientRect(), r = el.getBoundingClientRect(), pw = pe.offsetWidth, ph = pe.offsetHeight, right = W.value - (props.cover ?? 0) - 8;
   // right of the card first (its fibers enter on the left), then left of it; kept inside the part of the map the panel leaves free
   let x = r.right - m.left + 12, ox = "left"; if (x + pw > right) { x = r.left - m.left - 12 - pw; ox = "right"; } x = Math.max(8, Math.min(x, right - pw));
@@ -262,7 +302,7 @@ async function place(id: string, el: HTMLElement) {
   hover.value = { id, x, y, on: true, ox }; // it grows from the corner next to its card
 }
 const peek = computed(() => {
-  const id = hover.value?.id; if (!id) return null; const p = people.value.find((x) => x.id === id); if (!p) return null;
+  const id = shown.value?.id; if (!id) return null; const p = people.value.find((x) => x.id === id); if (!p) return null;
   const r = p.row, c = ctxView(r), tasks = r.tasks ?? [], cur = tasks.find((t) => t.status === "in_progress"), done = tasks.filter((t) => t.status === "done").length, now = net.now || Date.now();
   const team = regions.value.find((x) => x.list.some((q) => q.id === id));
   const rows: [string, string][] = [];
@@ -285,16 +325,36 @@ const selKeys = computed(() => {
   return new Set(chainOf(sel));
 });
 const hotKeys = computed(() => {
-  const id = hover.value?.id, g = fiberGeo.value; if (!id) return new Set<string>();
+  const id = hotId.value, g = fiberGeo.value; if (!id) return new Set<string>();
   const out = new Set(chainOf(id)); for (const l of g.links) if (chainOf(l.key).includes(id)) out.add(l.key);
   return out;
 });
-const ports = ref<{ k: string; x: number; y: number; sel: boolean; hot: boolean }[]>([]);
-watch([fiberGeo, selKeys, hotKeys], () => {
+/** Lines that carry work: the line into each working agent and the trunk into its team. The rest of an agent's lines step back while it is idle. */
+const workIds = computed(() => new Set(people.value.filter((p) => p.state === "working").flatMap((p) => [p.id, "rg:" + p.team])));
+const idleIds = computed(() => new Set(people.value.filter((p) => p.state === "idle").map((p) => p.id)));
+/** The work pulse: one streak per line every PULSE ms, the trunk first, then each level under it, each line a little after the
+ *  one above. Every line takes its delay from the page clock when it first shows, so all pulses stay on one clock. */
+const PULSE = 3200, pulseAt = new Map<string, number>();
+const pulses = computed(() => {
+  let i = 0;
+  return paths.value.filter((p) => workIds.value.has(p.key)).map((p) => {
+    const trunk = p.key.startsWith("rg:"); let at = pulseAt.get(p.key);
+    if (at == null) { at = (trunk ? 0 : (chainOf(p.key).length - 2) * 1300) + (trunk ? 0 : i * 250) - (performance.now() % PULSE) - PULSE * 2; pulseAt.set(p.key, at); }
+    if (!trunk) i++;
+    return { key: p.key, d: p.d, len: p.len, at };
+  });
+});
+const pathLen = (pts: Pt[]) => { let n = 0; for (let j = 1; j < pts.length; j++) n += Math.hypot(pts[j][0] - pts[j - 1][0], pts[j][1] - pts[j - 1][1]); return Math.round(n); };
+interface Port { k: string; x: number; y: number; sel: boolean; hot: boolean; st: string; th: number | null }
+const ports = ref<Port[]>([]);
+/** A fiber inside a team takes the team's colour; the trunks from the director and the "No team" group stay neutral. */
+const lineHue = (key: string, rg: string) => (key.startsWith("rg:") || rg === "open" ? null : hueOf.value.get(rg) ?? null);
+watch([fiberGeo, selKeys, hotKeys, () => people.value.map((p) => p.id + p.state).join("|")], () => {
   const g = fiberGeo.value, sk = selKeys.value, hk = hotKeys.value;
   const was = paths.value;
-  // opaque strokes cover each other: the hovered and the selected chain are drawn last, so a shared trunk shows their colour
-  paths.value = [...g.links, ...g.extra].map((l) => ({ key: l.key, d: dPath(l.pts), sel: sk.has(l.key), hot: hk.has(l.key) })).sort((a, b) => Number(a.sel) * 2 + Number(a.hot) - Number(b.sel) * 2 - Number(b.hot));
+  // the order never changes (moving a path in the DOM would cut its transition): the hovered and the picked chain are overlays
+  // above every line, shown by opacity, so a shared trunk shows their colour
+  paths.value = [...g.links, ...g.extra].map((l) => ({ key: l.key, d: dPath(l.pts), sel: sk.has(l.key), hot: hk.has(l.key), th: lineHue(l.key, l.rg), q: idleIds.value.has(l.key) || !link.has(l.key), len: pathLen(l.pts) }));
   if (booted) {
     const now = new Set(paths.value.map((p) => p.key)), out = was.filter((p) => !now.has(p.key));
     if (out.length) {
@@ -305,11 +365,13 @@ watch([fiberGeo, selKeys, hotKeys], () => {
   // ports: one dot per fiber end, shared ends drawn once; a port is picked or lit when any fiber through it is
   // a port is named after the card or region it sits on (the fiber's own end, or the start it shares with its siblings),
   // so it keeps its element while fibers come and go around it
-  const pm = new Map<string, { k: string; x: number; y: number; sel: boolean; hot: boolean }>(), names = new Set<string>();
+  const pm = new Map<string, Port>(), names = new Set<string>(), stOf = new Map(people.value.map((p) => [p.id, p.state as string]));
   for (const l of [...g.links, ...g.extra]) [l.pts[0], l.pts[l.pts.length - 1]].forEach((q, end) => {
     const key = Math.round(q[0]) + ":" + Math.round(q[1]); let cur = pm.get(key);
-    if (!cur) { let k = end ? "b:" + l.key : "a:" + (link.get(l.key)?.up ?? l.key); while (names.has(k)) k += "'"; names.add(k); cur = { k, x: q[0], y: q[1], sel: false, hot: false }; pm.set(key, cur); }
+    if (!cur) { let k = end ? "b:" + l.key : "a:" + (link.get(l.key)?.up ?? l.key); while (names.has(k)) k += "'"; names.add(k); cur = { k, x: q[0], y: q[1], sel: false, hot: false, st: "", th: l.rg === "open" ? null : hueOf.value.get(l.rg) ?? null }; pm.set(key, cur); }
     cur.sel ||= sk.has(l.key); cur.hot ||= hk.has(l.key);
+    // the end of a fiber on a card is that agent's state lamp (a quiet fold's end is an unlit lamp)
+    if (end) cur.st = stOf.get(l.key) ?? (l.key.startsWith("rg:") ? cur.st : cur.st || "idle");
   });
   ports.value = [...pm.values()];
 });
@@ -356,6 +418,11 @@ function flip() {
   const fresh = [...cur].filter(([key]) => !prevPos.has(key));
   const base = boot ? 0 : Math.min(...fresh.map(([key, c]) => (c.par && !prevPos.has(c.par) ? Infinity : key.startsWith("r:") ? 0 : nodeAt(key, c.el) - 200)));
   for (const [key, c] of fresh) fade(c.el, nodeAt(key, c.el) - base);
+  // team signage comes in word by word after its line (GSAP; the words are aria-hidden copies, the name itself is never split)
+  if (!reduce) gctx.add(() => {
+    for (const [key, c] of fresh) { if (!key.startsWith("r:")) continue; const ws = c.el.querySelectorAll(".fw"); if (ws.length) gsap.from(ws, { yPercent: 70, opacity: 0, duration: 0.5, ease: "power3.out", stagger: 0.05, delay: Math.max(0, nodeAt(key, c.el) - base) / 1000, clearProps: "transform,opacity" }); }
+    if (boot && host.value) gsap.from(host.value.querySelectorAll(".fit, .fstrip"), { opacity: 0, duration: 0.4, delay: 0.7, ease: "power1.out", clearProps: "opacity" });
+  });
   if (!boot) {
     for (const [key, c] of cur) {
       const p = prevPos.get(key); if (!p) continue;
@@ -401,17 +468,19 @@ onUpdated(() => {
 });
 // a card can change height from inside (its trail line, a wrapped doing line) without this component re-rendering:
 // watch every card and region box, and glide the rest of the map to the new places
+// a card under the Recent strip (or past the map's bottom) while the camera is the untouched fit
+const spills = () => { const h = host.value, sp = stripEl.value; if (!h || phone.value) return false; const lim = (sp?.getBoundingClientRect().top ?? h.getBoundingClientRect().bottom) - 4; return [...h.querySelectorAll<HTMLElement>(".fcard")].some((c) => c.getBoundingClientRect().bottom > lim); };
 let cro: ResizeObserver | null = null, croRaf = 0;
 const watchBoxes = () => {
   if (typeof ResizeObserver === "undefined" || !st.value) return;
-  cro ??= new ResizeObserver(() => { if (croRaf) return; croRaf = requestAnimationFrame(() => { croRaf = 0; flip(); fibers(); }); });
+  cro ??= new ResizeObserver(() => { if (croRaf) return; croRaf = requestAnimationFrame(() => { croRaf = 0; flip(); fibers(); if (!userView && spills()) soon(); }); });
   cro.disconnect(); st.value.querySelectorAll(".fcard, .fquiet, .frg").forEach((e) => cro!.observe(e));
 };
 const ROOT_ID = () => root.value?.id ?? "root";
 /** One calm hue per team, stable across reloads (hash of the id); greens, ambers and reds stay free for state. */
-// six hues 60 degrees apart (rose, amber, green, teal, blue, violet). Each team keeps the hue its id hashes to unless an earlier
+// five line colours (cyan, blue, indigo, violet, magenta), all clear of the state colours. Each team keeps the hue its id hashes to unless an earlier
 // region took it or it sits next to the previous region's hue on the wheel; then the next free hue in turn.
-const HUES = [350, 45, 120, 175, 220, 280];
+const HUES = [195, 225, 260, 295, 330];
 const hashId = (id: string) => { let h = 0; for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
 const hueOf = computed(() => {
   const m = new Map<string, number>(), used = new Set<number>(); let prev = -9;
@@ -440,12 +509,15 @@ const route = computed<Pt[] | null>(() => {
 });
 const beamD = computed(() => (route.value ? dPath(route.value) : null));
 const beamCol = computed(() => (flight.value ? kindOf(flight.value.kind)[0] : "#38c6d9"));
-// The beam is drawn outside Vue: each frame sets a dash on the tail, the ends of its gradient and the head's transform.
+// The message beam is drawn outside Vue: each frame sets a dash on two paths and the ends of their gradient.
 // Nothing is laid out and the component does not re-render while it flies.
-const tailA = ref<SVGPathElement | null>(null), tailB = ref<SVGPathElement | null>(null), headEl = ref<SVGGElement | null>(null), gradEl = ref<SVGLinearGradientElement | null>(null);
+const tailA = ref<SVGPathElement | null>(null), tailB = ref<SVGPathElement | null>(null), gradEl = ref<SVGLinearGradientElement | null>(null);
 let fs = { t0: 0, D: 0, landed: false, miss: 0 };
-const TAIL = 84, IN = 120, SHRINK = 140, DRAIN = 180;
-const inOut = (u: number) => (u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2), outC = (u: number) => 1 - (1 - Math.min(1, Math.max(0, u))) ** 3;
+// the beam's tail follows LAG ms behind its tip, so the beam is as long as it is fast: it grows out of the sender, is longest
+// mid-way (MAXLEN at most) and closes up into the receiver
+const LAG = 170, MAXLEN = 170;
+// ease-in-out cubic, the curve of cubic-bezier(.65,0,.35,1): the same one the work pulse uses
+const inOut = (u: number) => { const v = Math.min(1, Math.max(0, u)); return v < 0.5 ? 4 * v ** 3 : 1 - (-2 * v + 2) ** 3 / 2; };
 /** A card's ring glows in the message colour: in over `inMs`, a short hold, then a slow fade (opacity of the ring only). */
 function glow(id: string | undefined, col: string, inMs: number, peak = 1, hold = 250, out = 800) {
   const el = id ? cardEl(id) : null; if (!el) return;
@@ -454,23 +526,19 @@ function glow(id: string | undefined, col: string, inMs: number, peak = 1, hold 
   an.id = "glow"; an.onfinish = () => { if (!el.getAnimations({ subtree: true }).some((x) => x.id === "glow" && x.playState === "running")) delete el.dataset.glow; };
 }
 function beamFrame(t: number) {
-  const f = flight.value, a = tailA.value, b = tailB.value, hd = headEl.value, gr = gradEl.value; if (!f) return;
+  const f = flight.value, a = tailA.value, b = tailB.value, gr = gradEl.value; if (!f) return;
   const L = a && beamD.value ? a.getTotalLength() : 0;
   // no route (an end is not on the map) or not rendered yet: give it a few frames, then drop it
-  if (!a || !b || !hd || !gr || !L) { if (++fs.miss > 6) endFlight(); else raf = requestAnimationFrame(beamFrame); return; }
-  if (!fs.t0) { fs.t0 = t; fs.D = Math.max(520, Math.min(1500, 380 + L * 1.15)); glow(byName.value.get(f.from)?.id, beamCol.value, 100, 0.9, 40, 360); } // the sender pulses as the beam leaves its port
-  const e = t - fs.t0, u = Math.min(1, e / fs.D), pos = L * inOut(u), speed = u < 0.5 ? 4 * u * u : (-2 * u + 2) ** 2; // 0..1, peak mid-way
-  const drain = e > fs.D ? outC((e - fs.D) / DRAIN) : 0, len = Math.min(pos, Math.min(TAIL, L * 0.45) * (0.4 + 0.6 * speed)) * (1 - drain);
-  const h = a.getPointAtLength(pos), q = a.getPointAtLength(pos - len), da = `${len} ${L + 20}`, off = String(-(pos - len));
-  for (const p of [a, b]) { p.setAttribute("stroke-dasharray", da); p.setAttribute("stroke-dashoffset", off); }
+  if (!a || !b || !gr || !L) { if (++fs.miss > 6) endFlight(); else raf = requestAnimationFrame(beamFrame); return; }
+  if (!fs.t0) { fs.t0 = t; fs.D = Math.max(600, Math.min(1400, 420 + L * 0.9)); glow(byName.value.get(f.from)?.id, beamCol.value, 100, 0.9, 40, 360); } // the sender blinks as the beam leaves
+  const e = t - fs.t0, pos = L * inOut(e / fs.D), from = Math.max(L * inOut((e - LAG) / fs.D), pos - MAXLEN), len = pos - from;
+  const h = a.getPointAtLength(pos), q = a.getPointAtLength(from), da = `${len} ${L + 20}`, off = String(-from), show = len > 0.5 ? "" : "0";
+  for (const x of [a, b]) { x.setAttribute("stroke-dasharray", da); x.setAttribute("stroke-dashoffset", off); x.style.opacity = show; }
   gr.setAttribute("x1", String(q.x)); gr.setAttribute("y1", String(q.y)); gr.setAttribute("x2", String(h.x)); gr.setAttribute("y2", String(h.y));
-  const sin = outC(e / IN), sout = e > fs.D ? 1 - outC((e - fs.D) / SHRINK) : 1; // grows out of the sender's port, shrinks into the receiver's
-  hd.setAttribute("transform", `translate(${h.x},${h.y}) scale(${(0.35 + 0.65 * sin) * sout})`); hd.style.opacity = String(sin * sout); a.style.opacity = b.style.opacity = "";
   if (e >= fs.D && !fs.landed) { fs.landed = true; glow(byName.value.get(f.to)?.id, beamCol.value, 150); }
-  if (e > fs.D + DRAIN + 20) { endFlight(); return; }
+  if (e > fs.D + LAG + 20) { endFlight(); return; }
   raf = requestAnimationFrame(beamFrame);
 }
-
 // ---------- recent strip: whole items only ----------
 const stripEl = ref<HTMLElement | null>(null), stripN = ref(3);
 async function fitStrip() { stripN.value = phone.value ? 1 : 3; await nextTick(); const el = stripEl.value; if (!el) return; const sr = el.getBoundingClientRect(); const items = [...el.querySelectorAll<HTMLElement>(".m")]; let n = items.length; while (n > 1 && items[n - 1].getBoundingClientRect().right > sr.right - 10) n--; if (n < items.length) stripN.value = n; }
@@ -488,7 +556,7 @@ let settle = 0;
 onMounted(() => { settle = window.setInterval(() => { if (!followRaf && !document.hidden) fibers(); }, 1000); });
 onBeforeUnmount(() => clearInterval(settle));
 onMounted(() => { void layout().then(fitStrip); void document.fonts?.ready.then(() => { flip(); fibers(); }); ro = new ResizeObserver(resized); host.value && ro.observe(host.value); });
-onBeforeUnmount(() => { ro?.disconnect(); clearTimeout(timer); clearTimeout(readyT); clearTimeout(hoverT); clearTimeout(leaveT); cancelAnimationFrame(raf); cancelAnimationFrame(followRaf); cancelAnimationFrame(croRaf); cro?.disconnect(); });
+onBeforeUnmount(() => { stopCam(); gctx.revert(); ro?.disconnect(); clearTimeout(timer); clearTimeout(readyT); clearTimeout(hoverT); clearTimeout(leaveT); clearTimeout(rgT); cancelAnimationFrame(raf); cancelAnimationFrame(followRaf); cancelAnimationFrame(croRaf); cro?.disconnect(); });
 const pick = (id: string) => { if (!panned) emit("select", id); };
 /** A team region is selectable on its header and background; cards inside keep their own click. */
 const pickTeam = (id: string, e?: MouseEvent) => { if (panned || id === "open" || (e && (e.target as Element).closest(".fcard, .fquiet"))) return; emit("select", "team:" + id); };
@@ -500,31 +568,33 @@ void ago;
   <section ref="host" :class="['fm', 'fm-fiber', { ph: phone, pre: !ready }]" aria-label="2D map: agents by team" :style="{ '--cover': (cover ?? 0) + 'px' }" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp" @wheel="onWheel" @click.capture="swallow" @dblclick="onDbl">
     <div ref="st" class="fst">
       <svg ref="fib" class="ffib" width="1" height="1" aria-hidden="true">
-        <path v-for="p in paths" :key="p.key" :data-k="p.key" pathLength="1" :class="['fb', { sel: p.sel, hot: p.hot }]" :d="p.d" />
-        <circle v-for="q in ports" :key="q.k" :data-k="q.k" :class="['fport', { sel: q.sel, hot: q.hot }]" :cx="q.x" :cy="q.y" r="3" />
-        <template v-for="g in ghosts" :key="g.key"><path class="fb gone" :d="g.d" /><circle class="fport gone" :cx="g.x" :cy="g.y" r="3" /></template>
+        <path v-for="p in paths" :key="p.key" :data-k="p.key" pathLength="1" :class="['fb', { tm: p.th != null, q: p.q }]" :style="p.th != null ? { '--th': p.th } : undefined" :d="p.d" />
+        <path v-for="p in paths" :key="'h' + p.key" :class="['fbo', 'hot', { on: p.hot }]" :d="p.d" />
+        <path v-for="p in paths" :key="'s' + p.key" :class="['fbo', 'sel', { on: p.sel }]" :d="p.d" />
+        <circle v-for="q in ports" :key="q.k" :data-k="q.k" :class="['fport', { tm: q.th != null, ent: q.k.startsWith('b:') }]" :style="q.th != null ? { '--th': q.th } : undefined" :cx="q.x" :cy="q.y" r="2.5" />
+        <template v-for="q in ports" :key="'o' + q.k"><circle :class="['fpo', 'hot', { on: q.hot, ent: q.k.startsWith('b:') }]" :cx="q.x" :cy="q.y" r="2.5" /><circle :class="['fpo', 'sel', { on: q.sel, ent: q.k.startsWith('b:') }]" :cx="q.x" :cy="q.y" r="2.5" /></template>
+        <template v-for="p in pulses" :key="'fl' + p.key"><path class="ffl t" :d="p.d" :style="{ '--L': p.len + 'px', animationDelay: p.at + 'ms' }" /><path class="ffl" :d="p.d" :style="{ '--L': p.len + 'px', animationDelay: p.at + 'ms' }" /></template>
+        <template v-for="g in ghosts" :key="g.key"><path class="fb gone" :d="g.d" /><circle class="fport gone" :cx="g.x" :cy="g.y" r="2.5" /></template>
         <g v-if="beamD" class="beam" :style="{ '--k': beamCol }">
-          <defs>
-            <linearGradient id="fm-beam" ref="gradEl" gradientUnits="userSpaceOnUse"><stop offset="0" class="b0" /><stop offset=".6" class="b1" /><stop offset="1" class="b2" /></linearGradient>
-            <radialGradient id="fm-beam-h"><stop offset="0" class="h0" /><stop offset=".45" class="h1" /><stop offset="1" class="b0" /></radialGradient>
-          </defs>
+          <defs><linearGradient id="fm-beam" ref="gradEl" gradientUnits="userSpaceOnUse"><stop offset="0" class="b0" /><stop offset=".55" class="b1" /><stop offset="1" class="b2" /></linearGradient></defs>
           <path ref="tailB" class="bt soft" :d="beamD" stroke="url(#fm-beam)" stroke-dasharray="0 9999" style="opacity:0" />
           <path ref="tailA" class="bt" :d="beamD" stroke="url(#fm-beam)" stroke-dasharray="0 9999" style="opacity:0" />
-          <g ref="headEl" style="opacity:0"><circle r="11" fill="url(#fm-beam-h)" /><circle class="core" r="2.5" /></g>
         </g>
       </svg>
-      <div v-if="root" class="fdir">
-        <FiberCard :id="root.id" :name="root.name" :row="root.row" :state="root.state" dir :sel="selected === root.id" :hot="hover?.id === root.id" @pick="pick(root.id)" @hover="(on, el) => onHover(root!.id, on, el)" />
+      <!-- the director: running, or (while other agents run without it) not running with Resume / Start fresh -->
+      <div v-if="root || live.length" class="fdir">
+        <AgentCard :id="ROOT_ID()" name="root" :row="root?.row ?? null" dir :had-root="hadRoot" :last="last" :sel="selected === ROOT_ID()" :hot="hotId === ROOT_ID()" :near="hotKeys.has(ROOT_ID()) && hotId !== ROOT_ID()"
+          @pick="pick(ROOT_ID())" @details="emit('details', ROOT_ID())" @hover="(on, el) => root && onHover(root.id, on, el)" @resume="emit('resume')" @fresh="emit('fresh')" />
       </div>
       <div class="frgs">
-        <section v-for="t in trees" :key="t.r.id" :class="['frg', { open: t.r.id === 'open', sel: selected === 'team:' + t.r.id }]" :data-r="t.r.id" :style="{ '--th': teamHue(t.r.id) }" @click="pickTeam(t.r.id, $event)">
-          <button type="button" class="frg-h" :disabled="t.r.id === 'open'" :aria-pressed="selected === 'team:' + t.r.id ? 'true' : 'false'" :aria-label="t.r.id === 'open' ? undefined : `Team ${t.r.title}: open team`" @click.stop="pickTeam(t.r.id)"><i :class="['fdot', 'dot', { working: t.r.list.some((p) => p.state === 'working') }]" /><b>{{ t.r.title }}</b><span class="fchip">{{ t.r.list.length }} {{ t.r.list.length === 1 ? "agent" : "agents" }}</span><span class="fgoal">{{ t.r.goal }}</span></button>
+        <section v-for="t in trees" :key="t.r.id" :class="['frg', { open: t.r.id === 'open', sel: selected === 'team:' + t.r.id, lit: hotRg === t.r.id }]" :data-r="t.r.id" :style="{ '--th': teamHue(t.r.id) }" @click="pickTeam(t.r.id, $event)">
+          <button type="button" class="frg-h" :disabled="t.r.id === 'open'" :aria-pressed="selected === 'team:' + t.r.id ? 'true' : 'false'" :aria-label="t.r.id === 'open' ? undefined : `Team ${t.r.title}: open team`" @click.stop="pickTeam(t.r.id)" @pointerenter="(e) => e.pointerType === 'mouse' && onRgHover(t.r.id, true)" @pointerleave="(e) => e.pointerType === 'mouse' && onRgHover(t.r.id, false)"><Icon name="users" :size="15" class="fti" /><b class="ftn"><span class="sr-only">{{ t.r.title }}</span><span v-for="(w, i) in t.r.title.split(' ')" :key="i" class="fw" aria-hidden="true">{{ w }}</span></b><span class="fcnt"><template v-if="t.r.list.filter((p) => p.state === 'working').length"><em>{{ t.r.list.filter((p) => p.state === "working").length }} working</em></template>{{ t.r.list.length }} {{ t.r.list.length === 1 ? "agent" : "agents" }}</span><span v-if="t.r.goal" class="fgoal" :title="t.r.goal">{{ t.r.goal }}</span></button>
           <div class="ftree">
             <template v-for="c in t.cards" :key="c.p.id">
-              <FiberCard :id="c.p.id" :name="c.p.name" :row="c.p.row" :state="c.p.state" :lead="c.p.lead" :sel="selected === c.p.id" :hot="hover?.id === c.p.id" @pick="pick(c.p.id)" @hover="(on, el) => onHover(c.p.id, on, el)" />
+              <AgentCard :id="c.p.id" :name="c.p.name" :row="c.p.row" :lead="c.p.lead" :sel="selected === c.p.id" :hot="hotId === c.p.id" :near="hotKeys.has(c.p.id) && hotId !== c.p.id" @pick="pick(c.p.id)" @details="emit('details', c.p.id)" @hover="(on, el) => onHover(c.p.id, on, el)" />
               <div v-if="c.kids.length || t.qmap.get(c.p.name)" class="fkids">
                 <template v-for="k in c.kids" :key="k.p.id">
-                  <FiberCard :id="k.p.id" :name="k.p.name" :row="k.p.row" :state="k.p.state" :lead="k.p.lead" :sel="selected === k.p.id" :hot="hover?.id === k.p.id" @pick="pick(k.p.id)" @hover="(on, el) => onHover(k.p.id, on, el)" />
+                  <AgentCard :id="k.p.id" :name="k.p.name" :row="k.p.row" :lead="k.p.lead" :sel="selected === k.p.id" :hot="hotId === k.p.id" :near="hotKeys.has(k.p.id) && hotId !== k.p.id" @pick="pick(k.p.id)" @details="emit('details', k.p.id)" @hover="(on, el) => onHover(k.p.id, on, el)" />
                 </template>
                 <div v-if="t.qmap.get(c.p.name)" class="fquiet" :data-q="'q:' + c.p.name"><div class="fqh"><span>{{ t.qmap.get(c.p.name)!.length }} quiet</span></div><div v-for="q in t.qmap.get(c.p.name)" :key="q.id" class="fqr"><i class="fdot" /><button type="button" @click="pick(q.id)">{{ q.name }}</button><span>{{ q.row.tasks?.length ? "All done" : "No task list" }}</span></div></div>
               </div>
@@ -534,99 +604,108 @@ void ago;
         </section>
       </div>
     </div>
-    <div v-if="hover && peek" ref="pop" :class="['fpop', { on: hover.on }]" :style="{ left: hover.x + 'px', top: hover.y + 'px', '--ox': hover.ox }" role="tooltip" @pointerenter="popIn" @pointerleave="popOut">
+    <!-- the peek stays mounted with its last content and only its `on` class flips, so it leaves on the same frame as the rest -->
+    <div v-if="shown && peek" ref="pop" :class="['fpop', { on: hover?.on }]" :style="{ left: shown.x + 'px', top: shown.y + 'px', '--ox': shown.ox }" role="tooltip" :aria-hidden="hover?.on ? undefined : 'true'" @pointerenter="popIn" @pointerleave="popOut">
       <TrailPeek :row="peek.row" />
       <dl><template v-for="r in peek.rows" :key="r[0]"><dt>{{ r[0] }}</dt><dd>{{ r[1] }}</dd></template></dl>
     </div>
     <button v-if="!phone || view.k !== 1" type="button" class="fit" aria-label="Fit map to view" @click="refit">Fit</button>
-    <div v-show="!sheetOpen" ref="stripEl" class="fstrip"><b>Recent</b><span v-for="(m, i) in stripItems" :key="m.id ?? i" :class="['m', { fly: i === 0 && !!flight }]"><i class="g" :style="{ background: kindOf(m.kind)[0] }">{{ kindOf(m.kind)[1] }}</i>{{ strip(m.from) }} → {{ strip(m.to) }}<template v-if="!phone"> · {{ m.subject ?? m.body }}</template></span><span v-if="!recent.length" class="m">No messages yet</span></div>
+    <div v-show="!sheetOpen" ref="stripEl" class="fstrip"><b>Recent</b><span v-for="(m, i) in stripItems" :key="m.id ?? i" :class="['m', { fly: i === 0 && !!flight }]"><i class="g" :style="{ background: kindOf(m.kind)[0] }" :title="m.kind" />{{ strip(m.from) }} → {{ strip(m.to) }}<template v-if="!phone"> · {{ m.subject ?? m.body }}</template></span><span v-if="!recent.length" class="m">No messages yet</span></div>
   </section>
 </template>
 
 <style scoped>
-/* Three elevation steps: canvas (darkest) < team region (pale team tint) < agent card (lightest, solid, visible border). */
-.fm{--cv:#08080a;--rg:#16161a;--rgl:#2c2c33;--cd:#2f2f36;--cdl:#4a4a53;--tint:6%;--ts:80%;--tl:62%;--fiber:color-mix(in srgb,var(--ink) 38%,var(--cv));position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;touch-action:none;border:1px solid var(--line);border-radius:14px;background:var(--cv);background-image:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--line) 70%,transparent) 1px,transparent 0);background-size:22px 22px}
-/* stacking inside the stage, bottom to top: region backgrounds, fibers + ports + message beam (z 1), then headers, cards and quiet folds (z 2) */
+/* A calm tree. Layers: plain canvas < thin lines, rings and the message beam < team nodes and cards. */
+.fm{--cv:#161618;--cd:#1e1e21;--cdl:rgba(255,255,255,.1);--ts:60%;--tl:62%;--fiber:color-mix(in srgb,var(--ink) 26%,var(--cv));--hv-d:.22s;--hv-e:cubic-bezier(.2,.8,.2,1);position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;border:1px solid var(--line);border-radius:16px;background:var(--cv)}
+/* stacking inside the stage, bottom to top: team fields, lines + rings + message beam (z 1), then team nodes, cards and quiet folds (z 2) */
 .ffib{position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:1}
 .frg-h,.fcard,.fquiet{position:relative;z-index:2}
-/* fibers and ports are one opaque colour, so shared trunks and crossings never look darker; focus is shown by colour, not by dimming the rest */
-.fb{fill:none;stroke:var(--fiber);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;transition:stroke .18s}
-.fb.hot{stroke:var(--ink)}
-.fb.sel{stroke:var(--sel)}
-.fport{fill:var(--cv);stroke:var(--fiber);stroke-width:2;transition:stroke .18s}
-.fport.hot{stroke:var(--ink)}.fport.sel{stroke:var(--sel);fill:var(--sel)}
-/* the socket: a half-circle notch in the card's edge where its port docks. A mask cuts the card, its border and its rings on one
-   circle around the port (the mask tile is 40 px larger than the card on every side and not clipped, so rings, glow and shadow
-   outside the card stay); the card's own background draws the border along the notch (--sk colour, --sw wide). */
-@supports (mask-clip:no-clip){
-.fcard,.fquiet{--sx:0px;--sy:21px;--mx:40px;--my:61px;--sk:var(--cdl);--sw:1px;mask:radial-gradient(circle at var(--mx) var(--my),transparent 6px,#000 6.5px) -40px -40px/calc(100% + 80px) calc(100% + 80px) no-repeat no-clip;transition:box-shadow .18s,--sk .16s}
-.fcard{background:radial-gradient(circle at var(--sx) var(--sy),var(--sk) calc(6.5px + var(--sw)),transparent calc(7px + var(--sw))),var(--cd)}
-.fquiet{--sy:15px;--my:55px;background:radial-gradient(circle at var(--sx) var(--sy),var(--sk) calc(6.5px + var(--sw)),transparent calc(7px + var(--sw))),color-mix(in srgb,var(--cd) 55%,var(--rg))}
-.fcard.waiting{--sk:var(--warn)}.fcard.hot{--sk:var(--ink)}.fcard.sel{--sk:var(--sel);--sw:2px}
-/* the director's port is on its bottom edge (on a phone: on its left edge like every other card) */
-.fdir .fcard{--sx:50%;--sy:100%;--mx:50%;--my:calc(100% - 40px)}
-.ph .fdir .fcard{--sx:0px;--sy:21px;--mx:40px;--my:61px}
-}
+/* thin lines with soft corners; a team's lines take a pale step of its colour. Focus is an overlay that fades in, never a recolour. */
+.fb{fill:none;stroke:var(--fiber);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;transition:opacity .3s ease}
+.fb.q{opacity:.45}
+.fb.tm,.fport.tm{--tc:color-mix(in srgb,hsl(var(--th) var(--ts) var(--tl)) 62%,var(--cv))}
+.fb.tm{stroke:var(--tc)}
+.fbo{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;opacity:0;transition:opacity var(--hv-d) var(--hv-e)}
+.fbo.hot{stroke:color-mix(in srgb,var(--ink) 75%,var(--cv))}.fbo.sel{stroke:var(--sel);stroke-width:2.5}
+.fbo.on{opacity:1}
+.fport{fill:var(--fiber)}
+.fpo{opacity:0;transition:opacity var(--hv-d) var(--hv-e)}
+.fpo.hot{fill:color-mix(in srgb,var(--ink) 75%,var(--cv))}.fpo.sel{fill:var(--sel)}
+.fpo.on{opacity:1}
+.fport.tm{fill:var(--tc)}
+.fport.ent,.fpo.ent{visibility:hidden} /* a dot only where a line leaves a card; the end runs into the card's edge */
+/* the work pulse: one short streak (a bright head on a soft tail) leaves the boss, runs the line with a strong ease-in-out and
+   fades into the card; then the line rests. Two animations, so the easing covers the whole run and the fade stays linear. */
+.ffl{--n:14px;fill:none;stroke:color-mix(in srgb,var(--on) 82%,#fff);stroke-width:2.5;stroke-linecap:round;stroke-dasharray:var(--n) 99999px;stroke-dashoffset:var(--n);opacity:0;animation:fm-run 3.2s cubic-bezier(.65,0,.35,1) infinite,fm-show 3.2s linear infinite}
+.ffl.t{--n:46px;stroke-opacity:.4}
+@keyframes fm-run{0%{stroke-dashoffset:var(--n)}41%,100%{stroke-dashoffset:calc(var(--n) - var(--L) - 48px)}}
+@keyframes fm-show{0%{opacity:0}4%,33%{opacity:1}40%,100%{opacity:0}}
 .fb.gone,.fport.gone{animation:fm-out .22s cubic-bezier(.2,.8,.2,1) forwards}
 @keyframes fm-out{to{opacity:0}}
 .pre .fst,.pre .ffib{opacity:0}
-/* the message beam: a small bright head with a soft halo and a tail that fades to nothing along a gradient */
-.beam{--core:color-mix(in srgb,var(--k) 30%,#fff)}
-.bt{fill:none;stroke-width:2.5;stroke-linecap:butt}
-.bt.soft{stroke-width:7;stroke-opacity:.28}
-.beam .b0{stop-color:var(--k);stop-opacity:0}.beam .b1{stop-color:var(--k);stop-opacity:.5}.beam .b2{stop-color:var(--core);stop-opacity:1}
-.beam .h0{stop-color:var(--core);stop-opacity:.95}.beam .h1{stop-color:var(--k);stop-opacity:.4}
-.beam .core{fill:var(--core)}
+/* a message: one beam in its kind's colour, bright at the tip and fading to nothing at the tail, over a soft wider copy of itself */
+.beam{--tip:color-mix(in srgb,var(--k) 35%,#fff)}
+.bt{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+.bt.soft{stroke-width:7;stroke-opacity:.22}
+.beam .b0{stop-color:var(--k);stop-opacity:0}.beam .b1{stop-color:var(--k);stop-opacity:.75}.beam .b2{stop-color:var(--tip);stop-opacity:1}
 .fst{position:absolute;left:0;top:0;transform-origin:0 0;padding:0;box-sizing:border-box}
-.fdir{display:flex;justify-content:center;margin-bottom:26px}
-.frgs{display:flex;flex-wrap:wrap;justify-content:center;gap:26px 22px;align-items:flex-start}
-.frg{--tc:hsl(var(--th,0) var(--ts) var(--tl));position:relative;border-radius:16px;padding:12px 14px 14px;min-width:0;cursor:pointer}
-.frg::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:color-mix(in srgb,var(--tc) var(--tint),var(--rg));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--tc) 14%,var(--rgl))}
-.frg.open{cursor:default}
-.frg.open::before{background:var(--rg);box-shadow:inset 0 0 0 1px var(--rgl)}
-.frg.sel::before{box-shadow:inset 0 0 0 2px var(--sel)}
-.frg-h{display:grid;grid-template-columns:auto auto 1fr;align-items:center;gap:6px 8px;margin:0 0 6px;max-width:330px;width:100%;padding:0 0 6px;border:0;border-radius:8px;background:none;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.fdir{display:flex;justify-content:center;margin-bottom:40px}
+.frgs{display:flex;flex-wrap:wrap;justify-content:center;gap:28px 20px;align-items:flex-start}
+/* a team is a node in the tree: its agents hang under it. A faint field in its colour shows on hover and when picked. */
+.frg{--tc:hsl(var(--th,0) var(--ts) var(--tl));position:relative;border-radius:22px;padding:10px;min-width:0;cursor:pointer}
+.frg::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:color-mix(in srgb,var(--tc) 7%,transparent);opacity:0;transition:opacity var(--hv-d) var(--hv-e)}
+.frg.lit::before{opacity:1}
+.frg.sel::before{opacity:1;box-shadow:inset 0 0 0 1.5px var(--sel)}
+.frg.open{--tc:var(--fiber);cursor:default}
+.frg.open::before{display:none}
+.frg-h{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:3px 8px;margin:0 0 12px;width:300px;box-sizing:border-box;padding:9px 14px 10px;border:0;border-radius:16px;background:color-mix(in srgb,var(--tc) 12%,var(--cd));box-shadow:0 0 0 .75px color-mix(in srgb,var(--tc) 22%,var(--cdl)),var(--nd);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
 .frg-h:disabled{cursor:default}
 .frg-h:focus-visible{outline:2px solid var(--sel);outline-offset:3px}
-.frg-h b{font-weight:650;font-size:14px}
-.fgoal{grid-column:2/-1;margin:0;color:var(--muted);font-size:12px;line-height:1.4;overflow-wrap:anywhere;text-wrap:pretty}
-.frg-h .fchip{justify-self:start}
-.ftree{display:flex;flex-direction:column;gap:10px;padding-left:22px}
-.fkids{display:flex;flex-direction:column;gap:10px;padding-left:30px}
-.fdot{width:8px;height:8px;border-radius:50%;background:var(--off);flex:none}
-.fdot.working{background:var(--on);box-shadow:0 0 0 3px color-mix(in srgb,var(--on) 18%,transparent)}
-.fchip{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;font:600 11px/1 var(--mono);color:var(--muted);background:color-mix(in srgb,var(--line) 60%,transparent);white-space:nowrap}
-.fquiet{width:300px;box-sizing:border-box;border-radius:14px;padding:9px 13px;background:color-mix(in srgb,var(--cd) 55%,var(--rg));box-shadow:inset 0 0 0 1px var(--cdl);display:flex;flex-direction:column;gap:6px;font-size:12.5px;cursor:default}
-.fqh{font:600 11px/1 var(--mono);color:var(--muted)}
+.fti{color:var(--tc)}
+.ftn{min-width:0;font-weight:600;font-size:14px;line-height:18px;overflow-wrap:anywhere}
+.fw{display:inline-block;max-width:100%;margin-right:.26em;will-change:transform}
+.fw:last-child{margin-right:0}
+.fcnt{font-size:12px;line-height:18px;color:var(--muted);white-space:nowrap}
+.fcnt em{font-style:normal;color:var(--on);margin-right:8px}
+.fgoal{grid-column:1/-1;margin:0;color:var(--muted);font-size:12px;line-height:16px;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
+.ftree{display:flex;flex-direction:column;gap:12px;padding-left:36px}
+.fkids{display:flex;flex-direction:column;gap:12px;padding-left:36px}
+.fst .fcard{width:300px}
+.fdot{width:6px;height:6px;border-radius:50%;background:var(--off);flex:none}
+.fquiet{width:300px;box-sizing:border-box;border-radius:16px;padding:9px 12px;background:color-mix(in srgb,var(--cd) 55%,var(--cv));box-shadow:0 0 0 .75px var(--cdl);display:flex;flex-direction:column;gap:5px;font-size:12.5px;cursor:default}
+.fqh{font-weight:550;font-size:12px;line-height:1;color:var(--muted)}
 .fqr{display:flex;align-items:center;gap:8px}.fqr span:last-child{margin-left:auto;color:var(--muted)}
 .fqr button{border:0;background:none;color:var(--ink);font:inherit;cursor:pointer;padding:0;text-align:left}
 .fqr button:focus-visible{outline:2px solid var(--sel);outline-offset:2px;border-radius:4px}
-.fpop{position:absolute;z-index:5;width:320px;box-sizing:border-box;padding:12px 14px;border-radius:14px;background:var(--panel);box-shadow:inset 0 0 0 1px var(--line),0 10px 30px rgba(0,0,0,.35);font-size:12.5px;opacity:0;transform:translateY(4px) scale(.98);transform-origin:var(--ox,left) top;transition:opacity .16s ease,transform .16s cubic-bezier(.2,.8,.2,1);pointer-events:auto}
-.fpop.on{opacity:1;transform:none}
+.fpop{position:absolute;z-index:5;width:360px;box-sizing:border-box;padding:12px 14px;border-radius:16px;background:var(--cd);box-shadow:0 0 0 .75px var(--cdl),0 12px 32px -8px rgba(0,0,0,.35);font-size:12.5px;opacity:0;transform:translateY(4px) scale(.98);transform-origin:var(--ox,left) top;transition:opacity var(--hv-d) var(--hv-e),transform var(--hv-d) var(--hv-e);pointer-events:none}
+.fpop.on{opacity:1;transform:none;pointer-events:auto}
 .fpn{display:block;font-weight:650;font-size:14px;margin-bottom:8px;overflow-wrap:anywhere}
 .fpop dl{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;margin:10px 0 0;padding-top:10px;border-top:1px solid var(--line)}
 .fpop dt{color:var(--muted)}.fpop dd{margin:0;overflow-wrap:anywhere}
-.g{width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font:700 10px/1 var(--mono);color:#0d0d0f;flex:none}
-.fstrip{position:absolute;left:12px;right:calc(12px + var(--cover,0px));bottom:12px;z-index:3;display:flex;gap:18px;align-items:center;padding:8px 12px;border-radius:12px;background:var(--panel);box-shadow:inset 0 0 0 1px var(--line);font-size:12px;overflow:hidden;white-space:nowrap}
-.fstrip b{font:600 11px/1 var(--mono);color:var(--muted)}
-.fstrip .m{display:flex;align-items:center;gap:6px;flex:none}
+.g{width:7px;height:7px;border-radius:2px;flex:none}
+/* recent messages: a strip as wide as its items, bottom left */
+.fstrip{position:absolute;left:12px;max-width:calc(100% - 24px - var(--cover,0px));bottom:12px;z-index:3;display:flex;gap:18px;align-items:center;height:34px;padding:0 14px;border-radius:10px;background:var(--cd);box-shadow:0 0 0 .75px var(--cdl),var(--nd);font-size:12px;overflow:hidden;white-space:nowrap}
+.fstrip b{font:600 12px/1 var(--body);color:var(--muted)}
+.fstrip .m{display:flex;align-items:center;gap:6px;flex:none;color:var(--muted)}
+.fstrip .m:first-of-type{color:var(--ink)}
 .fstrip .m.fly{color:var(--ink);font-weight:600}
 .ph .fst{position:relative;flex:none;padding:14px 12px 20px 26px}
-.ph .fstrip{position:sticky;left:auto;right:auto;margin:auto 12px 12px;bottom:12px}
+.ph .fstrip{position:sticky;left:auto;right:auto;max-width:none;margin:auto 12px 12px;bottom:12px}
 .ph .frgs{flex-direction:column;flex-wrap:nowrap;gap:20px}
 .ph .frg,.ph .fdir{width:calc(100% - 38px);box-sizing:border-box}
+.ph .frg-h{width:100%}
 .ph .frg{padding:10px 10px 12px}
-.ph .fcard,.ph .fquiet{width:100%}
+.ph .fcard,.ph .fquiet,.ph .fdir .fcard{width:100%}
 .ph .fkids{padding-left:22px}
 .ph.fm{overflow:auto;touch-action:pan-x pan-y;display:flex;flex-direction:column}
-.fit{position:absolute;right:calc(10px + var(--cover,0px));top:10px;z-index:4;height:32px;padding:0 12px;border:0;border-radius:10px;background:var(--panel);box-shadow:inset 0 0 0 1px var(--line);color:var(--ink);font:600 12px/1 var(--body);cursor:pointer}
+.fit{position:absolute;right:calc(12px + var(--cover,0px));top:12px;z-index:4;height:32px;padding:0 14px;border:0;border-radius:9px;background:var(--cd);box-shadow:0 0 0 .75px var(--cdl),var(--nd);color:var(--ink);font:600 12px/1 var(--body);cursor:pointer;transition:box-shadow var(--hv-d) var(--hv-e)}
+.fit:hover{box-shadow:0 0 0 .75px var(--muted),var(--nd)}
 .fit:focus-visible{outline:2px solid var(--sel);outline-offset:2px}
-@media (prefers-reduced-motion:reduce){.fpop{transform:none}}
+@media (prefers-reduced-motion:reduce){.fpop{transform:none}.ffl{display:none}}
 </style>
 <style>
-/* the socket border's colour is a registered colour, so it fades with the selection ring */
-@property --sk{syntax:"<color>";inherits:false;initial-value:transparent}
-/* Light elevation steps for the 2D map; unscoped because a scoped rule cannot key off the root theme attribute. */
-:root[data-theme="light"] .fm-fiber{--cv:#dcdce2;--rg:#f1f1f4;--rgl:#c9c9d1;--cd:#ffffff;--cdl:#c2c2cb;--tint:8%;--ts:70%;--tl:50%;--fiber:color-mix(in srgb,var(--ink) 46%,var(--cv))}
-:root[data-theme="light"] .fm-fiber .beam{--core:color-mix(in srgb,var(--k) 78%,#000)}
+/* Light steps for the 2D map; unscoped because a scoped rule cannot key off the root theme attribute. */
+:root[data-theme="light"] .fm-fiber{--cv:#fafafa;--cd:#ffffff;--cdl:rgba(0,0,0,.08);--ts:70%;--tl:56%;--nd:0 1px 1px -1px rgba(0,0,0,.1),0 1px 3px rgba(0,0,0,.06);--fiber:color-mix(in srgb,var(--ink) 22%,var(--cv))}
+.fm-fiber{--nd:0 1px 2px rgba(0,0,0,.35)}
+:root[data-theme="light"] .fm-fiber .beam{--tip:color-mix(in srgb,var(--k) 80%,#000)}
 </style>

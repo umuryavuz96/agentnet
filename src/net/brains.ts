@@ -39,13 +39,20 @@ function readBrain(name: string) {
   return { fm, version, body: m[2]!, reads: list(fm.reads), skills: list(fm.skills) };
 }
 
+/** Lessons kept in the brain file (candidates and kept ones load alike; the batched eval decides). Off unless AGENTNET_BRAIN_LESSONS=1. */
+function lessonsText(x: unknown): string {
+  if (process.env.AGENTNET_BRAIN_LESSONS !== "1" || !Array.isArray(x)) return "";
+  const l = x.map((e) => (e && typeof e === "object" ? String((e as { text?: unknown }).text ?? "").trim() : "")).filter(Boolean);
+  return l.length ? `\n## Lessons\n${l.map((t) => `- ${t}`).join("\n")}\n` : "";
+}
+
 /** Parse one brain file into the text that goes first in the agent's appended system prompt. */
 export function loadBrain(name: string): Omit<Brain, "why"> {
   const { fm, version, body, reads, skills } = readBrain(name);
   const head = [`# Brain: ${name} v${version}`, typeof fm.description === "string" ? fm.description : "",
     reads.length ? `Read these before any work: ${reads.join(", ")}.` : "",
     skills.length ? `Load these skills with the Skill tool before the work they cover: ${skills.join(", ")}.` : ""].filter(Boolean);
-  return { name, version, id: `${name}@v${version}`, text: `${head.join("\n")}\n\n${body.trim()}\n` };
+  return { name, version, id: `${name}@v${version}`, text: `${head.join("\n")}\n\n${body.trim()}\n${lessonsText(fm.lessons)}` };
 }
 
 /** The brain for a spawn, or null when brains are off (no index.json). */

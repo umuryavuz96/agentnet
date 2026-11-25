@@ -290,6 +290,13 @@ export function syncGoal(goal: number, now = Date.now()) {
   for (const l of links) {
     const j = jobOf(l.agent_id, l.job_id); if (!j) continue;
     if (j.closedAt == null) openLink = true;
+    // first, an owner item with no step yet takes the step whose words overlap it most (≥ 0.3)
+    for (const it of itemsOf(goal).filter((x) => x.origin === "owner" && x.step_n == null)) {
+      // a step that already has an item (its brief item, or another owner item) is taken: one item per step (the table's unique key)
+      const taken = new Set((db().query("SELECT step_n FROM owner_items WHERE goal_id = ? AND agent_id = ? AND job_id = ? AND step_n IS NOT NULL").all(goal, l.agent_id, l.job_id) as { step_n: number }[]).map((r) => r.step_n));
+      const best = j.steps.filter((st) => !taken.has(st.n)).map((st) => ({ st, s: Math.max(overlap(it.text, st.text), coverOf(it.text, st.text) * 0.6) })).sort((a, b) => b.s - a.s)[0];
+      if (best && best.s >= 0.3) db().run("UPDATE owner_items SET agent_id = ?, agent = ?, job_id = ?, step_n = ? WHERE id = ?", [l.agent_id, l.agent, l.job_id, best.st.n, it.id]);
+    }
     for (const st of j.steps) {
       const have = db().query("SELECT * FROM owner_items WHERE goal_id = ? AND agent_id = ? AND job_id = ? AND step_n = ?").get(goal, l.agent_id, l.job_id, st.n) as ItemRow | null;
       const p = st.status === "done" ? proofOf(st.evidence) : null;
@@ -299,11 +306,6 @@ export function syncGoal(goal: number, now = Date.now()) {
         [goal, st.text, l.agent_id, l.agent, l.job_id, st.n, status, proof, now, p ? st.closedAt ?? now : null, st.status === "dropped" ? st.reason ?? "dropped" : null]);
       else if (have.mark !== "unwanted" && (have.status !== status || have.proof !== proof))
         db().run("UPDATE owner_items SET status = ?, proof = ?, done_at = ?, drop_reason = ? WHERE id = ?", [status, proof, p ? have.done_at ?? st.closedAt ?? now : null, st.status === "dropped" ? st.reason ?? "dropped" : null, have.id]);
-    }
-    // an owner item with no step yet takes the step whose words overlap it most (≥ 0.3)
-    for (const it of itemsOf(goal).filter((x) => x.origin === "owner" && x.step_n == null)) {
-      const best = j.steps.map((st) => ({ st, s: Math.max(overlap(it.text, st.text), coverOf(it.text, st.text) * 0.6) })).sort((a, b) => b.s - a.s)[0];
-      if (best && best.s >= 0.3) db().run("UPDATE owner_items SET agent_id = ?, agent = ?, job_id = ?, step_n = ? WHERE id = ?", [l.agent_id, l.agent, l.job_id, best.st.n, it.id]);
     }
   }
   // owner items follow the step they point at

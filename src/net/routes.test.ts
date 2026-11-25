@@ -107,6 +107,29 @@ describe("outbox", () => {
     expect(r.body.messages).toHaveLength(2); expect(r.body.text).toMatch(/^agentnet: 2 messages\n/); expect(Date.now() - t0).toBeLessThan(2000);
     await call("sre-1", "POST", "/ack", { ids: [r.body.messages[1].id] }); // leave "wake up" queued for the held test below
   });
+  test("owner chat via the plugin: hello caps marks it able; a push wakes the long-poll and rides in `owner` once", async () => {
+    const op = await import("./ownerPlugin"); op.ownerReset();
+    await call("backend-1", "POST", "/hello", { session: "s-own", caps: ["owner-chat"] });
+    expect(op.viaPlugin("backend-1", undefined, "1")).toBe(true);
+    const left = (await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.messages as { id: number }[];
+    await call("backend-1", "POST", "/ack", { ids: left.map((m) => m.id) }); // an empty queue, so the poll waits
+    const waiting = Promise.resolve(call("backend-1", "GET", "/poll", undefined, "?wait=5")).then(j);
+    await Bun.sleep(30); op.ownerPush("backend-1", { nonce: "n-1", text: "hi from the page", at: Date.now() });
+    const r = await waiting;
+    expect(r.body.owner).toEqual([{ nonce: "n-1", text: "hi from the page" }]);
+    expect((await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.owner).toBeUndefined();
+    await call("backend-1", "POST", "/hello", { session: "s-own" }); expect(op.viaPlugin("backend-1", undefined, "1")).toBe(false); // an old plugin
+  });
+  test("an owner item answers the long-poll at once: no burst wait for agent mail", async () => {
+    const op = await import("./ownerPlugin"); op.ownerReset();
+    const left = (await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.messages as { id: number }[];
+    await call("backend-1", "POST", "/ack", { ids: left.map((m) => m.id) });
+    const waiting = Promise.resolve(call("backend-1", "GET", "/poll", undefined, "?wait=5")).then(j);
+    await Bun.sleep(30); const t0 = Date.now(); op.ownerPush("backend-1", { nonce: "n-2", text: "now", at: t0 });
+    const r = await waiting;
+    expect(r.body.owner).toEqual([{ nonce: "n-2", text: "now" }]);
+    expect(Date.now() - t0).toBeLessThan(rt.BURST_MS / 2);
+  });
   test("report goes to the boss and marks the status; a report without a boss is refused", async () => {
     const r = await j(await call("backend-1", "POST", "/report", { summary: "M2 done", state: "done" }));
     expect(r.body.to).toBe("architect-1");

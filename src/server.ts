@@ -11,6 +11,7 @@ import { startOwnerTimer } from "./net/ownerAsks";
 import { wireOwnerLearning } from "./net/ownerLearn";
 import { registerLineHandlers } from "./net/lines";
 import { accountRoutes } from "./net/accounts";
+import { pairOpenRoutes, pairPanelRoutes } from "./net/pair";
 import { loginApiRoutes, loginPageRoute } from "./net/login";
 import { healthRoute, logDeprecations } from "./net/health";
 import { isPanelWrite, toLegacy } from "./net/mount";
@@ -25,11 +26,14 @@ import { summaryRoute } from "./net/summary";
 import { bgjobRoutes } from "./net/bgjobs";
 import { arsenalRoutes } from "./net/arsenal";
 import { brainsRoutes } from "./net/brainsPanel";
+import { evalsRoutes } from "./net/evals";
 import { routingRoutes } from "./net/routing";
 import { compactRoutes } from "./net/compact";
 import { hooksRoutes } from "./net/hooks";
 import { webRoutes } from "./net/web";
 import { ownerChatRoutes } from "./net/ownerChat";
+import { chatImageRoutes } from "./net/chatImages";
+import { chatFileRoutes } from "./net/chatFiles";
 import { agentnetWindowRoutes, healRootSession, startSessionReaper } from "./net/windows";
 import { agentControlRoutes } from "./net/controls";
 import { startUpdateTimers, updateRoutes } from "./net/update";
@@ -48,15 +52,15 @@ export function buildApp(): Hono<Env> {
   const app = new Hono<Env>();
   app.use("*", async (c, next) => { c.header("Agentnet-Api", "1"); await next(); }); // set before next: Hono copies it onto json, body and SSE responses
   app.use("*", tracing);
-  healthRoute(app);
+  healthRoute(app); pairOpenRoutes(app); // open: the pairing app has no credential yet
   const api = new Hono<Env>();
   api.use("*", requireAuth(agentPath));
   api.use("*", (c, next) => (isPanelWrite(c.req.method, c.req.path) ? rootOnly(c, next) : next())); // panel writes: loopback or the root token
   // Page routes before agentnetRoutes, as in the original server.
   agentnetStreamRoutes(api); agentnetUsageRoutes(api); agentnetPanelSendRoute(api); agentnetTeamPanelRoutes(api);
-  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); ownerChatRoutes(api); agentControlRoutes(api); checksPanelRoutes(api); asksPanelRoutes(api); linesPanelRoutes(api); metricsRoute(api);
-  summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); brainsRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api); updateRoutes(api); directorRoutes(api); adoptRoutes(api); importRoutes(api);
-  loginApiRoutes(api); accountRoutes(api);
+  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); ownerChatRoutes(api); chatImageRoutes(api); chatFileRoutes(api); agentControlRoutes(api); checksPanelRoutes(api); asksPanelRoutes(api); linesPanelRoutes(api); metricsRoute(api);
+  summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); brainsRoutes(api); evalsRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api); updateRoutes(api); directorRoutes(api); adoptRoutes(api); importRoutes(api);
+  loginApiRoutes(api); accountRoutes(api); pairPanelRoutes(api);
   agentnetRoutes(api);
   app.route("/api/v1", api);
   loginPageRoute(app);

@@ -5,11 +5,12 @@
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { db } from "../core/db";
-import type { Env } from "../core/http";
+import { bearer, type Env } from "../core/http";
 import { doing, progressPct, ensureSchema, lastSeq, live, onPatch, type Patch, type Snapshot } from "./store";
 import { onCheck, visibleChecks, type Check } from "./checks";
 import { nameMap, onMessage, subjectOf } from "./routes";
 import { onStatsReady, trailsWatch } from "./trailStats";
+import { deviceIdOf, onRevoke } from "./pair";
 
 const RECENT = 200;
 /** Connected stream clients by id (sent in `hello`): a client says which page it shows with POST /agentnet/watch. */
@@ -69,17 +70,21 @@ export function agentnetStreamRoutes(api: Hono<Env>) {
     const pushCheck = (k: Check) => { queue.push({ event: "check", data: k as unknown as Record<string, unknown>, seq: lastSeq() }); wake?.(); };
     const pushReady = () => { queue.push({ event: "trails-stats-ready", data: {}, seq: lastSeq() }); wake?.(); };
     const off = onPatch(push), offMsg = onMessage(pushMsg), offCheck = onCheck(pushCheck), offReady = onStatsReady(pushReady);
-    stream.onAbort(() => { off(); offMsg(); offCheck(); offReady(); conns.delete(cid); trailsWatch.remove(cid); wake?.(); });
+    // a paired device's stream ends when the owner revokes it: the app reconnects, gets 401 and pairs again
+    let revoked = false; const device = deviceIdOf(bearer(c) ?? "");
+    const offRevoke = device ? onRevoke((id) => { if (id === device) { revoked = true; wake?.(); } }) : () => {};
+    stream.onAbort(() => { off(); offMsg(); offCheck(); offReady(); offRevoke(); conns.delete(cid); trailsWatch.remove(cid); wake?.(); });
     const hello = snapshot(); prev = hello.seq;
     for (const [id, s] of Object.entries(hello.agents)) last.set(id, s as unknown as Record<string, unknown>);
     await stream.writeSSE({ id: String(hello.seq), event: "hello", data: JSON.stringify({ ...hello, prev: 0, cid }) });
     let beat = Date.now();
-    while (!stream.aborted) {
+    while (!stream.aborted && !revoked) {
       if (!queue.length) await new Promise<void>((r) => { wake = r; setTimeout(r, 15_000); });
       wake = null;
+      if (revoked) break;
       while (queue.length) { const f = queue.shift()!; await stream.writeSSE({ id: String(f.seq), event: f.event, data: JSON.stringify({ ...f.data, seq: f.seq, prev }) }); prev = f.seq; }
       if (Date.now() - beat > 15_000) { await stream.writeSSE({ event: "ping", data: JSON.stringify({ at: Date.now(), prev }) }); beat = Date.now(); }
     }
-    off(); offMsg(); offCheck(); offReady(); conns.delete(cid); trailsWatch.remove(cid);
+    off(); offMsg(); offCheck(); offReady(); offRevoke(); conns.delete(cid); trailsWatch.remove(cid);
   }));
 }

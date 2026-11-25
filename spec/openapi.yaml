@@ -628,6 +628,18 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/panel/agents/{name}/send-now:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: panel agents {name} send-now
+      responses:
+        "200":
+          description: OK
   /v1/panel/agents/{name}/feed:
     parameters:
       - name: name
@@ -637,6 +649,47 @@ paths:
           type: string
     get:
       summary: panel agents {name} feed
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/file:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel agents {name} file
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/image:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel agents {name} image
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: panel agents {name} image
+      responses:
+        "200":
+          description: OK
+  /v1/panel/agents/{name}/history:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel agents {name} history
       responses:
         "200":
           description: OK
@@ -969,6 +1022,12 @@ paths:
           description: Bad value
         "403":
           description: Forbidden (root only)
+  /v1/panel/evals:
+    get:
+      summary: panel evals
+      responses:
+        "200":
+          description: OK
   /v1/panel/routing:
     get:
       summary: panel model routing settings and mode
@@ -1471,6 +1530,48 @@ paths:
   /v1/panel/accounts/{id}:
     delete:
       summary: panel remove an account; root only
+      responses:
+        "200":
+          description: OK
+  /v1/pair/start:
+    post:
+      summary: pair start (open, RFC 8628 device authorization): user code, device code, 10 min expiry; rate-limited per address
+      responses:
+        "200":
+          description: OK
+  /v1/pair/poll:
+    post:
+      summary: pair poll (open): 400 authorization_pending, access_denied, expired_token or invalid_grant; 200 a device token once
+      responses:
+        "200":
+          description: OK
+  /v1/panel/pair/requests:
+    get:
+      summary: panel open pairing requests (names and user codes); owner only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/pair/approve:
+    post:
+      summary: panel approve a pairing request by user code; owner only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/pair/deny:
+    post:
+      summary: panel deny a pairing request by user code; owner only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/devices:
+    get:
+      summary: panel paired devices (name, created, last used); owner only
+      responses:
+        "200":
+          description: OK
+  /v1/panel/devices/{id}:
+    delete:
+      summary: panel revoke a paired device token; owner only
       responses:
         "200":
           description: OK

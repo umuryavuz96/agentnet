@@ -15,6 +15,7 @@ import { problem, type Env } from "../core/http";
 import { summarize as summarizeBg, enabled as bgSumEnabled } from "./bgsum";
 import { emit, flush, get, live, all, events, doing, progressPct, lastSeq, ensureSchema, goneKey, BG_KINDS, BG_STATES, type Snapshot, type Source } from "./store";
 import { pollOpened, pollClosed } from "./liveness";
+import { ownerHas, ownerTake, setOwnerCapable, setOwnerWaker } from "./ownerPlugin";
 import { realTmux, createdOf, hasSession, sessionOf, SCAN_AGENT, type Tmux } from "./windows";
 import { sameTeam, getTeam, addMember, leaveTeams, createTeam, gatePasses, leadGate, teamsOf, goalError } from "./teams";
 import { teamRoutes, sendTeam } from "./teamRoutes";
@@ -101,6 +102,7 @@ const waiters = new Map<string, Set<() => void>>();
 const msgSubs = new Set<(id: number) => void>();
 export function onMessage(fn: (id: number) => void) { msgSubs.add(fn); return () => msgSubs.delete(fn); }
 const wake = (agent: string) => { for (const w of waiters.get(agent) ?? []) w(); };
+setOwnerWaker((name) => { const a = byName(name); if (a) wake(a.id); }); // owner chat via the plugin (ownerPlugin.ts, flag off by default)
 const snippet = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 120);
 /** Queue one message; `state` tells the sender what happened. Gone by despawn/failed = refused; other gone = held 24 h (cap 100). */
 export function enqueueMessage(from: AgentRow, to: AgentRow, body: string, kind: Kind, replyTo: number | null, subject = subjectOf(undefined, body), now = Date.now()): { id: number | null; state: "queued" | "held" | "gone"; lost?: true } {
@@ -351,6 +353,7 @@ export function agentnetRoutes(api: Hono<Env>) {
     const session = typeof b.session === "string" ? b.session : null;
     emit({ agent: a.id, type: "AgentConnected", data: { session, pid: goodPid(b.pid), version: b.version ?? null, model: b.model ?? null, client: b.client ?? "claude-code" }, source: "mod", ts: now, dedup: session ? `hello:${a.id}:${session}:${b.pid ?? ""}:${prev?.life === "gone" ? prev.lifeSince : 0}` : undefined });
     releaseHeld(a.id, now); flush();
+    setOwnerCapable(a.name, Array.isArray(b.caps) && b.caps.includes("owner-chat"));
     audit(`agent:${a.name}`, "agentnet.hello", a.id, "ok", c.get("trace"));
     const snap = get(a.id); // null for the root pseudo-row (root.token): it has no card
     return c.json({ agent: snap ? viewOf(snap) : null, root: isRoot(a), scan: isScan(a), lines: eligible(whoOf(a)), poll_max_s: POLL_MAX_S });
@@ -366,15 +369,16 @@ export function agentnetRoutes(api: Hono<Env>) {
     let msgs = pending(a);
     pollOpened(a.id);
     try {
-      if (!msgs.length && wait > 0) {
+      if (!msgs.length && !ownerHas(a.name) && wait > 0) {
         await new Promise<void>((res) => { const set = waiters.get(a.id) ?? waiters.set(a.id, new Set()).get(a.id)!; const w = () => { set.delete(w); clearTimeout(t); res(); }; set.add(w); const t = setTimeout(w, wait * 1000); c.req.raw.signal.addEventListener("abort", w); });
-        if (!c.req.raw.signal.aborted) await new Promise((res) => setTimeout(res, BURST_MS)); // gather the rest of a burst
+        if (!c.req.raw.signal.aborted && !ownerHas(a.name)) await new Promise((res) => setTimeout(res, BURST_MS)); // gather the rest of a burst; the owner's words never wait for agent mail
         msgs = pending(a);
       }
     } finally { pollClosed(a.id); }
     if (c.req.raw.signal.aborted) return c.body(null, 499 as 400); // the client went away mid-poll (killed, or reconnecting): the sweep decides
+    const own = ownerTake(a.name);
     const names = nameMap(), out = msgs.map((m) => pub(m, names));
-    return c.json({ messages: out, text: out.length ? deliveryText(out) : null });
+    return c.json({ messages: out, text: out.length ? deliveryText(out) : null, ...(own.length ? { owner: own.map(({ nonce, text }) => ({ nonce, text })) } : {}) });
   });
   r.post("/ack", async (c: Ctx) => { // the mod has handed the message to the model (submit resolved, or the pointer is stored)
     const a = c.get("agent"), b = await body(c), ids = Array.isArray(b.ids) ? b.ids.map(Number).filter(Number.isFinite) : [];

@@ -84,6 +84,8 @@ export function prepareConfig(name: string, o: { project: string; mcp?: string[]
   const servers = baseMcp && typeof baseMcp === "object" && !Array.isArray(baseMcp) ? baseMcp : {};
   c.mcpServers = { ...(c.mcpServers && typeof c.mcpServers === "object" && !Array.isArray(c.mcpServers) ? c.mcpServers as Record<string, unknown> : {}), ...structuredClone(servers) };
   c.autoUpdates = false;
+  // A fresh config dir starts Claude Code's onboarding, whose login step ignores CLAUDE_CODE_OAUTH_TOKEN: the agent sat at "Select login method". The account secret is the login.
+  if (acc) c.hasCompletedOnboarding = true;
   writeJson(cf, c);
   // links into the base; a real file or dir Claude Code (or someone) put there is left alone
   for (const n of LINKS) {

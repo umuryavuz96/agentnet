@@ -112,3 +112,30 @@ describe("C: reset the director", () => {
     expect(r.ok).toBe(false); expect(calls).toEqual(["signal 41998"]);
   });
 });
+
+// Resume after a Mac restart opened a Terminal where nothing happened: on its own config dir the director's account env was
+// prefixed onto `cd`, so claude ran on ~/.claude without the token (login screen) and wrote its transcript where Resume never looks.
+describe("own config dir: claude gets the dir and the token, Resume finds the transcript", () => {
+  const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+  const { mkdirSync, writeFileSync, readFileSync, existsSync } = require("node:fs") as typeof import("node:fs");
+  test("withConfigEnv: the command after cd still sees CLAUDE_CONFIG_DIR and the token", () => {
+    const t = mkdtempSync(join(tmpdir(), "cfg-")), f = join(t, "oauth-token");
+    writeFileSync(f, "tok-123", { mode: 0o600 });
+    const cmd = dr.withConfigEnv(`cd ${dr.sq(t)} && printf '%s|%s' "$CLAUDE_CONFIG_DIR" "$CLAUDE_CODE_OAUTH_TOKEN"`, join(t, "claude"), "CLAUDE_CODE_OAUTH_TOKEN", f);
+    expect(cmd).not.toContain("tok-123"); // the secret is read by the shell, never part of the command text
+    const r = spawnSync("sh", ["-c", cmd], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+    expect(r.stdout).toBe(`${join(t, "claude")}|tok-123`);
+  });
+  test("ensureTranscript: own dir file wins; a ~/.claude-only file is copied into the own dir; none: false", () => {
+    const home = mkdtempSync(join(tmpdir(), "h-")), own = mkdtempSync(join(tmpdir(), "own-")), dir = "/Users/you/proj", ID = "0f1e2d3c-1111-2222-3333-444455556666";
+    expect(dr.ensureTranscript(dir, ID, own, home)).toBe(false);
+    const legacy = join(home, ".claude", "projects", dr.transcriptSlug(dir), `${ID}.jsonl`);
+    mkdirSync(join(legacy, ".."), { recursive: true }); writeFileSync(legacy, '{"type":"user"}\n');
+    expect(dr.ensureTranscript(dir, ID, own, home)).toBe(true);
+    const mine = join(own, "projects", dr.transcriptSlug(dir), `${ID}.jsonl`);
+    expect(readFileSync(mine, "utf8")).toBe('{"type":"user"}\n');
+    expect(existsSync(legacy)).toBe(true); // copy, the original stays
+    expect(dr.ensureTranscript(dir, ID, null, home)).toBe(true); // no own dir: ~/.claude as before
+    expect(dr.ensureTranscript(dir, "ffffffff-0000-0000-0000-000000000000", null, home)).toBe(false);
+  });
+});

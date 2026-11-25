@@ -85,6 +85,7 @@ test("prepare: settings from base + deny rules (own token too), trust, only the 
   expect(proj.enabledMcpjsonServers).toEqual(["playwright"]); expect(proj.disabledMcpjsonServers).toEqual(["heavy"]);
   expect(Object.keys(c.mcpServers).sort()).toEqual(["notes", "pigeon"]);
   expect(c.autoUpdates).toBe(false);
+  expect(c.hasCompletedOnboarding).toBe(true); // else Claude Code shows "Select login method" and ignores CLAUDE_CODE_OAUTH_TOKEN (Resume opened a window where nothing happened)
   expect(realpathSync(join(dir, "CLAUDE.md"))).toBe(realpathSync(join(base, "CLAUDE.md")));
   expect(realpathSync(join(dir, "rules", "a.md"))).toBe(realpathSync(join(base, "rules", "a.md")));
   expect(realpathSync(join(dir, "skills"))).toBe(realpathSync(join(base, "skills")));

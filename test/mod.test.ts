@@ -10,17 +10,17 @@ let n = 0;
 /** Load a fresh copy of the mod (its state is module-level) and a fake host. `route` answers each request. */
 async function host(route: (path: string, calls: string[]) => { ok: boolean; status: number; text: string } | Promise<{ ok: boolean; status: number; text: string }>, claude = "2.1.318") {
   const { register } = await import(`../plugin/hooks/register.ts?m=${++n}`);
-  const logs: string[] = [], handlers: Record<string, H[]> = {}, calls: string[] = [], bodies: string[] = [], afters: (() => void)[] = [], tools: string[] = [];
+  const logs: string[] = [], handlers: Record<string, H[]> = {}, calls: string[] = [], bodies: string[] = [], hellos: Record<string, unknown>[] = [], afters: (() => void)[] = [], tools: string[] = [];
   register((name: string, ...rest: unknown[]) => { (handlers[name] ??= []).push(rest.at(-1) as H); });
   const $ = {
     env: { get: async (k: string) => (k === "AGENTNET_TOKEN_FILE" ? tokenFile : null) }, fs: { read: async () => "tok" },
     session: { id: async () => "sid", model: async () => "m", version: async () => ({ version: claude }), append: async () => {} },
     process: { run: async () => ({ stdout: "4242\n" }) }, prompt: { submit: async () => {} }, ui: { status: () => {}, log: (t: string) => { logs.push(t); } }, tool: { register: async (t: { name: string }) => { tools.push(t.name); } },
     clock: { after: (_ms: number, f: () => void) => { afters.push(f); }, sleep: async () => {} },
-    http: { fetch: async (url: string, init?: { body?: string }) => { const path = url.replace(/^.*\/agentnet/, "").split("?")[0]!; calls.push(path); if (path === "/bg" && init?.body) bodies.push(init.body); return route(path, calls); } },
+    http: { fetch: async (url: string, init?: { body?: string }) => { const path = url.replace(/^.*\/agentnet/, "").split("?")[0]!; calls.push(path); if (path === "/bg" && init?.body) bodies.push(init.body); if (path === "/hello" && init?.body) hellos.push(JSON.parse(init.body)); return route(path, calls); } },
   };
   const fire = (name: string, e: Record<string, unknown> = {}) => (name === "tool.call" ? handlers[name]!.at(-1)! : handlers[name]![0]!)($, e, async (x: unknown) => x); // tool.call: the general handler is registered last
-  return { fire, calls, bodies, afters, tools, logs, count: (p: string) => calls.filter((c) => c === p).length };
+  return { fire, calls, bodies, hellos, afters, tools, logs, count: (p: string) => calls.filter((c) => c === p).length };
 }
 const ok = (o: unknown = {}) => ({ ok: true, status: 200, text: JSON.stringify(o) });
 const settle = () => Bun.sleep(30);
@@ -34,6 +34,30 @@ describe("M4: a failed first hello is retried", () => {
     h.afters.forEach((f) => f()); await settle();
     expect(h.count("/poll")).toBe(1);
     expect(new Set(h.tools).size).toBe(h.tools.length);
+  });
+});
+
+describe("owner chat via the plugin", () => {
+  test("hello says caps owner-chat on a Claude Code with asUser (2.1.286+), none on an older one", async () => {
+    const now = await host(() => ok({ root: false }), "2.1.331");
+    await now.fire("session.start"); await settle();
+    expect(now.hellos[0]!.caps).toEqual(["owner-chat"]);
+    const floor = await host(() => ok({ root: false }), "2.1.286");
+    await floor.fire("session.start"); await settle();
+    expect(floor.hellos[0]!.caps).toEqual(["owner-chat"]);
+    const old = await host(() => ok({ root: false }), "2.1.285");
+    await old.fire("session.start"); await settle();
+    expect(old.hellos[0]!.caps).toEqual([]);
+  });
+  test("a poll that works again after the service was down says hello again (a restart forgets the caps)", async () => {
+    let polls = 0;
+    const h = await host((p) => p === "/poll" ? (++polls === 1 ? { ok: false, status: 0, text: "" } : polls === 2 ? ok({ messages: [] }) : { ok: false, status: 401, text: "{}" }) : ok({ root: false }));
+    await h.fire("session.start"); await settle();
+    expect(h.count("/hello")).toBe(1);
+    h.afters.splice(0).forEach((f) => f()); await settle();
+    expect(h.count("/poll")).toBe(3);
+    expect(h.count("/hello")).toBe(2);
+    expect(h.hellos[1]!.caps).toEqual(["owner-chat"]);
   });
 });
 
@@ -125,5 +149,28 @@ describe("background shell rows", () => {
     expect(h.bodies.map((b) => JSON.parse(b).items[0]).map((i) => [i.id, i.state])).toEqual([["bg:b785n6bzy", "running"], ["bg:b785n6bzy", "done"]]);
     await h.fire("prompt.submit", { text: "<task-id>b785n6bzy</task-id>", origin: { kind: "composer" }, wait: false }); await settle();
     expect(h.bodies).toHaveLength(2); // a typed prompt never closes a row
+  });
+});
+
+describe("a delivery that lands while the last turn is ending", () => {
+  // Found live 2026-11-23: three new agents got their brief while their first turn was ending; it was appended to that turn,
+  // the turn ended without another step, and the agents sat idle with the brief unread.
+  const run = async (stepAfter: boolean) => {
+    let polls = 0;
+    const h = await host((p) => p === "/poll" ? (++polls === 1 ? ok({ messages: [{ id: 7 }], text: "#7 [task] root: \"Your brief\"" }) : new Promise(() => {})) : ok({ root: false }));
+    await h.fire("session.start"); await settle();
+    await h.fire("turn.start", { turnId: "t1", text: "boot" });
+    h.afters.splice(0).forEach((f) => f()); await settle(); // the loop starts, the poll answers while the turn runs: appended
+    if (stepAfter) await h.fire("tool.call", { tool: "mcp__agentnet__inbox" });
+    await h.fire("turn.complete", { turnId: "t1", reason: "answer" });
+    return { afters: h.afters };
+  };
+  test("no step after the append: a new turn is scheduled with the same text", async () => {
+    const { afters } = await run(false);
+    expect(afters.length).toBeGreaterThan(0);
+  });
+  test("a step after the append: nothing is scheduled again", async () => {
+    const { afters } = await run(true);
+    expect(afters.length).toBe(0);
   });
 });

@@ -5,17 +5,25 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "feed-"));
 process.env.AGENTNET_CLAUDE_HOME = home;
-const { FeedParser, Sent, stepTitle, transcriptFor, projectDir } = await import("./feed");
+const { FeedParser, Sent, stepTitle, toolKind, transcriptFor, projectDir } = await import("./feed");
 const fx = join(import.meta.dir, "fixtures", "feed-session.jsonl");
 const none = () => null;
 
 describe("parser", () => {
   const p = new FeedParser(fx, "a", none, 0); p.update();
   const by = (id: string) => p.get(id)!;
-  test("owner prompt, assistant text (redacted), no thinking", () => {
+  test("owner prompt, assistant text (redacted), thinking as its own kind", () => {
     expect(by("u1")).toMatchObject({ kind: "owner", text: "Please run the tests" });
     expect(by("a1:1").text).not.toContain("sk-abcdef");
-    expect(p.items.some((i) => i.text?.includes("secret thoughts"))).toBe(false);
+    expect(by("a1:0")).toMatchObject({ kind: "thinking", text: "secret thoughts" });
+    expect(p.items.filter((i) => i.kind !== "thinking").some((i) => i.text?.includes("secret thoughts"))).toBe(false);
+  });
+  test("thinking text is redacted like the rest; a signature-only block has no text", () => {
+    const f = join(home, "th.jsonl"); writeFileSync(f, "");
+    const q = new FeedParser(f, "a", none, 0);
+    appendFileSync(f, JSON.stringify({ type: "assistant", uuid: "x", timestamp: "2026-11-10T10:00:00Z", message: { content: [{ type: "thinking", thinking: "use API_KEY=sk-abcdef1234567890abcd here" }, { type: "thinking", thinking: "", signature: "zz" }] } }) + "\n"); q.update();
+    expect(q.get("x:0")!.text).not.toContain("sk-abcdef"); expect(q.get("x:0")!.text).toContain("use");
+    expect(q.get("x:1")).toMatchObject({ kind: "thinking" }); expect(q.get("x:1")!.text).toBeUndefined();
   });
   test("tool calls get plain titles and a result", () => {
     expect(by("t1")).toMatchObject({ kind: "step", title: "Running tests", status: "ok" });
@@ -81,6 +89,18 @@ describe("dedupe of typed prompts", () => {
   });
 });
 
+describe("a claimed line keeps its nonce for every reader", () => {
+  test("a second parser of the same line (a reconnect, another device) gets the same nonce", () => {
+    const f = join(home, "twice.jsonl"); writeFileSync(f, JSON.stringify({ type: "user", uuid: "m9", timestamp: "2026-11-10T10:00:01Z", origin: { kind: "human" }, message: { content: "once" } }) + "\n");
+    const s = new Sent(); s.add("a", "once", "nq", Date.parse("2026-11-10T10:00:00Z"));
+    const one = new FeedParser(f, "a", (a, t, ts, id) => s.claim(a, t, ts, id), 0); one.update();
+    const two = new FeedParser(f, "a", (a, t, ts, id) => s.claim(a, t, ts, id), 0); two.update();
+    const hist = new FeedParser(f, "a", (a, _t, _ts, id) => (id ? s.seen(a, id) : null), 0); hist.update();
+    expect([one.get("m9")!.nonce, two.get("m9")!.nonce, hist.get("m9")!.nonce]).toEqual(["nq", "nq", "nq"]);
+    expect(s.pending("a", Date.parse("2026-11-10T10:00:02Z"))).toHaveLength(0);
+  });
+});
+
 describe("transcript path", () => {
   const cwd = "/Users/x/my.proj", dir = projectDir(cwd);
   mkdirSync(dir, { recursive: true });
@@ -99,4 +119,98 @@ test("stepTitle words", () => {
   expect(stepTitle("Write", { file_path: "/a/b.ts" })).toBe("Writing b.ts");
   expect(stepTitle("mcp__claude-in-chrome__navigate", {})).toBe("Chrome · navigate");
   expect(stepTitle("Bash", { command: "ls", description: "List files" })).toBe("List files");
+});
+
+describe("pictures and history", () => {
+  const line = (o: object) => JSON.stringify({ timestamp: "2026-11-10T10:00:00Z", ...o }) + "\n";
+  test("a long image path or URL survives the secret filter; a secret next to it does not", async () => {
+    const { redactText } = await import("./feed");
+    const path = "/Users/Someone/Projects/MyApp2026/docs/internal/Shots/After-Change-1920-dark.png";
+    expect(redactText(`{"type":"image","src":"${path}"}`)).toContain(path);
+    expect(redactText("see https://example.com/Assets/Screens2026/LongFolderNameHere/shot.webp now")).toContain("LongFolderNameHere/shot.webp");
+    const out = redactText(`API_KEY=sk-abcdef1234567890abcd ${path} https://user:hunter2@example.com/a.png`);
+    expect(out).toContain(path); expect(out).not.toContain("sk-abcdef"); expect(out).not.toContain("hunter2");
+  });
+  test("a step that reads an image file carries its path; other reads do not", () => {
+    const f = join(home, "img.jsonl");
+    writeFileSync(f, line({ type: "assistant", uuid: "a", message: { content: [{ type: "tool_use", id: "r1", name: "Read", input: { file_path: "/w/shots/a.PNG" } }, { type: "tool_use", id: "r2", name: "Read", input: { file_path: "/w/a.ts" } }] } })
+      + line({ type: "user", uuid: "b", message: { content: [{ type: "tool_result", tool_use_id: "r1", content: "ok" }] } }));
+    const q = new FeedParser(f, "a", none, 0); q.update();
+    expect(q.get("r1")).toMatchObject({ status: "ok", img: "/w/shots/a.PNG" });
+    expect(q.get("r2")!.img).toBeUndefined();
+    expect([q.get("r1")!.tool, q.get("r2")!.tool]).toEqual(["image", "read"]);
+  });
+  test("the stream's parser keeps a window; a history parser keeps everything", () => {
+    const f = join(home, "long.jsonl");
+    writeFileSync(f, Array.from({ length: 30 }, (_, i) => line({ type: "assistant", uuid: `m${i}`, message: { content: [{ type: "text", text: `reply ${i}` }] } })).join(""));
+    const win = new FeedParser(f, "a", none, 0, 10); win.update();
+    const all = new FeedParser(f, "a", none, 0, Infinity); all.update();
+    expect(win.items.length).toBe(10); expect(all.items.length).toBe(30);
+    expect(all.items[0]!.text).toBe("reply 0");
+  });
+});
+
+describe("the kind of a tool call", () => {
+  test("each tool falls in one kind", () => {
+    const k = (n: string, i: Record<string, unknown> = {}) => toolKind(n, i);
+    expect([k("Read", { file_path: "/a.ts" }), k("Read", { file_path: "/a.webp" }), k("Edit"), k("Write"), k("Grep"), k("Glob"), k("WebFetch"), k("WebSearch"), k("Agent"), k("Bash"), k("mcp__claude-in-chrome__navigate"), k("mcp__playwright__browser_click"), k("mcp__agentnet__send"), k("Skill")])
+      .toEqual(["read", "image", "edit", "edit", "search", "search", "web", "web", "agent", "command", "browser", "browser", "other", "other"]);
+  });
+});
+
+describe("inputText", () => {
+  test("the short form of what a call was given", async () => {
+    const { inputText } = await import("./feed");
+    expect(inputText("Bash", { command: "bun test" })).toBe("bun test");
+    expect(inputText("Edit", { old_string: "a", new_string: "b" })).toBe("old a\nnew b");
+    expect(inputText("Grep", { pattern: "wk-tile", path: "web/src" })).toBe("wk-tile in web/src");
+    expect(inputText("Read", { file_path: "/x/y.ts" })).toBe("/x/y.ts");
+    expect(inputText("Bash", {})).toBe("");
+    expect(inputText("Bash", { command: "x".repeat(5000) }).length).toBeLessThanOrEqual(1501);
+  });
+});
+
+describe("stepFile", () => {
+  test("a Write keeps its path and content, an Edit and a MultiEdit their old and new text", async () => {
+    const { stepFile, WRITE_MAX, EDIT_MAX } = await import("./feed");
+    expect(stepFile("Write", { file_path: "/r/a.ts", content: "const a = 1;\n" })).toEqual({ path: "/r/a.ts", content: "const a = 1;\n" });
+    expect(stepFile("Edit", { file_path: "/r/a.ts", old_string: "a", new_string: "b" })).toEqual({ path: "/r/a.ts", edits: [{ old: "a", new: "b" }] });
+    expect(stepFile("MultiEdit", { file_path: "/r/a.ts", edits: [{ old_string: "x", new_string: "y" }, { old_string: "p", new_string: "q" }] })!.edits).toEqual([{ old: "x", new: "y" }, { old: "p", new: "q" }]);
+    expect(stepFile("Read", { file_path: "/r/a.ts" })).toBeNull();
+    expect(stepFile("Write", { content: "no path" })).toBeNull();
+    expect(stepFile("Write", { file_path: "/r/b.md", content: "x".repeat(20_000) })!.content!.length).toBeLessThanOrEqual(WRITE_MAX + 1);
+    const big = stepFile("MultiEdit", { file_path: "/r/a.ts", edits: Array.from({ length: 10 }, () => ({ old_string: "o".repeat(1000), new_string: "n".repeat(1000) })) })!;
+    expect(big.edits!.reduce((n, e) => n + e.old.length + e.new.length, 0)).toBeLessThanOrEqual(EDIT_MAX + 4);
+  });
+});
+
+describe("owner chat handed over by the plugin", () => {
+  test("an asUser agentnet prompt is the owner and claims its nonce; a framed one stays a delivery", () => {
+    const f = join(home, "ov.jsonl");
+    writeFileSync(f, [
+      JSON.stringify({ type: "user", uuid: "o1", timestamp: "2026-11-24T10:00:00Z", origin: { kind: "plugin", name: "agentnet", asUser: true }, message: { content: "hello from the page" } }),
+      JSON.stringify({ type: "user", uuid: "o2", timestamp: "2026-11-24T10:00:01Z", origin: { kind: "plugin", name: "agentnet" }, message: { content: "boot text" } }),
+      JSON.stringify({ type: "user", uuid: "o3", timestamp: "2026-11-24T10:00:02Z", origin: { kind: "plugin", name: "other", asUser: true }, message: { content: "not ours" } }),
+    ].join("\n") + "\n");
+    const p = new FeedParser(f, "a", (_a: string, t: string) => (t === "hello from the page" ? { nonce: "n-9" } : null), 0); p.update();
+    expect(p.items.map((i) => [i.id, i.kind])).toEqual([["o1", "owner"]]);
+    expect(p.items[0]).toMatchObject({ text: "hello from the page", nonce: "n-9" });
+  });
+});
+
+describe("a long tmux paste wrapped in <pasted_content>", () => {
+  test("claims its nonce and shows the owner's text without the wrapper, typed or queued mid-turn", () => {
+    const f = join(home, "paste.jsonl"), body = "[T1] ignore the filler\n" + "filler line 0123456789.\n".repeat(200) + "END T1";
+    const wrapped = `\n\n<pasted_content id="49b9">\n${body}\n</pasted_content id="49b9">\n`;
+    writeFileSync(f, [
+      JSON.stringify({ type: "user", uuid: "p1", timestamp: "2026-11-24T10:00:00Z", origin: { kind: "human" }, message: { content: wrapped } }),
+      JSON.stringify({ type: "attachment", uuid: "p2", timestamp: "2026-11-24T10:00:01Z", attachment: { type: "queued_command", prompt: `look: ${wrapped}` } }),
+    ].join("\n") + "\n");
+    const s = new Sent(); s.add("a", body, "n-1", Date.parse("2026-11-24T09:59:59Z")); s.add("a", `look: ${body}`, "n-2", Date.parse("2026-11-24T09:59:59Z"));
+    const p = new FeedParser(f, "a", (a, t, ts) => s.claim(a, t, ts), 0); p.update();
+    expect(p.items.map((i) => [i.id, i.kind, (i as { nonce?: string }).nonce])).toEqual([["p1", "owner", "n-1"], ["p2", "owner", "n-2"]]);
+    expect((p.items[0] as { text: string }).text.startsWith("[T1] ignore the filler")).toBe(true);
+    expect((p.items[0] as { text: string }).text).not.toContain("pasted_content");
+    expect(s.pending("a", Date.parse("2026-11-24T10:00:02Z"))).toEqual([]);
+  });
 });

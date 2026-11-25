@@ -10,16 +10,17 @@ const { agentPath } = await import("../src/net/routes");
 const sample = (p: string) => p.replace("{id}", p.startsWith("/v1/agent/tasks") || p.includes("/checks/") || p.includes("/goals/") || p.includes("/items/") ? "3" : "t-1").replace("{name}", "a-1").replace("{tid}", "3").replace("{n}", "3").replace("{msg}", "3").replace("{op}", "start").replace("{line}", "a-1");
 describe("toLegacy", () => {
   test("every v1 path maps to an agent or panel route", () => {
-    for (const p of V1_PATHS.filter((x) => x !== "/v1/health")) {
+    for (const p of V1_PATHS.filter((x) => x !== "/v1/health" && !x.startsWith("/v1/pair/"))) {
       const l = toLegacy(sample(p));
       expect(l, p).not.toBeNull();
       const bare = l!.replace(/^\/api\/v1/, "");
-      const panel = /^\/(agentnet\/(snapshot|stream|watch|usage|scores|discipline|metrics|summary|windows\/close-all|agents\/[a-z0-9-]+\/(score|tasks|message|open|close|schedules|stop|despawn|run-schedule|prompt|feed))|agentnet-panel\/(teams.*|checks(\/\d+\/resolve)?|goals(\/usage|\/\d+\/(missing|heart))?|items\/\d+\/mark|lines(\/.*)?)|trails\/(search|stats)|bgjobs(\/[A-Za-z0-9._-]+(\/file)?)?|arsenal(\/(agent|roles))?|brains(\/import)?|agent-routing|agent-compact|agent-hooks(\/.*)?|agent-update(\/.*)?|agent-director(\/(start|move|pick-folder|reset|answer))?|agent-adopt(\/(scan|cancel|plan|apply|rollback|clean))?|agent-import(\/(proposal|scan|cancel|decide|preview|apply|rollback|stream))?|accounts(\/[a-z0-9-]+)?)$/.test(bare);
+      const panel = /^\/(agentnet\/(snapshot|stream|watch|usage|scores|discipline|metrics|summary|windows\/close-all|agents\/[a-z0-9-]+\/(score|tasks|message|open|close|schedules|stop|despawn|run-schedule|prompt|send-now|feed|image|file|history))|agentnet-panel\/(teams.*|checks(\/\d+\/resolve)?|goals(\/usage|\/\d+\/(missing|heart))?|items\/\d+\/mark|lines(\/.*)?)|trails\/(search|stats)|bgjobs(\/[A-Za-z0-9._-]+(\/file)?)?|arsenal(\/(agent|roles))?|brains(\/import)?|agent-routing|agent-compact|evals\/summary|agent-hooks(\/.*)?|agent-update(\/.*)?|agent-director(\/(start|move|pick-folder|reset|answer))?|agent-adopt(\/(scan|cancel|plan|apply|rollback|clean))?|agent-import(\/(proposal|scan|cancel|decide|preview|apply|rollback|stream))?|accounts(\/[a-z0-9-]+)?|pair\/(requests|approve|deny|devices(\/[A-Za-z0-9_-]+)?))$/.test(bare);
       expect(agentPath(l!) || panel, `${p} -> ${l}`).toBe(true);
     }
   });
   test("spawn lives only under admin", () => { expect(toLegacy("/v1/agent/spawn")).toBeNull(); });
   test("health is served directly", () => { expect(toLegacy("/v1/health")).toBeNull(); });
+  test("pairing start and poll are served directly (open routes)", () => { expect(toLegacy("/v1/pair/start")).toBeNull(); expect(toLegacy("/v1/pair/poll")).toBeNull(); });
 });
 
 describe("toLegacy: phase 5b panel paths", () => {

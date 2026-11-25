@@ -1,15 +1,15 @@
 import { ref } from "vue";
 
-export const PAGES = ["agents", "asks", "usage", "scores", "trails", "lines", "search", "activity", "hooks", "routing", "brains", "settings"] as const;
+export const PAGES = ["agents", "asks", "usage", "scores", "trails", "lines", "search", "activity", "hooks", "routing", "brains", "evals", "settings"] as const;
 export type Page = (typeof PAGES)[number];
 export interface Route { page: Page; query: Record<string, string> }
 
 /** "#/scores?x=1" → { page: "scores", query: { x: "1" } }. "", "#", "#/", an unknown page or a malformed hash → agents, {}.
- *  Aliases: "#/teams?team=t" → { page: "agents", query: { team: "t" } }; "#/personas" → brains (the persona page was replaced); "#/waiting" → asks (the Waiting page was merged into Asks). */
+ *  Aliases: "#/teams?team=t" → { page: "agents", query: { team: "t" } }; "#/personas" → brains (the persona page was replaced); "#/waiting" → asks (the Waiting page was merged into Asks); "#/pair?code=X" → asks with { code: X } (an app's pairing link). */
 export function parseHash(hash: string): Route {
   const m = /^#\/([a-z]+)(?:\?(.*))?$/.exec(hash);
   if (!m) return { page: "agents", query: {} };
-  const name = m[1] === "teams" ? "agents" : m[1] === "personas" ? "brains" : m[1] === "waiting" ? "asks" : m[1];
+  const name = m[1] === "teams" ? "agents" : m[1] === "personas" ? "brains" : m[1] === "waiting" || m[1] === "pair" ? "asks" : m[1];
   if (!(PAGES as readonly string[]).includes(name)) return { page: "agents", query: {} };
   const query: Record<string, string> = {};
   try {

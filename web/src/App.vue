@@ -22,23 +22,24 @@ import Routing from "./pages/Routing.vue";
 import Brains from "./pages/Brains.vue";
 import Settings from "./pages/Settings.vue";
 import BrandLockup from "./brand/BrandLockup.vue";
+import Evals from "./pages/Evals.vue";
 import UpdatePill from "./components/UpdatePill.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 
 const em = readEmbed(location.search);
-const COMPONENTS: Record<Page, Component> = { agents: Agents, asks: Asks, usage: Usage, scores: Scores, trails: Trails, lines: Lines, search: Search, activity: Activity, hooks: Hooks, routing: Routing, brains: Brains, settings: Settings };
+const COMPONENTS: Record<Page, Component> = { agents: Agents, asks: Asks, usage: Usage, scores: Scores, trails: Trails, lines: Lines, search: Search, activity: Activity, hooks: Hooks, routing: Routing, brains: Brains, evals: Evals, settings: Settings };
 const NAV: Record<Page, [string, IconName]> = {
   agents: ["Agents", "network"], asks: ["Asks", "circle-check"], usage: ["Usage", "chart-line"], scores: ["Scores", "gauge"], trails: ["Trails", "history"], lines: ["Lines", "layers"],
-  search: ["Search", "search"], activity: ["Activity", "activity"], hooks: ["Hooks", "webhook"], routing: ["Routing", "sliders"], brains: ["Brains", "brain"], settings: ["Settings", "settings"],
+  search: ["Search", "search"], activity: ["Activity", "activity"], hooks: ["Hooks", "webhook"], routing: ["Routing", "sliders"], brains: ["Brains", "brain"], evals: ["Evals", "gauge"], settings: ["Settings", "settings"],
 };
 /** Rail groups (board page 01). Search stays a page until the palette lands. */
 const GROUPS: { title: string; pages: Page[] }[] = [
   { title: "Network", pages: ["asks", "agents", "activity", "search"] },
-  { title: "Insights", pages: ["usage", "scores", "trails", "lines"] },
+  { title: "Insights", pages: ["usage", "scores", "evals", "trails", "lines"] },
   { title: "Setup", pages: ["hooks", "routing", "brains"] },
 ];
 const TABS: Page[] = ["agents", "asks", "activity", "usage"];
-const MORE: Page[] = ["search", "scores", "trails", "lines", "hooks", "routing", "brains", "settings"];
+const MORE: Page[] = ["search", "scores", "evals", "trails", "lines", "hooks", "routing", "brains", "settings"];
 const palette = ref(false);
 let stopNet: (() => void) | null = null, stopUsage: (() => void) | null = null; // the rail counts need the live stream and the usage poll on every page
 // Setup counts: hooks switched off or failing, and the routing mode when it is not normal. One light GET each, every 60 s.
@@ -98,7 +99,7 @@ watch(page, () => { menu.value = false; });
 </script>
 
 <template>
-  <div class="shell" :class="{ embed: em.embed, fixed: shownPage === 'agents' || shownPage === 'asks' || shownPage === 'usage' || shownPage === 'scores' || shownPage === 'trails' || shownPage === 'lines' || shownPage === 'search' || shownPage === 'activity' || shownPage === 'hooks' || shownPage === 'brains' || shownPage === 'routing' || shownPage === 'settings' }">
+  <div class="shell" :class="{ embed: em.embed, fixed: shownPage === 'agents' || shownPage === 'asks' || shownPage === 'usage' || shownPage === 'scores' || shownPage === 'trails' || shownPage === 'lines' || shownPage === 'search' || shownPage === 'activity' || shownPage === 'hooks' || shownPage === 'brains' || shownPage === 'evals' || shownPage === 'routing' || shownPage === 'settings' }">
     <aside v-if="!em.embed" class="rail" aria-label="agentnet">
       <a class="brand" href="#/agents" aria-label="agentnet home"><BrandLockup :height="26" /></a>
       <button type="button" class="find" title="Find or run (⌘K)" @click="palette = true"><Icon name="search" :size="16" /><span>Find or run</span><kbd>⌘K</kbd></button>

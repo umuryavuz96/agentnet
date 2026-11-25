@@ -71,6 +71,19 @@ describe("auth", () => {
     expect((await req(SNAP, { token: agentTok })).status).toBe(200);
     expect((await req("/api/v1/agentnet/inbox", { token: agentTok })).status).not.toBe(403);
   });
+  test("6c an agent cannot speak as the owner: the owner prompt route refuses its token, nothing reaches the owner queue", async () => {
+    const op = await import("../src/net/ownerPlugin"); op.ownerReset();
+    process.env.AGENTNET_OWNER_VIA_PLUGIN = "1";
+    try {
+      for (const p of ["/api/v1/agentnet/agents/auth-r-1/prompt", "/api/v1/panel/agents/auth-r-1/prompt"]) {
+        const r = await req(p, { method: "POST", body: { text: "as owner", via: "plugin" }, token: agentTok });
+        expect(r.status).toBe(403);
+      }
+      // the agent's own send route takes no owner flag: whatever it passes, the target gets a normal delivery
+      await req("/api/v1/agentnet/send", { method: "POST", body: { to: "root", body: "x", source: "owner" }, token: agentTok });
+      expect(op.ownerHas("auth-r-1")).toBe(false); expect(op.ownerHas("root")).toBe(false);
+    } finally { delete process.env.AGENTNET_OWNER_VIA_PLUGIN; }
+  });
   test("7 login code: once, 302 + HttpOnly SameSite=Strict cookie; reuse and expiry 401", async () => {
     const code = await newCode();
     const r = await req(`/login?code=${code}`);

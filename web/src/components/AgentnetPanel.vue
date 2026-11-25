@@ -4,12 +4,11 @@
 // deployment drawer and the GitHub Actions run sidebar (docs/research/agent-panel.md): header, a row of key numbers,
 // "Now" as the loudest block, tasks as a checklist, messages as a thread, identity and hooks folded away.
 // Every value comes from the agentnet snapshot row; a field the row does not have is left out, never invented.
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import AgentTrail from "./AgentTrail.vue";
 import { brk } from "../crewTree";
 import TrailLine from "./TrailLine.vue";
 import Icon from "../ui/Icon.vue";
-import AgentnetChat from "./AgentnetChat.vue";
 import AgentnetJobs from "./AgentnetJobs.vue";
 import AgentnetControls from "./AgentnetControls.vue";
 import AgentnetUsage from "./AgentnetUsage.vue";
@@ -21,7 +20,7 @@ import { net, hooks, teams, humanDoing, ctxView, windows, type AgentRow, type Ho
 import { api, toast } from "../ui/api";
 
 const props = defineProps<{ row: AgentRow | null; name: string; sheet: boolean; startTab?: "trail" }>();
-const emit = defineEmits<{ close: []; open: []; closeWin: [] }>();
+const emit = defineEmits<{ close: []; open: []; closeWin: []; chat: [] }>();
 
 const dur = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return s + "s"; const m = Math.floor(s / 60); if (m < 60) return m + "m"; const h = Math.floor(m / 60); return h < 48 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`; };
 const ago = (t: number) => dur(net.now - t) + " ago";
@@ -115,14 +114,13 @@ async function post(what: "stop" | "despawn", ok: string) {
 }
 const interrupt = () => post("stop", `Interrupted ${props.name}`);
 const stopAgent = () => post("despawn", `Stopped ${props.name}`);
-const goMsg = () => { menuOpen.value = false; if (tab.value !== "chat") setTab("chat"); };
+/** The chat is its own view now (owner 8362): Message and an ask open it. */
+const goMsg = () => { menuOpen.value = false; emit("chat"); };
 
-// Segmented tabs: Overview | Chat. Background jobs are a fixed collapsible panel under them, visible on both. Switching slides the body a few px and fades (transform + opacity only).
-const TABS = [{ id: "now", label: "Now" }, { id: "trail", label: "Trail" }, { id: "chat", label: "Messages" }, { id: "usage", label: "Usage" }] as const;
+// Segmented tabs: Now | Trail | Usage (the chat left the panel, owner 8362). Background jobs are a fixed collapsible panel under them, visible on both. Switching slides the body a few px and fades (transform + opacity only).
+const TABS = [{ id: "now", label: "Now" }, { id: "trail", label: "Trail" }, { id: "usage", label: "Usage" }] as const;
 type Tab = (typeof TABS)[number]["id"];
 const tab = ref<Tab>(props.startTab ?? "now"); // the team panel's Plans tab opens an agent on its Trail
-/** The pane on screen. It follows tab only when the new pane enters, so the old pane keeps its own layout while it fades out (out-in). */
-const shown = ref<Tab>(tab.value);
 const tabIdx = computed(() => TABS.findIndex((t) => t.id === tab.value));
 const slide = ref("fwd");
 const setTab = (t: Tab) => { slide.value = TABS.findIndex((x) => x.id === t) > tabIdx.value ? "fwd" : "back"; tab.value = t; nextTick(() => { if (el.value) { const b = el.value.querySelector<HTMLElement>(".bd"); if (b) b.scrollTop = 0; } }); };
@@ -131,7 +129,7 @@ function tabKey(e: KeyboardEvent) {
   e.preventDefault(); const n = TABS[(tabIdx.value + d + TABS.length) % TABS.length].id; setTab(n);
   nextTick(() => el.value?.querySelector<HTMLElement>(`[data-tab="${n}"]`)?.focus());
 }
-watch(() => props.name, () => { tab.value = "now"; shown.value = "now"; menuOpen.value = false; stopAsk.value = false; openEarlier.value = false; openJob.value = 0; seenJobs.value.clear(); });
+watch(() => props.name, () => { tab.value = "now"; menuOpen.value = false; stopAsk.value = false; openEarlier.value = false; openJob.value = 0; seenJobs.value.clear(); });
 
 // ---- phone: drag the sheet down by its header to close it ----
 const el = ref<HTMLElement | null>(null);
@@ -152,11 +150,20 @@ function trap(e: KeyboardEvent) {
   const first = f[0], last = f[f.length - 1];
   if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 }
+// The header floats over the body: its measured height becomes --hd-h so the first row clears it at rest.
+let hdRo: ResizeObserver | null = null;
+onMounted(() => {
+  const a = el.value, h = a?.querySelector<HTMLElement>(":scope > .hd");
+  if (!a || !h || typeof ResizeObserver === "undefined") return;
+  hdRo = new ResizeObserver(() => a.style.setProperty("--hd-h", h.offsetHeight + "px"));
+  hdRo.observe(h);
+});
+onBeforeUnmount(() => hdRo?.disconnect());
 defineExpose({ el });
 </script>
 
 <template>
-  <aside ref="el" :class="['ap', 'side-panel', 'glass-strong', { sheet, 'chat-on': tab === 'chat' }]" :role="sheet ? 'dialog' : 'complementary'" :aria-modal="sheet || undefined" :aria-label="`${name} details`" tabindex="-1" @keydown="trap">
+  <aside ref="el" :class="['ap', 'side-panel', 'glass-strong', { sheet }]" :role="sheet ? 'dialog' : 'complementary'" :aria-modal="sheet || undefined" :aria-label="`${name} details`" tabindex="-1" @keydown="trap">
     <header class="hd" @pointerdown="onDown" @pointermove="onMove" @pointerup="onUp" @pointercancel="onUp">
       <span v-if="sheet" class="grab" aria-hidden="true" />
       <div class="t1">
@@ -166,8 +173,7 @@ defineExpose({ el });
         <span v-if="teamName" class="ap-chip tm">{{ teamName }}</span></div>
         <button type="button" class="x" data-close aria-label="Close panel" @click="emit('close')"><Icon name="x" :size="20" /></button>
       </div>
-      <!-- Messages need the height: the goal and the boss fold away while it is open -->
-      <div :class="['fold-r', 'hdf', { shut: tab === 'chat' }]" :inert="tab === 'chat' || undefined"><div class="fold-in">
+      <div class="fold-r hdf"><div class="fold-in">
       <p v-if="r?.goal || r?.job || isRoot" class="goal-t">{{ r?.goal ?? r?.job ?? "Director of every agent · main session" }}</p>
       <TrailLine v-if="r && !isRoot" class="hdtl" :row="r" />
       <p v-if="r?.boss" class="boss">Reports to <a :href="'#/agents?agent=' + encodeURIComponent(r.boss)">{{ r.boss }}</a><template v-if="projectName"> · {{ projectName }}</template></p>
@@ -177,10 +183,9 @@ defineExpose({ el });
       </div>
     </header>
 
-    <div :class="['bd', { fill: shown === 'chat' }]">
-     <Transition :name="'tab-' + slide" mode="out-in" @before-enter="shown = tab">
-      <AgentnetChat v-if="tab === 'chat'" id="ap-pn-chat" key="chat" role="tabpanel" aria-labelledby="ap-tab-chat" :name="name" :is-root="isRoot" :gone="gone && !isRoot" :connected="!!r && r.life === 'live' && !!r.connectedAt" :working="!!r && r.life === 'live' && r.state === 'working'" />
-      <div v-else :id="`ap-pn-${tab}`" :key="tab" class="ap-pn" role="tabpanel" :aria-labelledby="`ap-tab-${tab}`">
+    <div class="bd">
+     <Transition :name="'tab-' + slide" mode="out-in">
+      <div :id="`ap-pn-${tab}`" :key="tab" class="ap-pn" role="tabpanel" :aria-labelledby="`ap-tab-${tab}`">
       <p v-if="!r" class="none">No live reading for {{ name }} yet.</p>
       <template v-else-if="tab === 'now'">
         <!-- Now: the loudest block, GitHub Actions style -->
@@ -295,7 +300,7 @@ defineExpose({ el });
      </Transition>
     </div>
 
-    <footer v-if="r && tab !== 'chat'" class="bar">
+    <footer v-if="r" class="bar">
       <div v-if="stopAsk" class="confirm" role="alertdialog" :aria-label="`Stop ${name}?`" @keydown.esc.stop="stopAsk = false">
         <p><b>Stop {{ name }}?</b> Its turn ends now and its window closes. <template v-if="openTasks && plan && job">Job {{ job.id }} closes as dropped and its {{ openTasks }} open {{ openTasks === 1 ? "step is" : "steps are" }} marked unfinished.</template><template v-else-if="openTasks">Its {{ openTasks }} open {{ openTasks === 1 ? "task stays" : "tasks stay" }} on the list for whoever picks {{ openTasks === 1 ? "it" : "them" }} up.</template> Its boss gets a message.</p>
         <div class="row"><button type="button" class="btn sm solid-danger" :disabled="!!acting" @click="stopAgent"><Icon name="square" :size="15" /> Stop agent</button><button type="button" class="btn sm ghost" :disabled="!!acting" @click="stopAsk = false">Cancel</button></div>
@@ -321,7 +326,7 @@ defineExpose({ el });
 .hdot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--off)}
 .h-working{background:var(--on)}.h-idle{background:var(--muted)}.h-waiting{background:var(--warn)}.h-blocked{background:var(--bad)}.h-starting{background:transparent;border:2px dashed var(--muted)}
 /* Desktop: a sheet over the right edge of the map/cards area. The view decides where it sits; this file draws it. */
-.hd{flex:none;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:14px 16px 12px;border-bottom:1px solid var(--line)}
+.hd{position:absolute;top:0;left:0;right:0;z-index:6;display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:14px 16px 12px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--panel) 72%,transparent);-webkit-backdrop-filter:blur(14px) saturate(1.2);backdrop-filter:blur(14px) saturate(1.2);box-shadow:0 6px 14px -10px rgba(0,0,0,.45)}
 .t1{display:flex;align-items:flex-start;gap:8px}.tt{flex:1;min-width:0;display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px}.t1 .x{flex:none;margin-left:0}
 .ap-nm{flex:0 1 auto;min-width:0;margin:0;text-transform:none;color:var(--ink);overflow-wrap:anywhere;font:700 18px/1.2 var(--body);letter-spacing:-.01em}
 .ap-chip{flex:none;max-width:100%;overflow-wrap:anywhere;padding:3px 8px;border:1px solid var(--line);border-radius:999px;background:var(--track);color:var(--muted);font:600 11.5px/1.3 var(--mono)}
@@ -351,8 +356,7 @@ defineExpose({ el });
 .ap-dot.s-root{background:var(--lock)}
 @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--on) 55%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
 
-.bd{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:16px;display:grid;align-content:start;gap:16px}
-.bd.fill{grid-template-rows:minmax(0,1fr);padding:0;overflow:hidden}
+.bd{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:calc(16px + var(--hd-h,0px)) 16px 16px;display:grid;align-content:start;gap:16px}
 .none{margin:0;color:var(--muted);font-size:13px;line-height:1.4}
 .ap-num{font-variant-numeric:tabular-nums}
 .mono{font-family:var(--mono);font-size:12px;overflow-wrap:anywhere;word-break:break-word}
@@ -473,11 +477,8 @@ defineExpose({ el });
 .hk time{flex:none;color:var(--muted);font:500 11px var(--mono)}
 
 .fold-r{flex:none;display:grid;grid-template-rows:1fr;transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1),opacity .24s var(--ease),margin .3s cubic-bezier(.2,.8,.2,1)}
-.fold-r.shut{grid-template-rows:0fr;opacity:0}
 .fold-in{min-height:0;overflow:hidden;display:grid;gap:8px}
 .hdf{margin-inline:-8px}.hdf .fold-in{padding-inline:8px}
-.hdf.shut{margin-bottom:-8px}
-.ap.sheet.chat-on{height:92dvh;transition:transform .32s cubic-bezier(.2,.8,.2,1),height .3s cubic-bezier(.2,.8,.2,1)}
 .tabs{position:relative;display:flex;gap:2px;margin:0 -16px;padding:0 12px;border-bottom:1px solid var(--line)}
 .tabs button{position:relative;display:inline-flex;align-items:center;gap:6px;height:40px;padding:0 10px;border:0;background:transparent;color:var(--muted);font:600 13px/1 var(--body);cursor:pointer;transition:color .2s var(--ease)}
 .tabs button{box-shadow:inset 0 -2px 0 transparent}.tabs button.on{color:var(--ink);box-shadow:inset 0 -2px 0 var(--ink)}
@@ -493,5 +494,5 @@ defineExpose({ el });
 
 .sheet .hd{padding-top:8px;touch-action:none;cursor:grab}
 .grab{justify-self:center;width:40px;height:5px;border-radius:3px;background:color-mix(in srgb,var(--ink) 28%,transparent)}
-@media (prefers-reduced-motion:reduce){.tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s}.tab-fwd-enter-from,.tab-back-leave-to,.tab-fwd-leave-to,.tab-back-enter-from{transform:none}.ap-dot.s-working,.ap-spin{animation:none}.rf,.ap-bar i,.cv-i,.fb,.fb > div{transition:none}.ap.sheet,.ap.sheet.chat-on,.fold-r{transition:none}}
+@media (prefers-reduced-motion:reduce){.tab-fwd-enter-active,.tab-fwd-leave-active,.tab-back-enter-active,.tab-back-leave-active{transition:opacity .16s}.tab-fwd-enter-from,.tab-back-leave-to,.tab-fwd-leave-to,.tab-back-enter-from{transform:none}.ap-dot.s-working,.ap-spin{animation:none}.rf,.ap-bar i,.cv-i,.fb,.fb > div{transition:none}.ap.sheet,.fold-r{transition:none}}
 </style>

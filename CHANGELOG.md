@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.2
+
+Resume director works after a restart. Tapping an agent card opens a rebuilt chat, the 2D map and agent cards are redrawn, and apps can pair with the service instead of copying a token.
+
+- **Director:** Resume director works after a restart. On a director with its own Claude config dir and account token, both now reach Claude itself, and the earlier conversation is found. Resume and Start fresh also work on installs that require a token on every call.
+- **Chat:** a card opens the agent's chat as a side panel that can be resized, floated or expanded. Work shows as one trail per turn with the plan steps; replies render cards, file previews, text markers and sandboxed live UI; pictures can be pasted. Replies arrive faster and a message waiting for a busy agent offers Send now.
+- **Owner messages** reach an idle agent through its plugin as your own prompt. `AGENTNET_OWNER_VIA_PLUGIN=0` types every message through tmux.
+- **Pairing:** an app asks for access, you approve it on Asks, and Settings lists and revokes paired devices.
+- **Map:** redrawn 2D map and agent cards, a colour per agent, greyed idle cards, resizable side panels.
+- **Evals:** a fixed exam per brain, a task miner, an isolated runner and a read-only Evals page. Lessons from brain files load only with `AGENTNET_BRAIN_LESSONS=1`.
+- Fixed: a done report could answer 500 on a goal with owner items; a message delivered as a turn ended left the agent idle.
+
 ## 0.7.1
 
 Trends show whether the system is improving, and no tool answer floods an agent's context.

@@ -35,6 +35,16 @@ const ago = computed(() => {
 });
 /** Why the button is off, or "" when it works. */
 const whyNoCheck = computed(() => (!u.canCheck.value ? "Checking works only from the machine agentnet runs on, or from the root agent." : st.value && !st.value.checkEnabled ? "The release check is off (AGENTNET_UPDATE_CHECK=0)." : ""));
+interface Device { id: string; name: string; created: number; last_used: number | null }
+const devices = ref<Device[] | null>(null), revoking = ref("");
+async function loadDevices() { try { devices.value = (await api<{ devices: Device[] }>("v1/panel/devices")).devices; } catch { devices.value = devices.value ?? []; } }
+onMounted(loadDevices);
+const when = (t: number | null) => { if (!t) return "never"; const s = Math.max(0, Math.floor((clock.value - t) / 1000)); return s < 120 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
+async function revoke(d: Device) {
+  if (revoking.value !== d.id) { revoking.value = d.id; return; } // second press confirms
+  try { await api(`v1/panel/devices/${encodeURIComponent(d.id)}`, { method: "DELETE" }); toast(`${d.name} is signed out`); } catch (e) { toast((e as Error).message); }
+  revoking.value = ""; await loadDevices();
+}
 function reload() { u.dispatch({ type: "dismiss" }); location.reload(); }
 function openSheet() { sheetOpen.value = true; void u.refresh(); }
 
@@ -91,6 +101,14 @@ async function reset() {
             <div v-if="health?.features"><dt>Features</dt><dd class="chips"><span v-for="f in health.features" :key="f" class="chip mono">{{ f }}</span></dd></div>
           </dl>
           <p class="sc-note">Read only. Nothing secret is shown here.</p>
+        </section>
+        <section class="sc" aria-label="Devices">
+          <h2><Icon name="lock" :size="15" /> Devices <span class="sc-r">{{ devices ? `${devices.length} paired` : "" }}</span></h2>
+          <dl v-if="devices?.length" class="kv">
+            <div v-for="d in devices" :key="d.id"><dt>{{ d.name }}<small>last used {{ when(d.last_used) }}</small></dt>
+              <dd><button type="button" class="btn sm danger-ghost" @click="revoke(d)" @blur="revoking === d.id && (revoking = '')">{{ revoking === d.id ? "Revoke now" : "Revoke" }}</button></dd></div>
+          </dl>
+          <p class="sc-note">{{ devices?.length ? "Revoke signs that app out at once; it asks to pair again." : "No paired apps. An app asks to pair by itself; you approve it under Asks." }}</p>
         </section>
       </div>
       <div class="st-col">

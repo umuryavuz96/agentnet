@@ -4,45 +4,124 @@
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { redactText } from "./bgsum";
+import { redactText as redactSecrets } from "./bgsum";
+
+// The secret filter also takes a long path or URL for a token (its last rule matches 28+ mixed characters, "/" included), which
+// broke every image a reply pointed at. A path or http(s) URL that ends in an image name and holds no login ("@") and no query
+// ("?") is put back as written; everything else stays filtered.
+const IMG_REF = /(?:https?:\/\/|\/)[^\s"'`<>()\[\]@?]+\.(?:png|jpe?g|gif|webp)\b/gi;
+export function redactText(text: string): string {
+  const kept: string[] = [];
+  const out = redactSecrets(text.replace(IMG_REF, (m) => { kept.push(m); return `\u0000${kept.length - 1}\u0000`; }));
+  return kept.length ? out.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)] ?? "") : out;
+}
+const IMG_FILE = /\.(png|jpe?g|gif|webp)$/i;
 import { configDirOf } from "./agent-config";
 
 export interface FeedItem {
   id: string; ts: number;
-  /** owner = typed by the owner (terminal or the page), assistant = the agent's text, step = one tool call, delivery = an agentnet message was handed over, event = compaction / interrupt */
-  kind: "owner" | "assistant" | "step" | "delivery" | "event";
-  text?: string; nonce?: string; /** the page sent it and the transcript has not shown it yet */ sending?: boolean;
-  title?: string; status?: "running" | "ok" | "error"; ms?: number; out?: string; /** agentnet message id of a delivery */ msg?: number;
+  /** owner = typed by the owner (terminal or the page), assistant = the agent's text, thinking = one thinking block (text only when the transcript kept it), step = one tool call, delivery = an agentnet message was handed over, event = compaction / interrupt */
+  kind: "owner" | "assistant" | "thinking" | "step" | "delivery" | "event";
+  text?: string; nonce?: string; /** the page sent it and the transcript has not shown it yet */ sending?: boolean; /** the terminal did not take it */ failed?: boolean;
+  title?: string; status?: "running" | "ok" | "error"; ms?: number; out?: string; /** a short form of what the call was given (the command, the old and new text, the pattern), for the page's In box */ inp?: string; /** what kind of tool a step ran */ tool?: ToolKind; /** a step that read an image file: its path, so the page can show it (chatImages.ts serves it) */ img?: string; /** agentnet message id of a delivery */ msg?: number;
+  /** a step that wrote a file (Write, Edit, MultiEdit, NotebookEdit): the path and what went in, for the page's step panel */ file?: StepFile;
 }
+/** What a writing call put in a file: the whole `content` of a Write, or the old and new text of each edit. Both clipped, both redacted. */
+export interface StepFile { path: string; content?: string; edits?: { old: string; new: string }[] }
 
 export const FEED_MAX = 200, TEXT_MAX = 20_000, OUT_MAX = 2_000, TAIL_BYTES = 2_000_000;
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) + "…" : s);
+export const IN_MAX = 1_500;
+/** What the call was given, short: the command, the old and new text of an edit, the pattern of a search, the path of a read. "" when it had nothing worth showing. */
+export function inputText(name: string, input: Record<string, unknown>): string {
+  const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : "");
+  const half = Math.floor(IN_MAX / 2);
+  let t = "";
+  if (name === "Bash") t = str("command");
+  else if (name === "Edit" || name === "MultiEdit") t = [str("old_string") && `old ${clip(str("old_string"), half)}`, str("new_string") && `new ${clip(str("new_string"), half)}`].filter(Boolean).join("\n");
+  else if (name === "Write") t = `${str("file_path")}\n${clip(str("content"), half)}`.trim();
+  else if (name === "Read") t = str("file_path");
+  else if (name === "Grep" || name === "Glob") t = [str("pattern"), str("path") && `in ${str("path")}`].filter(Boolean).join(" ");
+  else if (name === "WebFetch" || name === "WebSearch") t = str("url") || str("query");
+  else if (Object.keys(input).length) { try { t = JSON.stringify(input, null, 1); } catch { t = ""; } }
+  return clip(t.trim(), IN_MAX);
+}
+/** Room for a written file in the step panel: a Write's content up to WRITE_MAX, an edit's old and new text up to EDIT_MAX in all. */
+export const WRITE_MAX = 6_000, EDIT_MAX = 4_000;
+export function stepFile(name: string, input: Record<string, unknown>): StepFile | null {
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const path = str(input.file_path) || str(input.notebook_path);
+  if (!path) return null;
+  if (name === "Write") return { path, content: redactText(clip(str(input.content), WRITE_MAX)) };
+  const raw = name === "Edit" ? [{ old: str(input.old_string), new: str(input.new_string) }]
+    : name === "MultiEdit" && Array.isArray(input.edits) ? (input.edits as Record<string, unknown>[]).map((e) => ({ old: str(e?.old_string), new: str(e?.new_string) }))
+    : name === "NotebookEdit" ? [{ old: "", new: str(input.new_source) }] : null;
+  if (!raw) return null;
+  let room = EDIT_MAX;
+  const edits: { old: string; new: string }[] = [];
+  for (const e of raw) {
+    if (room <= 0) break;
+    const o = clip(e.old, room); room -= o.length;
+    const n = clip(e.new, Math.max(0, room)); room -= n.length;
+    edits.push({ old: redactText(o), new: redactText(n) });
+  }
+  return { path, edits };
+}
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const INTERRUPT_RE = /^\s*\[Request interrupted/;
 const tag = (s: string, t: string) => s.match(new RegExp(`<${t}>([\\s\\S]*?)</${t}>`))?.[1]?.trim() ?? null;
 
+/** Claude Code stores a long paste as `<pasted_content id="x">\n…\n</pasted_content id="x">`: the text inside is what was typed. */
+const unpaste = (s: string) => s.replace(/<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g, "$2");
+
 // ---------- DashSent: a prompt typed on the page, claimed by the transcript line it becomes ----------
 const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-const TTL = 30 * 60_000, SKEW = 5_000;
+const TTL = 30 * 60_000, SKEW = 5_000, CLAIMED_MAX = 2_000;
 export class Sent {
-  private list = new Map<string, { text: string; nonce: string | null; at: number }[]>();
+  private list = new Map<string, { text: string; nonce: string | null; at: number; failed?: boolean }[]>();
   add(agent: string, text: string, nonce: string | null, now = Date.now()) {
     const l = (this.list.get(agent) ?? []).filter((e) => now - e.at < TTL);
     l.push({ text: norm(text), nonce, at: now }); this.list.set(agent, l.slice(-50));
   }
-  /** The oldest unclaimed send with this text made before the line was written. */
-  claim(agent: string, text: string, ts: number): { nonce: string | null } | null {
+  /** Transcript lines that already claimed a send (agent + line id -> nonce): every later reader of the same line (a reconnected
+   *  stream, a second device, the history route) gets the same nonce, so the page never shows the send and the line as two bubbles. */
+  private claimed = new Map<string, string | null>();
+  /** The oldest unclaimed send with this text made before the line was written. With the line's id, a line claims once and
+   *  then answers the same nonce to every parser that reads it again. */
+  claim(agent: string, text: string, ts: number, id?: string): { nonce: string | null } | null {
+    const k = id ? `${agent}\n${id}` : "";
+    if (k && this.claimed.has(k)) return { nonce: this.claimed.get(k)! };
     const l = this.list.get(agent); if (!l) return null;
     const t = norm(text), i = l.findIndex((e) => e.text === t && ts + SKEW >= e.at && ts - e.at < TTL);
     if (i < 0) return null;
-    return { nonce: l.splice(i, 1)[0]!.nonce };
+    const nonce = l.splice(i, 1)[0]!.nonce;
+    if (k) { this.claimed.set(k, nonce); if (this.claimed.size > CLAIMED_MAX) this.claimed.delete(this.claimed.keys().next().value!); }
+    return { nonce };
   }
+  /** The nonce a line already claimed, without claiming anything (the history route reads lines the stream owns). */
+  seen(agent: string, id: string): { nonce: string | null } | null { const k = `${agent}\n${id}`; return this.claimed.has(k) ? { nonce: this.claimed.get(k)! } : null; }
+  /** The terminal refused this send after the page was answered: the page shows a retry. */
+  fail(agent: string, nonce: string | null) { const e = nonce ? this.list.get(agent)?.find((x) => x.nonce === nonce) : undefined; if (e) e.failed = true; }
+  /** A retry of the same nonce replaces the failed entry. */
+  drop(agent: string, nonce: string | null) { const l = this.list.get(agent); if (l && nonce) this.list.set(agent, l.filter((e) => e.nonce !== nonce)); }
   /** Sends not yet claimed: the page shows them as "sending". */
   pending(agent: string, now = Date.now()) { return (this.list.get(agent) ?? []).filter((e) => now - e.at < TTL); }
 }
 export const sent = new Sent();
 
 // ---------- one tool call in plain words ----------
+export type ToolKind = "read" | "image" | "search" | "web" | "agent" | "edit" | "command" | "browser" | "other";
+/** The kind of work a tool call is: the page colours the step's tile by it (the state shows on the rail node instead). */
+export function toolKind(name: string, input: Record<string, unknown>): ToolKind {
+  if (name === "Read") return typeof input.file_path === "string" && IMG_FILE.test(input.file_path) ? "image" : "read";
+  if (name === "Edit" || name === "MultiEdit" || name === "Write" || name === "NotebookEdit") return "edit";
+  if (name === "Grep" || name === "Glob") return "search";
+  if (name === "WebFetch" || name === "WebSearch") return "web";
+  if (name === "Agent" || name === "Task") return "agent";
+  if (name === "Bash") return "command";
+  if (/^mcp__(claude-in-chrome|playwright|.*browser.*)__/i.test(name)) return "browser";
+  return "other";
+}
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 export function stepTitle(name: string, input: Record<string, unknown>): string {
   const s = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : "");
@@ -79,9 +158,12 @@ export class FeedParser {
   private offset = 0; private rest = ""; private skipPartial = false; private seq = 0;
   private rev = new Map<string, number>();
   private stepAt = new Map<string, number>();
-  constructor(public path: string, private agent: string, private claim: (agent: string, text: string, ts: number) => { nonce: string | null } | null = (a, t, ts) => sent.claim(a, t, ts), tail = TAIL_BYTES) {
+  constructor(public path: string, private agent: string, private claim: (agent: string, text: string, ts: number, id?: string) => { nonce: string | null } | null = (a, t, ts, id) => sent.claim(a, t, ts, id), tail = TAIL_BYTES, private max = FEED_MAX) {
     if (tail > 0) { try { const size = statSync(path).size; if (size > tail) { this.offset = size - tail; this.skipPartial = true; } } catch { /* missing: from 0 */ } }
+    this.start = this.offset;
   }
+  /** The byte the parser started reading at: 0 = it holds the whole transcript. */
+  start = 0;
   get cursor() { return this.seq; }
   /** Read what was appended since last time. */
   update() {
@@ -95,7 +177,7 @@ export class FeedParser {
     this.rest = lines.pop() ?? "";
     if (this.skipPartial) { lines.shift(); this.skipPartial = false; }
     for (const l of lines) if (l.trim()) this.line(l);
-    if (this.items.length > FEED_MAX * 2) { this.items = this.items.slice(-FEED_MAX); this.index = new Map(this.items.map((it, i) => [it.id, i])); }
+    if (this.items.length > this.max * 2) { this.items = this.items.slice(-this.max); this.index = new Map(this.items.map((it, i) => [it.id, i])); }
   }
   /** Ids changed after `cursor`, for one reader (each SSE client keeps its own cursor). */
   changedSince(cursor: number): { items: FeedItem[]; cursor: number } {
@@ -147,9 +229,15 @@ export class FeedParser {
       if (b.type === "text") {
         const text = String(b.text ?? "").trim();
         if (text && text !== "No response requested.") this.put({ id: `${uuid}:${k}`, kind: "assistant", ts, text: redactText(clip(text, TEXT_MAX)) });
+      } else if (b.type === "thinking") { // newer transcripts keep only a signature: the row then says the agent thought, with no text
+        const text = String(b.thinking ?? "").trim();
+        this.put({ id: `${uuid}:${k}`, kind: "thinking", ts, ...(text ? { text: redactText(clip(text, TEXT_MAX)) } : {}) });
       } else if (b.type === "tool_use") {
         const id = String(b.id);
-        this.put({ id, kind: "step", ts, title: redactText(stepTitle(String(b.name), (b.input ?? {}) as Record<string, unknown>)), status: "running" });
+        const file = b.name === "Read" && typeof b.input?.file_path === "string" && IMG_FILE.test(b.input.file_path) ? (b.input.file_path as string) : null;
+        const input = (b.input ?? {}) as Record<string, unknown>;
+        const inp = inputText(String(b.name), input), wrote = stepFile(String(b.name), input);
+        this.put({ id, kind: "step", ts, title: redactText(stepTitle(String(b.name), input)), status: "running", tool: toolKind(String(b.name), input), ...(inp ? { inp: redactText(inp) } : {}), ...(file ? { img: file } : {}), ...(wrote ? { file: wrote } : {}) });
         this.stepAt.set(id, ts);
       }
     });
@@ -161,20 +249,21 @@ export class FeedParser {
     this.put({ ...step, status: b.is_error ? "error" : "ok", ms: Math.max(0, ts - (this.stepAt.get(id) ?? ts)), out: redactText(clip(strip(contentText(b.content)).trim(), OUT_MAX)) });
   }
 
-  private userText(raw: string, uuid: string, ts: number, origin?: { kind?: string; name?: string }) {
-    const s = raw.trim();
+  private userText(raw: string, uuid: string, ts: number, origin?: { kind?: string; name?: string; asUser?: boolean }) {
+    const s = unpaste(raw).trim();
     if (!s || s.startsWith("<system-reminder>") || s.startsWith("<local-command-caveat>") || s.includes("<task-notification>")) return;
     const cmd = tag(s, "command-name");
     if (cmd) { this.put({ id: uuid, kind: "event", ts, text: redactText(`Ran ${cmd} ${tag(s, "command-args") ?? ""}`.trim()) }); return; }
     if (tag(s, "local-command-stdout") !== null) return;
     if (INTERRUPT_RE.test(s)) { this.interrupt(uuid, ts); return; }
     const m = /^The agentnet plugin sent a message:\s*\n#(\d+)/.exec(s);
-    if (m || (origin?.kind === "plugin" && origin.name === "agentnet")) {
+    const ownerViaPlugin = !m && origin?.kind === "plugin" && origin.name === "agentnet" && origin.asUser === true; // owner chat handed over by the plugin (ownerPlugin.ts)
+    if (m || (origin?.kind === "plugin" && origin.name === "agentnet" && !ownerViaPlugin)) {
       if (m) this.put({ id: uuid, kind: "delivery", ts, msg: Number(m[1]) });
       return; // the boot prompt of a plugin-started turn is not the owner either
     }
-    if (origin?.kind && origin.kind !== "human") return; // channel / hook / other plugin prompts
-    const mine = this.claim(this.agent, s, ts);
+    if (origin?.kind && origin.kind !== "human" && !ownerViaPlugin) return; // channel / hook / other plugin prompts
+    const mine = this.claim(this.agent, s, ts, uuid);
     this.put({ id: uuid, kind: "owner", ts, text: redactText(clip(s, TEXT_MAX)), ...(mine?.nonce ? { nonce: mine.nonce } : {}) });
   }
 }

@@ -24,3 +24,7 @@ test("old waiting deep link opens the asks page", () => {
 test("personas alias opens the brains page", () => {
   expect(parseHash("#/personas")).toEqual({ page: "brains", query: {} });
 });
+
+test("an app's pairing link opens the asks page with its code", () => {
+  expect(parseHash("#/pair?code=BCDF-GHJK")).toEqual({ page: "asks", query: { code: "BCDF-GHJK" } });
+});

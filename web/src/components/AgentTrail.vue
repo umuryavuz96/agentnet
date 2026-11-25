@@ -146,6 +146,8 @@ async function answer(label: string) {
   </div>
 </template>
 
+<!-- the look of one call row on the branch, shared with the chat's steps (ChatWork.vue) -->
+<style scoped src="../ui/trail-row.css"></style>
 <style scoped>
 /* Board 10-agent-trail, "shared rail (peek and full)". Token map: --card = --panel, --ground = --panel-2, --k-question = --pend,
    --hair = --line, --faint = --muted; --fiber, --lit, --head carry the board's own values (ui/tokens.css). */
@@ -234,25 +236,10 @@ button.tr-chip.or:focus-visible{outline:2px solid var(--sel);outline-offset:1px}
 .tr-br{position:absolute;left:11px;width:22px;height:20px;overflow:visible;pointer-events:none;fill:none;stroke:var(--tr-dim);stroke-width:2;stroke-linecap:butt}
 .tr-br.in{top:-7px;stroke:var(--lit)}
 .tr-br.out{bottom:-6px}
-.tr-row{position:relative;display:grid;grid-template-columns:16px minmax(0,1fr) auto;column-gap:8px;align-items:start;padding:5px 0;font-size:12px;color:var(--muted)}
-/* the branch rail: from this row's node to the next one; lit up to the running call */
-.tr-row::after{content:"";position:absolute;left:7px;top:13px;bottom:-15px;width:2px;background:var(--tr-dim)}
-.tr-row:last-child::after{bottom:6px}
-.tr-row.lit::after{background:var(--lit)}
 /* the last step has no next node to join */
 .tr-step:last-child>.tr-tail,.tr-step:last-child .tr-br.out,.tr-step:last-child .tr-row:last-child::after{display:none}
 .tr-list.dead .tr-stem,.tr-list.dead .tr-tail,.tr-list.dead .tr-row::after{background:none;box-shadow:none;border-left:2px dashed color-mix(in srgb,var(--off) 60%,transparent)}
 .tr-list.dead .tr-br{stroke:color-mix(in srgb,var(--off) 60%,transparent);stroke-dasharray:3 2}
-.tr-row b{color:var(--ink);font-weight:600}
-.tr-row .tg{font-family:var(--mono);font-size:11px;color:var(--muted);overflow-wrap:anywhere}
-.tr-row .meta{font:500 11px/1.6 var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted)}
-.tr-row.live b{color:var(--on)}
-/* one dot per row on the branch: rows already passed take the lit colour, running ones the live colour, a failed side job the bad one */
-.tr-row::before{content:"";position:absolute;z-index:1;left:5px;top:10px;width:6px;height:6px;border-radius:50%;background:var(--muted)}
-.tr-row.lit::before{background:var(--lit)}
-.tr-row.live::before,.tr-row.run::before{background:var(--on)}
-.tr-row.bad::before{background:var(--bad)}
-.tr-row .ok{color:var(--on)}.tr-row .fail{color:var(--bad)}
 /* gate: a question to the owner, on the step */
 .tr-gate{grid-column:2 / -1;margin-top:8px;padding:12px;border-radius:12px;background:color-mix(in srgb,var(--pend) 9%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--pend) 40%,transparent)}
 .tr-gate .lbl{display:flex;gap:8px;justify-content:space-between;font:600 11px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--pend)}

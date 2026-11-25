@@ -11,6 +11,7 @@
   --floor:#232326; --wall:#1f1f24; /* 3D map only */
   /* agent trail (map board 10-agent-trail): the fiber rail, its lit part and the light that runs down it */
   --fiber:#4a60a6; --lit:#dce7ff; --head:#ffffff; --tr-track:rgba(150,175,255,.14);
+  --card:#1e1e21; /* a card lifted over the panel (chat trail, cards) */
   color-scheme:dark;
 }
 /* Server OS ships a dark theme only; this block is the same palette with the neutrals inverted and the status colours darkened for contrast. */
@@ -20,7 +21,7 @@
   --accent:#16161a; --sel:#1f6fd6; --track:#e3e3e8; --lock:#5b52c9; --chrome:#55585e;
   --pend:#9a5b00; --pend-bg:rgba(154,91,0,.12); --pend-ink:#7a4800;
   --floor:#e4e4e8; --wall:#d8d8de;
-  --fiber:#9fadcf; --lit:#3557c8; --head:#3557c8; --tr-track:rgba(40,70,170,.13);
+  --card:#fbfbfc; --fiber:#9fadcf; --lit:#3557c8; --head:#3557c8; --tr-track:rgba(40,70,170,.13);
   color-scheme:light;
 }
 *{box-sizing:border-box}

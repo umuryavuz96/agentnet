@@ -3,7 +3,7 @@
  *  root has not answered), what the owner asked that an agent still works on, and what is done. List left, detail right.
  *  Each row says who asks, what they want in one sentence and since when; the detail says what every button does.
  *  The owner's own goals come from the asks ledger (SPEC-asks-ledger); questions and reports come from the live stream. */
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import Icon from "../ui/Icon.vue";
 import Skel from "../ui/Skel.vue";
 import { api, toast } from "../ui/api";
@@ -12,11 +12,12 @@ import { route } from "../router";
 import { answerCheck, net, useAgentnet } from "../net";
 import type { Check, Msg } from "../net";
 import { markRead, waitingItems } from "../waiting";
+import { decidePair, type PairReq } from "../pairs";
 
 interface Item { id: number; origin: "owner" | "brief"; text: string; agent: string | null; step_n: number | null; status: string; proof: string | null; mark: string | null; done_at: number | null; drop_reason: string | null }
 interface Goal { id: number; source: string; msg_id: string; text: string; status: "open" | "doing" | "stuck" | "done"; created_at: number; updated_at: number; done_at: number | null; note: string | null; coverage: string[]; items: Item[]; links: { agent: string; how: string }[] }
 /** One row of the list: a question an agent asked you, a report waiting for you, or something you asked for. */
-interface Row { key: string; group: "answer" | "agent" | "done"; at: number; who: string; line: string; tag: string; check?: Check; msg?: Msg; goal?: Goal }
+interface Row { key: string; group: "answer" | "agent" | "done"; at: number; who: string; line: string; tag: string; check?: Check; msg?: Msg; goal?: Goal; pair?: PairReq }
 
 const stop = useAgentnet(); onUnmounted(stop);
 const goals = ref<Goal[] | null>(null), on = ref(true), err = ref(""), picked = ref(""), phoneDetail = ref(false), missing = ref(""), note = ref(""), now = ref(Date.now());
@@ -28,6 +29,18 @@ async function load() {
 let t: ReturnType<typeof setInterval> | undefined;
 onMounted(() => { const q = Number(route.value.query.goal); if (q) { picked.value = "g" + q; phoneDetail.value = true; } void load(); t = setInterval(load, 30_000); });
 onUnmounted(() => clearInterval(t));
+/** #/asks?check=<id> opens that question (the Mac app's notification click sets it, also while this page is open). */
+watch(() => route.value.query.check, (c) => { const n = Number(c); if (n) { picked.value = "c" + n; phoneDetail.value = true; } }, { immediate: true });
+
+/** #/pair?code=<user code> (the app's "Approve on agentnet" link) opens that pairing request. */
+watch(() => route.value.query.code, (c) => { if (c) { picked.value = "p" + c.toUpperCase(); phoneDetail.value = true; } }, { immediate: true });
+const pairBusy = ref(false);
+async function decide(p: PairReq, op: "approve" | "deny") {
+  if (pairBusy.value) return; pairBusy.value = true;
+  const e = await decidePair(p.user_code, op); pairBusy.value = false;
+  toast(e || (op === "approve" ? `${p.name} is signed in` : "Request denied")); if (!e) { phoneDetail.value = false; picked.value = ""; }
+}
+const left = (p: PairReq) => { const m = Math.max(0, Math.ceil((p.expires - Math.max(now.value, net.now)) / 60000)); return m <= 1 ? "under a minute" : `${m} min`; };
 
 const GROUPS: { id: Row["group"]; title: string; hint: string; icon: IconName }[] = [
   { id: "answer", title: "Needs your answer", hint: "Questions from agents, and reports waiting to be read.", icon: "circle-arrow-up" },
@@ -43,6 +56,7 @@ const rows = computed<Row[]>(() => {
   const out: Row[] = [];
   for (const w of [...waitingItems.value].sort((a, b) => Number(!!b.check) - Number(!!a.check))) { // questions first, then reports; each newest first
     if (w.check) out.push({ key: w.key, group: "answer", at: w.at, who: w.who, line: one(w.check.question), tag: "Question", check: w.check });
+    else if (w.pair) out.push({ key: w.key, group: "answer", at: w.at, who: w.who, line: `${w.who} wants access to agentnet`, tag: "Pairing", pair: w.pair });
     else if (w.msg) out.push({ key: w.key, group: "answer", at: w.at, who: w.who, line: one(w.title), tag: "Report", msg: w.msg });
   }
   for (const g of [...(goals.value ?? [])].sort((a, b) => ORDER[a.status] - ORDER[b.status] || b.created_at - a.created_at)) {
@@ -89,7 +103,7 @@ const meta = computed(() => GROUPS.map((x) => `${rows.value.filter((r) => r.grou
           <h2 class="gh"><Icon :name="gr.icon" :size="15" />{{ gr.title }} <span class="mut num">{{ gr.rows.length }}</span></h2>
           <p class="gs">{{ gr.hint }}</p>
           <button v-for="r in gr.rows" :key="r.key" type="button" class="it" :class="[{ on: cur?.key === r.key }, r.goal?.status]" :aria-current="cur?.key === r.key" @click="pick(r.key)">
-            <span class="top"><b>{{ r.check ? r.who + " asks" : r.msg ? r.who + " reported" : "You asked" }}</b><span class="sp" /><span class="mut num">{{ since(r.at) }}</span></span>
+            <span class="top"><b>{{ r.pair ? "An app asks" : r.check ? r.who + " asks" : r.msg ? r.who + " reported" : "You asked" }}</b><span class="sp" /><span class="mut num">{{ since(r.at) }}</span></span>
             <span class="t">{{ r.line }}</span>
             <span class="tag" :class="r.goal?.status ?? 'ask'">{{ r.tag }}</span>
           </button>
@@ -109,6 +123,18 @@ const meta = computed(() => GROUPS.map((x) => `${rows.value.filter((r) => r.grou
             <li>Your note, if you write one, goes with the answer.</li>
           </ul>
           <a class="btn ghost" :href="'#/agents?agent=' + encodeURIComponent(cur.who)">Open {{ cur.who }}</a>
+        </template>
+
+        <template v-else-if="cur.pair">
+          <p class="kind"><Icon name="circle-arrow-up" :size="15" /> Pairing request · {{ since(cur.at) }}</p>
+          <blockquote class="quote">{{ cur.pair.name }} wants access to agentnet.</blockquote>
+          <p class="mut">Check that this code matches the one the app shows. It expires in {{ left(cur.pair) }}.</p>
+          <p class="pcode num" aria-label="Pairing code">{{ cur.pair.user_code }}</p>
+          <div class="acts"><button type="button" class="btn good" :disabled="pairBusy" @click="decide(cur.pair!, 'approve')"><Icon name="check" :size="15" /> Approve</button><button type="button" class="btn bad" :disabled="pairBusy" @click="decide(cur.pair!, 'deny')">Deny</button></div>
+          <ul class="what" aria-label="What each button does">
+            <li><b>Approve</b> gives this app its own key with the same access as you. You can revoke it under Settings, Devices.</li>
+            <li><b>Deny</b> refuses it. The app says it was denied.</li>
+          </ul>
         </template>
 
         <template v-else-if="cur.msg">
@@ -207,6 +233,7 @@ a.btn{text-decoration:none;justify-self:start}
 .btn:disabled{opacity:.5;cursor:default}
 .btn:focus-visible,.sm:focus-visible{outline:2px solid var(--on);outline-offset:2px}
 p.nt{margin:0;min-height:0;padding:0;border:0}
+.pcode{margin:0;font:700 34px/1.1 var(--mono, ui-monospace, monospace);letter-spacing:.08em}
 .back{display:none}
 @media (max-width:760px){
   .wl{grid-template-columns:minmax(0,1fr)}

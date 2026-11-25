@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { bearer, problem, type Env } from "./http";
 import { agentByToken } from "../net/routes";
+import { isDeviceToken } from "../net/pair";
 import { hasSession, isPanelToken, isRootToken, isWriteMethod, panelLoginOff, sameOrigin } from "./auth";
 
 /** Peer address from Bun.serve: Hono passes the Bun server as c.env. null when unknown (app.request() without env) = not loopback. */
@@ -57,13 +58,13 @@ export function bindOk(host: string): boolean {
   return l === "::1" || l.startsWith("fd7a:115c:a1e0:");
 }
 
-/** The caller of a panel route: "token" (panel.token, root.token or the live root agent's token), "agent" (another live agent's
+/** The caller of a panel route: "token" (panel.token, root.token, a paired device token or the live root agent's token), "agent" (another live agent's
  *  token), "session" (a valid login cookie), "loopback" (house flag AGENTNET_PANEL_LOGIN=off, this machine), or null. */
 export type Cred = "token" | "agent" | "session" | "loopback" | null;
 export function panelCred(c: Context): Cred {
   const t = bearer(c);
   if (t) {
-    if (isPanelToken(t) || isRootToken(t)) return "token";
+    if (isPanelToken(t) || isRootToken(t) || isDeviceToken(t)) return "token";
     const a = agentByToken(t);
     if (a) return a.name === "root" ? "token" : "agent";
   }

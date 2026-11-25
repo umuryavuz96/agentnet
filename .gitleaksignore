@@ -2,3 +2,5 @@
 src/net/bgsum.test.ts:curl-auth-header:51
 src/net/hook-templates.test.ts:aws-access-token:161
 src/net/fixtures/feed-session.jsonl:generic-api-key:2
+src/net/feed.test.ts:generic-api-key:24
+src/net/feed.test.ts:generic-api-key:131

@@ -4,11 +4,12 @@
 // in 200 ms, and a click opens the side panel with the agent's tasks and message threads. AgmsgView stays as it was.
 import { computed, defineAsyncComponent, nextTick, onUnmounted, ref, shallowRef, watch } from "vue";
 import Icon from "../ui/Icon.vue";
-import AgentnetCard from "../components/AgentnetCard.vue";
+import AgentCard from "../components/AgentCard.vue";
 import AgentnetFiberMap from "../components/AgentnetFiberMap.vue";
 import MapState from "../components/MapState.vue";
 const Office3D = defineAsyncComponent(() => import("../components/Office3D.vue")); // three.js loads only when 3D is shown
 import AgentnetPanel from "../components/AgentnetPanel.vue";
+import AgentChatView from "../components/AgentChatView.vue";
 import AgentnetTeamPanel from "../components/AgentnetTeamPanel.vue";
 import AgentnetTeamForm from "../components/AgentnetTeamForm.vue";
 import AgentnetDirectorSetup from "../components/AgentnetDirectorSetup.vue";
@@ -78,6 +79,50 @@ const triageAdded = (_r: unknown, name: string) => { toast(`${name} added`); tip
 /** The tab the agent panel opens on when it is opened from a team's Plans tab; any other way in starts on Now. */
 const startTab = ref<"trail" | undefined>();
 watch(sel, (_n, was) => { if (!was?.startsWith("team:")) startTab.value = undefined; });
+// ---- the chat (owner 8362): a card opens the agent's chat over the page; its small Details button opens the side panel ----
+// The chat lives in the hash (#/agents?chat=<name>&mode=panel|full), so a reload keeps it and Back closes it. It opens as a
+// side panel (owner 8377); the header chip expands it to the full view and back.
+const chatName = computed(() => route.value.query.chat || null);
+const chatMode = computed<"panel" | "full">(() => (route.value.query.mode === "full" ? "full" : "panel"));
+const chatCover = ref(0);
+function setChatMode(m: "panel" | "full") {
+  if (!chatName.value || m === chatMode.value) return;
+  const r = { page: route.value.page, query: { ...route.value.query, mode: m } };
+  history.replaceState(null, "", toHash(r)); route.value = r;
+}
+// The chat on screen: the route's, held a little longer while a floating chat shrinks back into its card (fly("out")).
+// The same agent asked again mid-close turns the box round from where it is (no second copy).
+const shownChat = ref<string | null>(chatName.value);
+const chatView = ref<InstanceType<typeof AgentChatView> | null>(null);
+let chatClosing = false;
+watch(chatName, async (n) => {
+  if (n) { const back = chatClosing && n === shownChat.value; chatClosing = false; shownChat.value = n; if (back) void chatView.value?.fly("in"); return; }
+  const v = chatView.value; if (!v || !shownChat.value) { shownChat.value = null; return; }
+  chatClosing = true;
+  await v.fly("out");
+  if (chatClosing && !chatName.value) { chatClosing = false; shownChat.value = null; }
+});
+const chatRow = computed(() => { const n = shownChat.value; return !n ? null : n === ROOT ? rootRow.value : Object.values(net.agents).find((a) => a.name === n) ?? null; });
+let chatPushed = false, chatReturn: HTMLElement | null = null;
+watch(chatName, (n) => { if (!n) { chatPushed = false; const t = chatReturn; chatReturn = null; if (t?.isConnected) nextTick(() => t.focus({ preventScroll: true })); } });
+function openChat(id: string) {
+  if (id.startsWith("team:") || (id === ROOT && !rootRow.value)) return pick(id); // a team opens its panel; no director yet opens the set-up
+  const name = id === ROOT ? ROOT : net.agents[id]?.name; if (!name) return;
+  sel.value = null; chatReturn = document.activeElement as HTMLElement | null;
+  const query: Record<string, string> = { ...route.value.query, chat: name, mode: chatName.value ? chatMode.value : "panel" }; delete query.agent; delete query.team;
+  const r = { page: route.value.page, query };
+  if (chatName.value) history.replaceState(null, "", toHash(r)); else { history.pushState(null, "", toHash(r)); chatPushed = true; }
+  route.value = r;
+}
+function closeChat() {
+  if (!chatName.value) return;
+  if (chatPushed) { chatPushed = false; history.back(); return; } // hashchange brings the route back
+  const query = { ...route.value.query }; delete query.chat; delete query.mode;
+  const r = { page: route.value.page, query }; history.replaceState(null, "", toHash(r)); route.value = r;
+}
+/** The card's Details button: the side panel (Now, Trail, Usage), never the chat. */
+function details(id: string) { const n = id === ROOT ? ROOT : id; closeChat(); sel.value = n; }
+const chatDetails = () => { const row = chatRow.value; if (row) details(row.name === ROOT ? ROOT : row.id); };
 const pick = (id: string) => { if (id === ROOT && !rootRow.value) { if (hadRoot.value) void startRoot(true); else setup.value = true; return; } sel.value = sel.value === id ? null : id; };
 // Hook stream only while something draws hooks (the map lane, or the open panel's Hooks section): Chrome allows
 // 6 HTTP/1.1 connections per host, and this page already holds the main SSE plus the shared agentnet stream.
@@ -121,7 +166,7 @@ onUnmounted(() => { removeEventListener("keydown", onKey); removeEventListener("
 const half = computed(() => !!sel.value && phone.value && mode.value === "map" && dim.value === "3d");
 watch(half, (h) => { document.documentElement.toggleAttribute("data-half", h); }, { immediate: true });
 onUnmounted(() => document.documentElement.removeAttribute("data-half"));
-const cover = computed(() => (sel.value && !phone.value ? 452 : 0)); // panel width plus its gap, same as the Cards view push
+const cover = computed(() => (phone.value ? 0 : sel.value ? 452 : chatName.value ? chatCover.value : 0)); // panel width plus its gap, same as the Cards view push; the chat reports its own (its full view keeps the panel's, so the page behind holds still)
 const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 // ---- Terminal windows (M8) ----
@@ -157,9 +202,8 @@ const TIP = "Terminal windows on the server Mac";
 </script>
 
 <template>
-  <main class="anv">
-    <header class="ph anv-h">
-      <h1>Agents</h1>
+  <main class="anv" aria-label="Agents">
+    <header :class="['ph', 'anv-h', { ov: mode === 'map' && !phone }]" :style="{ '--cover': cover + 'px' }">
       <span v-if="net.lastFrameAt > 0" class="pill anv-pill num" :class="net.connected && !staleSince ? 'ok' : 'warn'" role="status">
         {{ !net.connected ? "Reconnecting…" : staleSince ? `Stale since ${time(staleSince)}` : `${count} live` }}
       </span>
@@ -185,12 +229,12 @@ const TIP = "Terminal windows on the server Mac";
     <div :class="['anv-b', { pushed: !!sel && !phone, frozen: mode === 'map' && net.lastFrameAt > 0 && !net.connected }]">
       <Transition name="mode" mode="out-in">
       <Office3D v-if="mode === 'map' && dim === '3d'" key="map3" :selected="sel" :cover="cover" :half="half" @select="(id: string) => id && pick(id)" @fail="fail3d" />
-      <AgentnetFiberMap v-else-if="mode === 'map'" key="map" :selected="sel" :cover="cover" :had-root="hadRoot" @select="pick" />
+      <AgentnetFiberMap v-else-if="mode === 'map'" key="map" :selected="sel" :cover="cover" :had-root="hadRoot" :last="lastRun" @select="openChat" @details="details" @resume="startRoot(true)" @fresh="startRoot(false)" />
       <section v-else key="cards" class="grid-wrap" aria-label="Live agents">
         <div class="grp">
           <h2>Director</h2>
           <div class="an-grid">
-            <AgentnetCard :row="rootRow" :had-root="hadRoot" :last="lastRun" :name="ROOT" :selected="sel === ROOT" @select="pick(ROOT)" @resume="startRoot(true)" @fresh="startRoot(false)" @open="openWin(ROOT)" @close="closeWin(ROOT)" />
+            <AgentCard :row="rootRow" :had-root="hadRoot" :last="lastRun" :name="ROOT" dir acts :sel="sel === ROOT" @pick="openChat(ROOT)" @details="details(ROOT)" @resume="startRoot(true)" @fresh="startRoot(false)" @open="openWin(ROOT)" @close="closeWin(ROOT)" />
           </div>
         </div>
         <TransitionGroup name="anc">
@@ -198,8 +242,8 @@ const TIP = "Terminal windows on the server Mac";
           <h2>Reports to {{ g.boss }} <span>{{ g.ids.length }}</span></h2>
           <TransitionGroup tag="div" name="anc" class="an-grid">
             <!-- keyed children only (no v-if inside): a gone id leaves the list, so the card gets its 200 ms leave fade -->
-            <AgentnetCard v-for="id in g.ids.filter((x) => net.agents[x])" :key="id" :row="net.agents[id]" :name="net.agents[id].name" :selected="sel === id"
-              @select="pick(id)" @open="openWin(net.agents[id].name)" @close="closeWin(net.agents[id].name)" />
+            <AgentCard v-for="id in g.ids.filter((x) => net.agents[x])" :key="id" :id="id" :row="net.agents[id]" :name="net.agents[id].name" acts :sel="sel === id"
+              @pick="openChat(id)" @details="details(id)" @open="openWin(net.agents[id].name)" @close="closeWin(net.agents[id].name)" />
           </TransitionGroup>
         </div>
         </TransitionGroup>
@@ -210,6 +254,8 @@ const TIP = "Terminal windows on the server Mac";
         </div>
       </section>
       </Transition>
+
+      <Transition name="acv"><AgentChatView v-if="shownChat" ref="chatView" :key="shownChat" :row="chatRow" :name="shownChat" :mode="chatMode" :phone="phone" @close="closeChat" @details="chatDetails" @mode="setChatMode" @cover="(px: number) => (chatCover = px)" /></Transition>
 
       <MapState v-if="mode === 'map'" :count="count" :cmd="SPAWN_CMD" :failed3d="dim === '2d' ? failed3d : null" @try3d="setDim('3d')" />
 
@@ -226,7 +272,7 @@ const TIP = "Terminal windows on the server Mac";
             <Transition :name="phone ? 'sheet' : 'side'">
         <AgentnetTeamPanel v-if="sel?.startsWith('team:')" ref="panel" :key="'t' + (phone ? 'sheet' : 'side')" :id="sel.slice(5)" :sheet="phone" @close="sel = null" @select="(id: string, tab?: 'trail') => { startTab = tab; pick(id); }" />
         <AgentnetPanel v-else-if="sel" ref="panel" :key="phone ? 'sheet' : 'side'" :row="selRow" :name="selName" :sheet="phone" :start-tab="startTab"
-          @close="sel = null" @open="selRow && openWin(selRow.name)" @close-win="selRow && closeWin(selRow.name)" />
+          @close="sel = null" @chat="sel && openChat(sel)" @open="selRow && openWin(selRow.name)" @close-win="selRow && closeWin(selRow.name)" />
       </Transition>
       </Teleport>
     </div>
@@ -235,15 +281,17 @@ const TIP = "Terminal windows on the server Mac";
 
 <style>
 html[data-half] .side-panel.sheet,html[data-half] .tp.sheet{height:46dvh !important;max-height:46dvh !important}
-/* Chat needs the room: with the Chat tab open the agent sheet goes tall even over the 3D half view. */
-html[data-half] .ap.sheet.chat-on{height:92dvh !important;max-height:92dvh !important}
 </style>
 <style scoped>
 .mv-scrim{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(0,0,0,.45);padding:16px}
 .mv{max-width:420px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px}
 .mv h3{margin:0 0 8px;font-size:16px}.mv p{margin:0 0 16px;font-size:14px;line-height:1.5;color:var(--muted)}
 .mv-b{display:flex;justify-content:flex-end;gap:8px}
-.anv{display:flex;flex-direction:column;height:100%;min-height:0}
+.anv{position:relative;display:flex;flex-direction:column;height:100%;min-height:0}
+/* on the map the controls float over its top edge (owner 8304): the map gets the full height; the right end stops before Fit and the open panel */
+.anv-h.ov{position:absolute;top:10px;left:10px;right:calc(78px + var(--cover,0px));z-index:5;margin:0;pointer-events:none}
+.anv-h.ov > *{pointer-events:auto}
+.anv-h.ov .btn{background:var(--panel);border:1px solid var(--line)}
 .anv-h{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .anv-pill{padding:4px 10px;background:var(--on-bg);color:var(--on);font:600 12px/1.2 var(--body)}
 .anv-pill.warn{background:var(--warn-bg);color:var(--warn)}
@@ -269,7 +317,7 @@ html[data-half] .ap.sheet.chat-on{height:92dvh !important;max-height:92dvh !impo
 .grp{margin-bottom:18px}
 .grp h2{margin:0 0 8px;color:var(--muted);font:600 13px/1.2 var(--body)}
 .grp h2 span{margin-left:4px;opacity:.7}
-.an-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));grid-auto-rows:1fr;gap:12px}
+.an-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));grid-auto-rows:1fr;gap:16px;padding:2px}
 .empty{color:var(--muted)}
 .empty p{margin:0 0 10px}
 .cmd{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
@@ -288,6 +336,18 @@ html[data-half] .ap.sheet.chat-on{height:92dvh !important;max-height:92dvh !impo
 /* while the side panel slides, its box reaches past the right edge and would widen the page's scroll width. Clip it for that time only.
    The 20px margin is the page padding, so the panel's shadow paints exactly as before and nothing pops when the slide ends. */
 .anv:has(> .anv-b > .side-enter-active,> .anv-b > .side-leave-active){contain:paint;overflow-clip-margin:20px}
+/* the chat opens: the docked panel slides in from the right edge like the details panel, the floating one and the full view
+   rise and fade; transform and opacity only (Motion board: 360 ms cubic-bezier(.2,.8,.2,1)) */
+/* Motion board view timing: 260 ms in, 180 ms out, cubic-bezier(.23,1,.32,1) (same as the expand/collapse FLIP) */
+.acv-enter-active,.acv-leave-active{transition:opacity .18s cubic-bezier(.23,1,.32,1),transform .26s cubic-bezier(.23,1,.32,1)}
+.acv-leave-active{transition-duration:.15s,.18s}
+.acv-enter-from,.acv-leave-to{opacity:0;transform:translateY(8px) scale(.995)}
+/* owner 8436: the docked chat only moves, it does not fade */
+.acv-enter-from.dock,.acv-leave-to.dock,.acv-leave-to.full{opacity:1;transform:translateX(calc(100% + 24px))}
+.anv:has(> .anv-b > .acv.dock.acv-enter-active,> .anv-b > .acv.dock.acv-leave-active,> .anv-b > .acv.full.acv-leave-active){contain:paint;overflow-clip-margin:20px}
+/* the floating chat grows out of its card and shrinks back (AgentChatView fly()); Vue's CSS run stays out of its way */
+@media (prefers-reduced-motion:no-preference){.acv-enter-active.float,.acv-leave-active.float{transition:none}.acv-enter-from.float,.acv-leave-to.float{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.acv-enter-active,.acv-leave-active{transition:opacity .15s}.acv-enter-from,.acv-leave-to,.acv-enter-from.dock,.acv-leave-to.dock,.acv-leave-to.full{transform:none}.acv-enter-from.dock,.acv-leave-to.dock,.acv-leave-to.full{opacity:0}}
 .anv-scrim{position:fixed;inset:0;z-index:60;background:transparent} /* sheets have no dark backdrop (board page 00); a tap outside still closes */
 .scrim-enter-active,.scrim-leave-active{transition:opacity .22s var(--ease)}
 .scrim-enter-from,.scrim-leave-to{opacity:0}

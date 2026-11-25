@@ -1,0 +1,18 @@
+/* One call on a trail: a dot on a thin rail, the call in words, a figure on the right. The Trail tab's branch rows
+   (AgentTrail.vue) and the steps of a run in the chat (ChatWork.vue) both load this file as scoped style, so the two
+   cannot drift apart. `--tr-dim` is the unlit rail; the list that holds the rows sets it. */
+.tr-row{position:relative;display:grid;grid-template-columns:16px minmax(0,1fr) auto;column-gap:8px;align-items:start;padding:5px 0;font-size:12px;color:var(--muted)}
+/* the branch rail: from this row's node to the next one; lit up to the running call */
+.tr-row::after{content:"";position:absolute;left:7px;top:13px;bottom:-15px;width:2px;background:var(--tr-dim)}
+.tr-row:last-child::after{bottom:6px}
+.tr-row.lit::after{background:var(--lit)}
+.tr-row b{color:var(--ink);font-weight:600}
+.tr-row .tg{font-family:var(--mono);font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.tr-row .meta{font:500 11px/1.6 var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--muted)}
+.tr-row.live b{color:var(--on)}
+/* one dot per row on the branch: rows already passed take the lit colour, running ones the live colour, a failed side job the bad one */
+.tr-row::before{content:"";position:absolute;z-index:1;left:5px;top:10px;width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.tr-row.lit::before{background:var(--lit)}
+.tr-row.live::before,.tr-row.run::before{background:var(--on)}
+.tr-row.bad::before{background:var(--bad)}
+.tr-row .ok{color:var(--on)}.tr-row .fail{color:var(--bad)}

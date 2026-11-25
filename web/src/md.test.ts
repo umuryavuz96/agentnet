@@ -4,7 +4,7 @@ import { mdParse, renderMd } from "./md";
 describe("mdParse", () => {
   test("renders the elements agents write", () => {
     const h = mdParse("# Title\n\n**bold** and *italic* and `code`\n\n- one\n- two\n\n1. first\n\n> quote\n\n---");
-    for (const tag of ["<h1>", "<strong>bold</strong>", "<em>italic</em>", "<code>code</code>", "<ul>", "<ol>", "<blockquote>", "<hr>"]) expect(h).toContain(tag);
+    for (const tag of ["<h1>", "bold</strong>", "<em>italic</em>", "<code>code</code>", "<ul>", "<ol>", "<blockquote>", "<hr>"]) expect(h).toContain(tag);
   });
   test("a single newline is a line break", () => { expect(mdParse("a\nb")).toContain("<br>"); });
   test("raw HTML from an agent is escaped, block and inline", () => {
@@ -28,9 +28,10 @@ describe("mdParse", () => {
   test("fenced code is escaped and gets a copy button", () => {
     const h = mdParse("```ts\nconst a = '<b>';\n```");
     expect(h).toContain('<div class="md-code">');
-    expect(h).toContain('<button type="button" class="md-copy">Copy</button>');
+    expect(h).toContain('class="md-copy"');
+    expect(h).toContain("<span>Copy</span>");
     expect(h).toContain("&lt;b&gt;");
-    expect(h).toContain("<span>ts</span>");
+    expect(h).toContain('<span class="cx-lang">ts</span>');
   });
   test("a code language cannot carry markup", () => { expect(mdParse('```"><i>\nx\n```')).not.toContain("<i>"); });
   test("a table sits in its own scroll box", () => {

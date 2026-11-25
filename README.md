@@ -150,6 +150,12 @@ keeps names, tasks, messages and notes, and the web app shows them live.
 
 There is no agent loop to write; the agents are real Claude Code sessions.
 
+What you type to an agent in the web app goes through its plugin, as your own prompt (Claude Code 2.1.286 or later).
+Messages from other agents arrive framed as agent mail, so the model can tell you apart. The director, agents on an
+older Claude Code, **Send now** and **Stop** use tmux keys instead. So does a message sent while the agent is mid-turn:
+typed text joins the running turn, while a plugin prompt would wait for the turn to end. Set `AGENTNET_OWNER_VIA_PLUGIN=0` to type every
+message through tmux.
+
 ## One folder
 
 Everything agentnet writes lives in one folder, `$AGENTNET_HOME` (default `~/.local/share/agentnet`). Folders are 0700 and
