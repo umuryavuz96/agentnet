@@ -238,6 +238,8 @@ export function useTeams() {
 export const teamsKey = computed(() => teams.list.filter((t) => t.state === "active").map((t) => `${t.id}:${t.name}:${t.lead ?? ""}:${[...t.members].sort().join(",")}`).join("|") + `|p:${[...placing].join(",")}`);
 /** A job tapped on the map: the owner's panel opens its Jobs fold on it (AgentnetJobs reads this; stale after 5 s). */
 export const jobFocus = reactive({ id: "", n: 0, at: 0 });
+/** A `step` or `job` chip tapped in a chat: the agent's panel opens its Trail on it (AgentnetPanel reads this; stale after 5 s). */
+export const planFocus = reactive({ agent: "", job: 0, step: null as number | null, n: 0, at: 0 });
 export const windows = reactive({ available: true as boolean, busy: "" as string });
 /** POST an open/close call. A 404 with no problem body = the route is not there yet (pre-M8); a problem body = a real answer. */
 export async function windowCall(path: string): Promise<{ ok: boolean; detail?: string; code?: string }> {

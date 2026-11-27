@@ -184,7 +184,9 @@ async function layout() {
   const me = ++seq; await nextTick(); const h = host.value, s = st.value; if (!h || !s || me !== seq) return;
   W.value = h.clientWidth; H.value = h.clientHeight;
   stopCam(); const from = { ...view.value };
-  const M = 24, TOP = 44, BOT = 52, aw = W.value - 2 * M, ah = H.value - TOP - BOT - 2 * M, hr = () => h.getBoundingClientRect();
+  // L: the part under the folded sidebar's icons (App.vue sets --bleed); the fit and the picked card stay right of it
+  const L = parseFloat(getComputedStyle(h).getPropertyValue("--bleed")) || 0;
+  const M = 24, TOP = 44, BOT = 52, aw = W.value - 2 * M - L, ah = H.value - TOP - BOT - 2 * M, hr = () => h.getBoundingClientRect();
   const oldW = s.offsetWidth;
   s.style.transform = "none"; s.style.left = "0px"; s.style.top = "0px"; s.style.width = "";
   let fit = { x: 0, y: 0, k: 1 }, best_h = 0;
@@ -197,7 +199,7 @@ async function layout() {
       if (!best || kk > best.k + 0.01 || (Math.abs(kk - best.k) <= 0.01 && fill > best.fill)) best = { sw, w, h: hh, k: kk, fill };
     }
     const k = Math.max(0.7, best!.k); s.style.width = best!.sw + "px"; s.style.width = measure()[0] + "px";
-    fit = { k, x: M + Math.max(0, (aw - best!.w * k) / 2), y: TOP + M + Math.max(0, (ah - best!.h * k) / 2) }; // TOP: the page's controls float over the map's top edge
+    fit = { k, x: L + M + Math.max(0, (aw - best!.w * k) / 2), y: TOP + M + Math.max(0, (ah - best!.h * k) / 2) }; // TOP: the page's controls float over the map's top edge
     best_h = best!.h;
   } else s.style.width = W.value + "px";
   // fit on open, resize and Fit; a live change keeps the camera where it is (the stage stays centred on the same point), unless
@@ -214,8 +216,8 @@ async function layout() {
     const m = hr(), r = sc.getBoundingClientRect();
     if (phone.value) h.scrollTop += r.top - m.top - 40;
     // the side panel floats over the right of the map (the map keeps its size): keep the picked card in the part it leaves free
-    else if (!userView && (r.left < m.left + M || r.right > m.right - (props.cover ?? 0) - M || r.top < m.top + TOP + M || r.bottom > m.bottom - BOT)) {
-      view.value = { ...view.value, x: view.value.x + (m.left + (W.value - (props.cover ?? 0)) / 2 - (r.left + r.width / 2)), y: view.value.y + (m.top + (H.value - BOT) / 2 - (r.top + r.height / 2)) }; applyView(); glide = true;
+    else if (!userView && (r.left < m.left + L + M || r.right > m.right - (props.cover ?? 0) - M || r.top < m.top + TOP + M || r.bottom > m.bottom - BOT)) {
+      view.value = { ...view.value, x: view.value.x + (m.left + L + (W.value - L - (props.cover ?? 0)) / 2 - (r.left + r.width / 2)), y: view.value.y + (m.top + (H.value - BOT) / 2 - (r.top + r.height / 2)) }; applyView(); glide = true;
     }
   }
   const to = { ...view.value };
@@ -297,7 +299,7 @@ async function place(id: string, el: HTMLElement) {
   const was = hover.value; hover.value = { id, x: was?.x ?? 0, y: was?.y ?? 0, on: false, ox: was?.ox }; await nextTick(); const pe = pop.value, h = host.value; if (!pe || !h) return;
   const m = h.getBoundingClientRect(), r = el.getBoundingClientRect(), pw = pe.offsetWidth, ph = pe.offsetHeight, right = W.value - (props.cover ?? 0) - 8;
   // right of the card first (its fibers enter on the left), then left of it; kept inside the part of the map the panel leaves free
-  let x = r.right - m.left + 12, ox = "left"; if (x + pw > right) { x = r.left - m.left - 12 - pw; ox = "right"; } x = Math.max(8, Math.min(x, right - pw));
+  let x = r.right - m.left + 12, ox = "left"; if (x + pw > right) { x = r.left - m.left - 12 - pw; ox = "right"; } x = Math.max(8 + (parseFloat(getComputedStyle(h).getPropertyValue("--bleed")) || 0), Math.min(x, right - pw));
   const y = Math.max(8, Math.min(r.top - m.top, H.value - 52 - ph - 8));
   hover.value = { id, x, y, on: true, ox }; // it grows from the corner next to its card
 }
@@ -546,7 +548,8 @@ const stripItems = computed(() => recent.value.slice(0, stripN.value));
 const sheetOpen = computed(() => phone.value && !!props.selected);
 
 let ro: ResizeObserver | null = null, timer = 0;
-const resized = () => { needFit = true; soon(); };
+// a sidebar fold (sidebar.ts) re-fits at once, so the new picture the transition shows is already in place
+const resized = () => { needFit = true; if (document.documentElement.dataset.sideAnim) void layout().then(fitStrip); else soon(); };
 const soon = () => { clearTimeout(timer); timer = window.setTimeout(() => { void layout().then(fitStrip); }, 120); };
 watch([layoutKey, teamsKey, () => props.selected, () => props.cover, () => trees.value.map((t) => t.cards.length + ":" + t.quiet.length).join(","), () => live.value.map((a) => strip(a.name) + crewState(a)).join("|")], soon);
 watch(() => recent.value[0]?.id, () => void fitStrip());
@@ -684,7 +687,7 @@ void ago;
 .fpop dt{color:var(--muted)}.fpop dd{margin:0;overflow-wrap:anywhere}
 .g{width:7px;height:7px;border-radius:2px;flex:none}
 /* recent messages: a strip as wide as its items, bottom left */
-.fstrip{position:absolute;left:12px;max-width:calc(100% - 24px - var(--cover,0px));bottom:12px;z-index:3;display:flex;gap:18px;align-items:center;height:34px;padding:0 14px;border-radius:10px;background:var(--cd);box-shadow:0 0 0 .75px var(--cdl),var(--nd);font-size:12px;overflow:hidden;white-space:nowrap}
+.fstrip{position:absolute;left:calc(12px + var(--bleed,0px));max-width:calc(100% - 24px - var(--cover,0px) - var(--bleed,0px));bottom:12px;z-index:3;display:flex;gap:18px;align-items:center;height:34px;padding:0 14px;border-radius:10px;background:var(--cd);box-shadow:0 0 0 .75px var(--cdl),var(--nd);font-size:12px;overflow:hidden;white-space:nowrap}
 .fstrip b{font:600 12px/1 var(--body);color:var(--muted)}
 .fstrip .m{display:flex;align-items:center;gap:6px;flex:none;color:var(--muted)}
 .fstrip .m:first-of-type{color:var(--ink)}

@@ -396,7 +396,7 @@ const side = computed(() => SIDE[gcur.value]);
 
 <style scoped>
 .ds{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;gap:12px;padding:16px 20px;background:var(--bg);color:var(--ink);overflow:hidden;animation:dsin .2s var(--ease)}
-@media (min-width:761px){.ds{left:232px}}
+@media (min-width:761px){.ds{left:var(--side-w,304px)}}
 .ds *{min-width:0}
 .ds-h{display:flex;align-items:center;gap:12px;flex:none}
 .ds-h h2{margin:0;font:700 20px/1.2 var(--body);text-transform:none}

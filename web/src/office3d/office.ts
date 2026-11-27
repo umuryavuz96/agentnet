@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TINT, roleOf, MAXDRAW } from './plan';
 import { overlaps, pathHits } from './audit';
+import { holdShift } from '../sidebar';
 import { SEGS, makeLayout, pathOut, breakPath, joinPath, route, walkPoints, toABox, hash, WALLH, INWALL, SEAT, SITZ, HINGE, foldPose, foldedOpen, WALKW, WALKH, RUNH } from './layout';
 
 const KIND = { task: 0xf2b04a, report: 0x3ecf8e, question: 0x6aa8ff, answer: 0xb48cff, info: 0x38c6d9 };
@@ -443,8 +444,13 @@ const blurMat = () => new THREE.ShaderMaterial({ depthTest: false, depthWrite: f
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
   fragmentShader: 'uniform sampler2D tDiffuse; uniform vec2 uDir; uniform float uFocus, uBand, uFeather; varying vec2 vUv;\nvoid main(){ float k = smoothstep(uBand, uBand + uFeather, abs(vUv.y - uFocus)); vec4 c = vec4(0.0); float ws = 0.0;\nfor (int i = -5; i <= 5; i++) { float f = float(i); float w = exp(-f * f / 10.0); c += texture2D(tDiffuse, vUv + uDir * f * 0.2 * k) * w; ws += w; }\ngl_FragColor = c / ws;\n#include <colorspace_fragment>\n}' });
 const matH = blurMat(), matV = blurMat();
+let midX = 0;
 function resize() {
-  const w = host.clientWidth, h = host.clientHeight; if (!w || !h || disposed) return; const Wp = Math.round(w * pr), Hp = Math.round(h * pr);
+  const w = host.clientWidth, h = host.clientHeight; if (!w || !h || disposed) return;
+  // a sidebar fold moves the box: start the camera where the office still stands on screen, render() eases it to the new fit
+  const was = midX, box = host.getBoundingClientRect(); midX = box.left + box.width / 2;
+  if (was && controls && !RM && document.documentElement.dataset.sideAnim) { const mv = new V3(1, 0, 0).applyQuaternion(camera.quaternion).multiplyScalar(holdShift(was, midX, (h * camera.zoom) / (2 * view.half))); view.target.add(mv); controls.target.add(mv); camera.position.add(mv); }
+  const Wp = Math.round(w * pr), Hp = Math.round(h * pr);
   renderer.setPixelRatio(1); renderer.setSize(Wp, Hp, false); aspect = w / h; lab.classList.toggle('sm', w < 560 || perf.agents > 14); // crowded or narrow: name and state mark only
   rtA && rtA.dispose(); rtB && rtB.dispose(); rtA = new THREE.WebGLRenderTarget(Wp, Hp, { samples: 4, colorSpace: THREE.SRGBColorSpace }); rtB = new THREE.WebGLRenderTarget(Wp, Hp, { depthBuffer: false, colorSpace: THREE.SRGBColorSpace });
   setGoal(); for (const l of labels) l.w = 0;
@@ -523,7 +529,8 @@ let held = false;
 function schedule() { if (!raf && !held && !document.hidden && !disposed) raf = requestAnimationFrame(frame); }
 function wake() { if (!raf) { last = performance.now(); schedule(); } }
 document.addEventListener('visibilitychange', wake);
-const ro = new ResizeObserver(() => { resize(); wake(); }); ro.observe(host);
+// drawn in the same frame: a resized canvas is empty until the next draw
+const ro = new ResizeObserver(() => { resize(); if (host.clientWidth && host.clientHeight) render(0); wake(); }); ro.observe(host);
 
 // ---------- picking: a click on a person or its label, or on a team room's name ----------
 let down = null;

@@ -12,7 +12,7 @@ const RULES: [RegExp, (m: RegExpExecArray) => string][] = [
   [/^\/v1\/admin\/(agent-lines(?:\/[a-z0-9-]+)?)$/, (m) => A + m[1]],
   [/^\/v1\/panel\/lines((?:\/[a-z0-9-]+(?:\/[a-z0-9-]+\/[a-z]+|\/[a-z]+)?)?)$/, (m) => "/api/v1/agentnet-panel/lines" + m[1]],
   [/^\/v1\/panel\/(snapshot|stream|watch|usage|scores|discipline|metrics|windows\/close-all)$/, (m) => A + m[1]],
-  [/^\/v1\/panel\/(agents\/[a-z0-9-]+\/(?:score|tasks|message|open|close|schedules|stop|despawn|run-schedule|prompt|send-now|feed|image|file|history))$/, (m) => A + m[1]],
+  [/^\/v1\/panel\/(agents\/[a-z0-9-]+\/(?:score|tasks|message|open|close|schedules|stop|despawn|run-schedule|prompt|send-now|feed|image|file|ref|history|mcp))$/, (m) => A + m[1]],
   [/^\/v1\/panel\/teams((?:\/[a-z0-9-]+(?:\/(?:archive|members|messages|tasks(?:\/\d+\/(?:start|done|claim))?))?)?)$/, (m) => "/api/v1/agentnet-panel/teams" + m[1]],
   [/^\/v1\/panel\/checks((?:\/\d+\/resolve)?)$/, (m) => "/api/v1/agentnet-panel/checks" + m[1]],
   [/^\/v1\/panel\/(goals(?:\/usage|\/\d+\/(?:missing|heart))?|items\/\d+\/mark)$/, (m) => "/api/v1/agentnet-panel/" + m[1]],
@@ -55,7 +55,7 @@ export const V1_PATHS: string[] = [
   "/v1/admin/spawn", "/v1/admin/plan-spawn", "/v1/admin/despawn", "/v1/admin/trail/inject", "/v1/admin/adopt/facts", "/v1/admin/adopt/report", "/v1/admin/adopt/apply", "/v1/admin/agents/{name}/placement", "/v1/admin/agents/{name}/grade", "/v1/admin/agents/{name}/asks/{msg}/close", "/v1/admin/agent-lines", "/v1/admin/agent-lines/{line}",
   "/v1/panel/lines", "/v1/panel/lines/proposals", "/v1/panel/lines/proposals/{id}/{op}", "/v1/panel/lines/{line}", "/v1/panel/lines/{line}/{op}",
   ...["snapshot", "stream", "watch", "usage", "scores", "discipline", "metrics"].map((x) => `/v1/panel/${x}`), "/v1/panel/windows/close-all",
-  ...["score", "tasks", "message", "open", "close", "schedules", "stop", "despawn", "run-schedule", "prompt", "send-now", "feed", "image", "file", "history"].map((x) => `/v1/panel/agents/{name}/${x}`),
+  ...["score", "tasks", "message", "open", "close", "schedules", "stop", "despawn", "run-schedule", "prompt", "send-now", "feed", "image", "file", "ref", "history", "mcp"].map((x) => `/v1/panel/agents/{name}/${x}`),
   "/v1/panel/teams", "/v1/panel/teams/{id}",
   ...["archive", "members", "messages", "tasks"].map((x) => `/v1/panel/teams/${"{id}"}/${x}`),
   "/v1/panel/teams/{id}/tasks/{tid}/{op}",
@@ -75,6 +75,6 @@ export const V1_PATHS: string[] = [
 /** Legacy panel paths that change state. They are open to the page, so the server makes them root only (access.ts rootOnly). */
 export const isPanelWrite = (method: string, path: string): boolean =>
   (method === "POST" || method === "PUT") && (
-    /^\/api\/v1\/agentnet\/(agents\/[a-z0-9-]+\/(message|open|close|stop|despawn|run-schedule|prompt|send-now|image)|windows\/close-all)$/.test(path) ||
+    /^\/api\/v1\/agentnet\/(agents\/[a-z0-9-]+\/(message|open|close|stop|despawn|run-schedule|prompt|send-now|image|mcp)|windows\/close-all)$/.test(path) ||
     path.startsWith("/api/v1/agentnet-panel/") ||
     path === "/api/v1/arsenal/roles" || path === "/api/v1/brains/import" || path === "/api/v1/agent-routing" || path === "/api/v1/agent-compact" || path.startsWith("/api/v1/agent-hooks/") || path.startsWith("/api/v1/agent-update/") || path === "/api/v1/agent-director/start" || path === "/api/v1/agent-director/move" || path === "/api/v1/agent-director/pick-folder" || path === "/api/v1/agent-director/reset" || path === "/api/v1/agent-director/answer" || path.startsWith("/api/v1/agent-adopt/") || path.startsWith("/api/v1/agent-import/"));

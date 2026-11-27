@@ -233,17 +233,18 @@ export function lastDirector(): { session: string | null; dir: string | null; at
 /** A director running outside tmux: its working folder (lsof), or null. */
 const cwdOf = (pid: number): string | null => { const r = spawnSync("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }); const m = /^n(.+)$/m.exec(r.stdout ?? ""); return m ? m[1]! : null; };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as { code?: string }).code === "EPERM"; } };
-export interface MoveDeps { pid: () => number | null; cwd: (pid: number) => string | null; stop: (pid: number) => void; gone: (pid: number) => Promise<boolean>; start: (dir: string) => StartResult }
-const realMove: MoveDeps = { pid: rootPid, cwd: cwdOf, stop: (pid) => { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } }, gone: async (pid) => { for (let i = 0; i < 30; i++) { if (!alive(pid)) return true; await Bun.sleep(100); } return false; }, start: (d) => startDirector(d) };
-/** Move a hand-started director into an agentnet tmux window: stop it, start it again in the same folder in agentnet-root. */
+export interface MoveDeps { pid: () => number | null; cwd: (pid: number) => string | null; stop: (pid: number) => void; gone: (pid: number) => Promise<boolean>; start: (dir: string, resume?: string) => StartResult; session?: () => string | null }
+const realMove: MoveDeps = { pid: rootPid, cwd: cwdOf, stop: (pid) => { try { process.kill(pid, "SIGTERM"); } catch { /* gone */ } }, gone: async (pid) => { for (let i = 0; i < 30; i++) { if (!alive(pid)) return true; await Bun.sleep(100); } return false; }, start: (d, resume) => startDirector(d, undefined, undefined, undefined, resume ? { resume } : {}), session: () => lastDirector()?.session ?? null };
+/** Move a hand-started director into an agentnet tmux window: stop it, start it again in the same folder in agentnet-root,
+ *  resuming its conversation so the owner keeps talking in the same chat. */
 export async function moveDirector(d: MoveDeps = realMove): Promise<StartResult> {
   const pid = d.pid();
   if (!pid || pid <= 1 || !alive(pid)) return { ok: false, code: "failed", detail: "The director is not running. Use Start director." };
-  const dir = d.cwd(pid) ?? defaultDirectorDir();
+  const dir = d.cwd(pid) ?? defaultDirectorDir(), resume = d.session?.() ?? undefined;
   d.stop(pid);
   if (!(await d.gone(pid))) return { ok: false, code: "failed", detail: "The director did not stop. Close it in its own terminal, then use Start director." };
-  logEvent("info", "director moved into tmux", { pid, dir });
-  return d.start(dir);
+  logEvent("info", "director moved into tmux", { pid, dir, resume });
+  return d.start(dir, resume);
 }
 
 export interface ResetDeps {

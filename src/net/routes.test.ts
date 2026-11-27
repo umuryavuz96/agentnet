@@ -110,7 +110,7 @@ describe("outbox", () => {
   test("owner chat via the plugin: hello caps marks it able; a push wakes the long-poll and rides in `owner` once", async () => {
     const op = await import("./ownerPlugin"); op.ownerReset();
     await call("backend-1", "POST", "/hello", { session: "s-own", caps: ["owner-chat"] });
-    expect(op.viaPlugin("backend-1", undefined, "1")).toBe(true);
+    expect(op.ownerCapable("backend-1")).toBe(true);
     const left = (await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.messages as { id: number }[];
     await call("backend-1", "POST", "/ack", { ids: left.map((m) => m.id) }); // an empty queue, so the poll waits
     const waiting = Promise.resolve(call("backend-1", "GET", "/poll", undefined, "?wait=5")).then(j);
@@ -118,10 +118,67 @@ describe("outbox", () => {
     const r = await waiting;
     expect(r.body.owner).toEqual([{ nonce: "n-1", text: "hi from the page" }]);
     expect((await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.owner).toBeUndefined();
-    await call("backend-1", "POST", "/hello", { session: "s-own" }); expect(op.viaPlugin("backend-1", undefined, "1")).toBe(false); // an old plugin
+    await call("backend-1", "POST", "/hello", { session: "s-own" }); expect(op.ownerCapable("backend-1")).toBe(false); // an old plugin
+  });
+  test("an owner item waits for a plugin that can take it: the hello wakes the parked poll and delivers", async () => {
+    const op = await import("./ownerPlugin"); op.ownerReset();
+    await call("backend-1", "POST", "/hello", { session: "s-own" }); // not able yet (an old plugin, or a service restart)
+    const left = (await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.messages as { id: number }[];
+    await call("backend-1", "POST", "/ack", { ids: left.map((m) => m.id) });
+    op.ownerPush("backend-1", { nonce: "n-w", text: "held", at: Date.now() });
+    expect((await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.owner).toBeUndefined();
+    const waiting = Promise.resolve(call("backend-1", "GET", "/poll", undefined, "?wait=5")).then(j);
+    await Bun.sleep(30); const t0 = Date.now();
+    await call("backend-1", "POST", "/hello", { session: "s-own", caps: ["owner-chat"] });
+    expect((await waiting).body.owner).toEqual([{ nonce: "n-w", text: "held" }]);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+  test("the MCP switch: the panel's ask and switch ride in `mcp` on the long-poll; the plugin's report shows in the view", async () => {
+    const mc = await import("./mcpControl"); mc.mcpReset();
+    const { live } = await import("./store");
+    await call("backend-1", "POST", "/hello", { session: "s-own", caps: ["mcp"] });
+    const left = (await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.messages as { id: number }[];
+    await call("backend-1", "POST", "/ack", { ids: left.map((m) => m.id) });
+    const id = live().find((a) => a.name === "backend-1")!.id;
+    const waiting = Promise.resolve(call("backend-1", "GET", "/poll", undefined, "?wait=5")).then(j);
+    await Bun.sleep(30); const t0 = Date.now(); mc.mcpView("backend-1", id);
+    expect((await waiting).body.mcp).toEqual({ set: [] });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect((await call("backend-1", "POST", "/mcp", { servers: [{ name: "probe", status: "connected", on: true }] })).status).toBe(204);
+    expect(mc.mcpSwitch("backend-1", id, "probe", false)).toBe(true);
+    expect((await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.mcp).toEqual({ set: [{ server: "probe", on: false }] });
+    expect(rt.agentPath("/api/v1/agentnet/mcp")).toBe(true); expect(rt.agentPath("/api/v1/agentnet/agents/backend-1/mcp")).toBe(false);
+    const { isPanelWrite } = await import("./mount");
+    expect(isPanelWrite("POST", "/api/v1/agentnet/agents/backend-1/mcp")).toBe(true);
+    const { toLegacy } = await import("./mount"); expect(toLegacy("/v1/panel/agents/backend-1/mcp")).toBe("/api/v1/agentnet/agents/backend-1/mcp");
+  });
+  test("a cut wakes the long-poll and rides in `abort` once; only a hello with owner-abort can take one", async () => {
+    const op = await import("./ownerPlugin"); op.ownerReset();
+    await call("backend-1", "POST", "/hello", { session: "s-own", caps: ["owner-chat"] });
+    expect(op.ownerAbortable("backend-1")).toBe(false);
+    await call("backend-1", "POST", "/hello", { session: "s-own", caps: ["owner-chat", "owner-abort"] });
+    expect(op.ownerAbortable("backend-1")).toBe(true);
+    const left = (await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.messages as { id: number }[];
+    await call("backend-1", "POST", "/ack", { ids: left.map((m) => m.id) });
+    const waiting = Promise.resolve(call("backend-1", "GET", "/poll", undefined, "?wait=5")).then(j);
+    await Bun.sleep(30); const t0 = Date.now();
+    const { live } = await import("./store");
+    expect(op.cutTurn("backend-1", live().find((a) => a.name === "backend-1")!.id, "t7")).toBe(true);
+    expect((await waiting).body.abort).toBe("t7");
+    expect(Date.now() - t0).toBeLessThan(rt.BURST_MS / 2);
+    expect((await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.abort).toBeUndefined();
+  });
+  test("owner-drop: the plugin says Claude Code dropped a send; only its own sends are marked", async () => {
+    const { sent } = await import("./feed");
+    sent.add("backend-1", "mine", "od-1"); sent.add("sre-1", "theirs", "od-2");
+    expect((await call("backend-1", "POST", "/owner-drop", { nonce: "od-1" })).status).toBe(204);
+    expect((await call("backend-1", "POST", "/owner-drop", { nonce: "od-2" })).status).toBe(204);
+    expect(sent.pending("backend-1").find((e) => e.nonce === "od-1")!.failed).toBe(true);
+    expect(sent.pending("sre-1").find((e) => e.nonce === "od-2")!.failed).toBeUndefined();
+    sent.drop("backend-1", "od-1"); sent.drop("sre-1", "od-2");
   });
   test("an owner item answers the long-poll at once: no burst wait for agent mail", async () => {
-    const op = await import("./ownerPlugin"); op.ownerReset();
+    const op = await import("./ownerPlugin"); op.ownerReset(); op.setOwnerCapable("backend-1", true);
     const left = (await j(await call("backend-1", "GET", "/poll", undefined, "?wait=0"))).body.messages as { id: number }[];
     await call("backend-1", "POST", "/ack", { ids: left.map((m) => m.id) });
     const waiting = Promise.resolve(call("backend-1", "GET", "/poll", undefined, "?wait=5")).then(j);

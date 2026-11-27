@@ -150,11 +150,14 @@ keeps names, tasks, messages and notes, and the web app shows them live.
 
 There is no agent loop to write; the agents are real Claude Code sessions.
 
-What you type to an agent in the web app goes through its plugin, as your own prompt (Claude Code 2.1.286 or later).
-Messages from other agents arrive framed as agent mail, so the model can tell you apart. The director, agents on an
-older Claude Code, **Send now** and **Stop** use tmux keys instead. So does a message sent while the agent is mid-turn:
-typed text joins the running turn, while a plugin prompt would wait for the turn to end. Set `AGENTNET_OWNER_VIA_PLUGIN=0` to type every
-message through tmux.
+What you type to an agent in the web app goes through its agentnet plugin, as your own prompt (Claude Code 2.1.286 or
+later). Messages from other agents arrive framed as agent mail, so the model can tell you apart. Nothing you type is sent
+through tmux: an agent that is mid-turn takes your message when the turn ends, and one whose plugin is not connected shows
+"Waiting for it to connect" and takes it when it does. The service keeps waiting messages in memory, so a service restart
+drops them. **Send now** and **Stop** also go through the plugin (Claude Code 2.1.325 or later): it ends the running
+turn, and every waiting message goes in. With an older plugin, **Send now** says the message goes when the turn ends, and
+**Stop** presses Escape in the agent's tmux session. A message that Claude Code drops shows as failed, with Retry. After an
+Escape typed in the terminal, Claude Code drops plugin prompts until you type something there.
 
 ## One folder
 

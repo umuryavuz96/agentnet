@@ -23,6 +23,8 @@ export const recovering = (now = Date.now()) => now - listenedAt < RECOVER_MS;
 export function pollOpened(agent: string) { polls.set(agent, (polls.get(agent) ?? 0) + 1); }
 export function pollClosed(agent: string, now = Date.now()) { const n = (polls.get(agent) ?? 1) - 1; if (n <= 0) polls.delete(agent); else polls.set(agent, n); lastPoll.set(agent, now); }
 export const isPolling = (agent: string) => (polls.get(agent) ?? 0) > 0;
+/** A poll is open, or one ended just now (the mod asks again as soon as it has handled an answer). */
+export const polledLately = (agent: string, now = Date.now()) => isPolling(agent) || now - (lastPoll.get(agent) ?? -Infinity) < 5_000;
 
 /** Pure decision for one agent: what the sweep should emit now, or null. */
 export function decide(s: Snapshot, o: { polling: boolean; lastPoll: number | null; pidAlive: boolean | null; recovering: boolean }, now = Date.now()): { type: "AgentFailed" | "AgentGone"; reason: string } | null {

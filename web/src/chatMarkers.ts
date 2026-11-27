@@ -19,7 +19,9 @@ export const toneChip = (tone: ChipTone, text: string) => chip("cx-" + tone, nul
 const REFS = {
   msg: "message-circle", step: "circle-dot", job: "clipboard-list", sha: "git-commit-horizontal", pr: "git-pull-request", file: "file-text",
 } as const satisfies Record<string, ChatIcon>;
-export const refChip = (kind: keyof typeof REFS, text: string, extra = "") => chip("cx-ref", REFS[kind], text, extra);
+/** `data-ref` and `data-id` name what a chip points at; the chat reads them to make it work (components/chat/useRefChips.ts). */
+export const refChip = (kind: keyof typeof REFS, text: string, extra = "") =>
+  chip("cx-ref", REFS[kind], text, (kind === "file" ? "" : ` data-ref="${kind}" data-id="${esc(text.replace(/^(?:PR #|#|step |job )/, ""))}"`) + extra);
 
 const SHA = /^(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,10}$/;
 const EXTS = "ts|tsx|js|mjs|cjs|jsx|vue|json|md|css|scss|html|py|sh|zsh|yml|yaml|toml|rs|go|sql|txt|lock|png|jpg|jpeg|gif|svg|webp|swift|kt|rb|php|c|h|cpp|java|env|conf";

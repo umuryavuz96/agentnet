@@ -22,10 +22,14 @@ export interface FeedItem {
   id: string; ts: number;
   /** owner = typed by the owner (terminal or the page), assistant = the agent's text, thinking = one thinking block (text only when the transcript kept it), step = one tool call, delivery = an agentnet message was handed over, event = compaction / interrupt */
   kind: "owner" | "assistant" | "thinking" | "step" | "delivery" | "event";
-  text?: string; nonce?: string; /** the page sent it and the transcript has not shown it yet */ sending?: boolean; /** the terminal did not take it */ failed?: boolean;
+  text?: string; nonce?: string; /** the page sent it and the transcript has not shown it yet */ sending?: boolean; /** Claude Code dropped it before the agent read it */ failed?: boolean;
   title?: string; status?: "running" | "ok" | "error"; ms?: number; out?: string; /** a short form of what the call was given (the command, the old and new text, the pattern), for the page's In box */ inp?: string; /** what kind of tool a step ran */ tool?: ToolKind; /** a step that read an image file: its path, so the page can show it (chatImages.ts serves it) */ img?: string; /** agentnet message id of a delivery */ msg?: number;
+  /** a step through an MCP connector: the chat shows the connector's tile and name (agentnet's own tools are not one) */
+  mcp?: StepMcp;
   /** a step that wrote a file (Write, Edit, MultiEdit, NotebookEdit): the path and what went in, for the page's step panel */ file?: StepFile;
 }
+/** The MCP server and tool a call went through. */
+export interface StepMcp { server: string; tool: string }
 /** What a writing call put in a file: the whole `content` of a Write, or the old and new text of each edit. Both clipped, both redacted. */
 export interface StepFile { path: string; content?: string; edits?: { old: string; new: string }[] }
 
@@ -81,7 +85,7 @@ export class Sent {
   private list = new Map<string, { text: string; nonce: string | null; at: number; failed?: boolean }[]>();
   add(agent: string, text: string, nonce: string | null, now = Date.now()) {
     const l = (this.list.get(agent) ?? []).filter((e) => now - e.at < TTL);
-    l.push({ text: norm(text), nonce, at: now }); this.list.set(agent, l.slice(-50));
+    l.push({ text, nonce, at: now }); this.list.set(agent, l.slice(-50)); // as typed: the page splits picture lines out of it
   }
   /** Transcript lines that already claimed a send (agent + line id -> nonce): every later reader of the same line (a reconnected
    *  stream, a second device, the history route) gets the same nonce, so the page never shows the send and the line as two bubbles. */
@@ -92,7 +96,7 @@ export class Sent {
     const k = id ? `${agent}\n${id}` : "";
     if (k && this.claimed.has(k)) return { nonce: this.claimed.get(k)! };
     const l = this.list.get(agent); if (!l) return null;
-    const t = norm(text), i = l.findIndex((e) => e.text === t && ts + SKEW >= e.at && ts - e.at < TTL);
+    const t = norm(text), i = l.findIndex((e) => norm(e.text) === t && ts + SKEW >= e.at && ts - e.at < TTL);
     if (i < 0) return null;
     const nonce = l.splice(i, 1)[0]!.nonce;
     if (k) { this.claimed.set(k, nonce); if (this.claimed.size > CLAIMED_MAX) this.claimed.delete(this.claimed.keys().next().value!); }
@@ -100,8 +104,8 @@ export class Sent {
   }
   /** The nonce a line already claimed, without claiming anything (the history route reads lines the stream owns). */
   seen(agent: string, id: string): { nonce: string | null } | null { const k = `${agent}\n${id}`; return this.claimed.has(k) ? { nonce: this.claimed.get(k)! } : null; }
-  /** The terminal refused this send after the page was answered: the page shows a retry. */
-  fail(agent: string, nonce: string | null) { const e = nonce ? this.list.get(agent)?.find((x) => x.nonce === nonce) : undefined; if (e) e.failed = true; }
+  /** Claude Code dropped this send before the agent read it: the page shows a retry. */
+  fail(agent: string, nonce: string) { const e = this.list.get(agent)?.find((x) => x.nonce === nonce); if (e) e.failed = true; }
   /** A retry of the same nonce replaces the failed entry. */
   drop(agent: string, nonce: string | null) { const l = this.list.get(agent); if (l && nonce) this.list.set(agent, l.filter((e) => e.nonce !== nonce)); }
   /** Sends not yet claimed: the page shows them as "sending". */
@@ -144,10 +148,15 @@ export function stepTitle(name: string, input: Record<string, unknown>): string 
     case "ToolSearch": return "Loading tools";
     case "TodoWrite": case "TaskCreate": case "TaskUpdate": return "Updating the task list";
   }
-  const m = name.match(/^mcp__(.+?)__(.+)$/);
+  const m = mcpOf(name);
   if (!m) return name;
-  const server = m[1]!.replace(/^plugin_[^_]+_/, "").replace(/^claude_ai_/, "");
-  return `${server === "claude-in-chrome" ? "Chrome" : server} · ${m[2]!.replace(/_mcp$/, "")}`;
+  return `${m.server === "claude-in-chrome" ? "Chrome" : m.server} · ${m.tool}`;
+}
+/** `mcp__server__tool` in its parts, the server without its plugin or claude.ai prefix; null for any other tool. */
+export function mcpOf(name: string): StepMcp | null {
+  const m = name.match(/^mcp__(.+?)__(.+)$/);
+  if (!m) return null;
+  return { server: m[1]!.replace(/^plugin_[^_]+_/, "").replace(/^claude_ai_/, ""), tool: m[2]!.replace(/_mcp$/, "") };
 }
 
 const contentText = (c: unknown): string => typeof c === "string" ? c : Array.isArray(c) ? c.map((b) => (b && (b as { type?: string }).type === "text" ? String((b as { text?: unknown }).text ?? "") : "")).join("\n") : "";
@@ -237,7 +246,8 @@ export class FeedParser {
         const file = b.name === "Read" && typeof b.input?.file_path === "string" && IMG_FILE.test(b.input.file_path) ? (b.input.file_path as string) : null;
         const input = (b.input ?? {}) as Record<string, unknown>;
         const inp = inputText(String(b.name), input), wrote = stepFile(String(b.name), input);
-        this.put({ id, kind: "step", ts, title: redactText(stepTitle(String(b.name), input)), status: "running", tool: toolKind(String(b.name), input), ...(inp ? { inp: redactText(inp) } : {}), ...(file ? { img: file } : {}), ...(wrote ? { file: wrote } : {}) });
+        const mcp = mcpOf(String(b.name));
+        this.put({ id, kind: "step", ts, ...(mcp && mcp.server !== "agentnet" ? { mcp } : {}), title: redactText(stepTitle(String(b.name), input)), status: "running", tool: toolKind(String(b.name), input), ...(inp ? { inp: redactText(inp) } : {}), ...(file ? { img: file } : {}), ...(wrote ? { file: wrote } : {}) });
         this.stepAt.set(id, ts);
       }
     });

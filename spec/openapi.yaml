@@ -604,6 +604,23 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/panel/agents/{name}/mcp:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: panel agents {name} mcp (the session's MCP servers and their switches)
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: panel agents {name} mcp (switch one server on or off for this session)
+      responses:
+        "200":
+          description: OK
   /v1/panel/agents/{name}/run-schedule:
     parameters:
       - name: name
@@ -664,6 +681,32 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/panel/agents/{name}/ref:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: "git detail of a commit or pull request named in the agent's chat: its project folder first, then other known repositories"
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [sha, pr]
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "{available:true,kind,id,repo,commit|pr} or {available:false,kind,id,reason}; repo is a folder name; cached 60 s"
+        "422":
+          description: bad agent name, kind or id
   /v1/panel/agents/{name}/image:
     parameters:
       - name: name

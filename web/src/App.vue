@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { themePref } from "./theme";
-import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from "vue";
 import Icon from "./ui/Icon.vue";
 import OfflineBar from "./ui/OfflineBar.vue";
 import type { IconName } from "./ui/icons";
@@ -21,7 +21,8 @@ import Hooks from "./pages/Hooks.vue";
 import Routing from "./pages/Routing.vue";
 import Brains from "./pages/Brains.vue";
 import Settings from "./pages/Settings.vue";
-import BrandLockup from "./brand/BrandLockup.vue";
+import Sidebar from "./components/Sidebar.vue";
+import { foldTransition, isFoldKey, readCollapsed, writeCollapsed } from "./sidebar";
 import Evals from "./pages/Evals.vue";
 import UpdatePill from "./components/UpdatePill.vue";
 import CommandPalette from "./components/CommandPalette.vue";
@@ -30,9 +31,9 @@ const em = readEmbed(location.search);
 const COMPONENTS: Record<Page, Component> = { agents: Agents, asks: Asks, usage: Usage, scores: Scores, trails: Trails, lines: Lines, search: Search, activity: Activity, hooks: Hooks, routing: Routing, brains: Brains, evals: Evals, settings: Settings };
 const NAV: Record<Page, [string, IconName]> = {
   agents: ["Agents", "network"], asks: ["Asks", "circle-check"], usage: ["Usage", "chart-line"], scores: ["Scores", "gauge"], trails: ["Trails", "history"], lines: ["Lines", "layers"],
-  search: ["Search", "search"], activity: ["Activity", "activity"], hooks: ["Hooks", "webhook"], routing: ["Routing", "sliders"], brains: ["Brains", "brain"], evals: ["Evals", "gauge"], settings: ["Settings", "settings"],
+  search: ["Search", "search"], activity: ["Activity", "activity"], hooks: ["Hooks", "zap"], routing: ["Routing", "sliders"], brains: ["Brains", "cpu"], evals: ["Evals", "flask"], settings: ["Settings", "settings-2"],
 };
-/** Rail groups (board page 01). Search stays a page until the palette lands. */
+/** Sidebar groups, in the Mac app's order (Evals is web only). */
 const GROUPS: { title: string; pages: Page[] }[] = [
   { title: "Network", pages: ["asks", "agents", "activity", "search"] },
   { title: "Insights", pages: ["usage", "scores", "evals", "trails", "lines"] },
@@ -63,6 +64,7 @@ const count = (p: Page): string | number =>
   : p === "hooks" ? hookBad.value
   : p === "routing" ? (routeMode.value && routeMode.value !== "normal" ? routeMode.value : 0)
   : 0;
+const counts = computed(() => Object.fromEntries(PAGES.map((p) => [p, count(p)])) as Record<Page, string | number>);
 const page = computed(() => route.value.page);
 /** The page on screen. The shell layout follows it when the new page enters, so the old page keeps its layout while it fades out (out-in). */
 const shownPage = ref(page.value);
@@ -72,6 +74,21 @@ const current = computed(() => COMPONENTS[page.value]);
 const mq = matchMedia("(prefers-color-scheme: light)");
 const applyTheme = () => { document.documentElement.dataset.theme = em.theme ?? (themePref.value !== "system" ? themePref.value : mq.matches ? "light" : "dark"); };
 applyTheme(); mq.addEventListener("change", applyTheme); watch(themePref, applyTheme);
+
+// The sidebar: grown or folded to icons. The owner's fold is remembered; under 1280 wide it is always folded.
+const narrow = matchMedia("(max-width:1279px)");
+const compact = ref(narrow.matches), collapsed = ref(readCollapsed());
+const folded = computed(() => compact.value || collapsed.value);
+function setSide(next: { compact?: boolean; collapsed?: boolean }) {
+  const to = (next.compact ?? compact.value) || (next.collapsed ?? collapsed.value);
+  const apply = async () => { compact.value = next.compact ?? compact.value; collapsed.value = next.collapsed ?? collapsed.value; await nextTick(); };
+  if (to === folded.value) void apply(); else foldTransition(to, apply);
+}
+function toggleSide() { if (compact.value || em.embed) return; const v = !collapsed.value; writeCollapsed(v); setSide({ collapsed: v }); }
+const onNarrow = () => setSide({ compact: narrow.matches });
+narrow.addEventListener("change", onNarrow);
+onBeforeUnmount(() => narrow.removeEventListener("change", onNarrow));
+watch(folded, (f) => { document.documentElement.dataset.side = em.embed ? "none" : f ? "folded" : "grown"; }, { immediate: true });
 
 // Embed: tell the host about route changes (the host may also set our hash; noteRoute stops the echo).
 if (em.embed) {
@@ -91,6 +108,7 @@ let timer: ReturnType<typeof setInterval>;
 const menu = ref(false);
 const onKey = (e: KeyboardEvent) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); palette.value = !palette.value; }
+  if (isFoldKey(e) && !em.embed) { e.preventDefault(); toggleSide(); }
   if (e.key === "Escape") menu.value = false;
 };
 onMounted(() => { if (!em.embed) { void checkHealth(); timer = setInterval(checkHealth, 30_000); } addEventListener("keydown", onKey); });
@@ -99,22 +117,8 @@ watch(page, () => { menu.value = false; });
 </script>
 
 <template>
-  <div class="shell" :class="{ embed: em.embed, fixed: shownPage === 'agents' || shownPage === 'asks' || shownPage === 'usage' || shownPage === 'scores' || shownPage === 'trails' || shownPage === 'lines' || shownPage === 'search' || shownPage === 'activity' || shownPage === 'hooks' || shownPage === 'brains' || shownPage === 'evals' || shownPage === 'routing' || shownPage === 'settings' }">
-    <aside v-if="!em.embed" class="rail" aria-label="agentnet">
-      <a class="brand" href="#/agents" aria-label="agentnet home"><BrandLockup :height="26" /></a>
-      <button type="button" class="find" title="Find or run (⌘K)" @click="palette = true"><Icon name="search" :size="16" /><span>Find or run</span><kbd>⌘K</kbd></button>
-      <nav class="nav" aria-label="Pages">
-        <template v-for="g in GROUPS" :key="g.title">
-          <h6>{{ g.title }}</h6>
-          <a v-for="p in g.pages" :key="p" :href="'#/' + p" :title="NAV[p][0]" :class="{ on: page === p }" :aria-current="page === p ? 'page' : undefined"><Icon :name="NAV[p][1]" :size="18" /><span>{{ NAV[p][0] }}</span><i v-if="count(p)" class="cnt num">{{ count(p) }}</i></a>
-        </template>
-      </nav>
-      <div class="foot">
-        <a href="#/settings" title="Settings" :class="{ on: page === 'settings' }" :aria-current="page === 'settings' ? 'page' : undefined"><Icon name="settings" :size="18" /><span>Settings</span></a>
-        <UpdatePill />
-        <span class="svc" role="status"><i class="dot" :class="health.ok ? 'ok' : 'bad'" :title="health.title" /><span>{{ health.ok ? "Service up" : "Not answering" }}<small v-if="health.ver"> · {{ health.ver }}</small></span></span>
-      </div>
-    </aside>
+  <div class="shell" :class="{ embed: em.embed, folded: folded && !em.embed, fixed: shownPage === 'agents' || shownPage === 'asks' || shownPage === 'usage' || shownPage === 'scores' || shownPage === 'trails' || shownPage === 'lines' || shownPage === 'search' || shownPage === 'activity' || shownPage === 'hooks' || shownPage === 'brains' || shownPage === 'evals' || shownPage === 'routing' || shownPage === 'settings' }">
+    <Sidebar v-if="!em.embed" :page="page" :folded="folded" :compact="compact" :nav="NAV" :groups="GROUPS" :counts="counts" :usage-pct="weekPct" :health="health" @find="palette = true" @toggle="toggleSide" />
     <header v-if="!em.embed" class="bar">
       <h1 class="ptitle">{{ NAV[page][0] }}</h1>
       <UpdatePill />
@@ -145,27 +149,15 @@ watch(page, () => { menu.value = false; });
 </template>
 
 <style scoped>
-.shell{min-height:100dvh;display:grid;grid-template-columns:232px minmax(0,1fr);grid-template-rows:auto 1fr}
+.shell{min-height:100dvh;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}
 .shell.fixed{height:100dvh;overflow:hidden}
-.shell.embed{grid-template-columns:minmax(0,1fr)}
-.rail{grid-row:1/3;display:flex;flex-direction:column;gap:2px;padding:14px 12px;background:var(--panel-2);border-right:1px solid var(--line);position:sticky;top:0;height:100dvh;overflow-y:auto;z-index:50}
-.brand{display:inline-flex;align-items:center;color:var(--ink);text-decoration:none;border-radius:6px;padding:4px 8px 14px}
-.find{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:10px;min-height:40px;margin:0 0 4px;padding:0 10px;border-radius:9px;box-shadow:inset 0 0 0 1px var(--line);color:var(--muted);font:500 13px var(--body);cursor:pointer}.find:hover{color:var(--ink)}.find:focus-visible{outline:2px solid var(--on);outline-offset:1px}.find kbd{margin-left:auto;font:500 11px/1 var(--mono)}
 .cnt{margin-left:auto;min-width:20px;padding:2px 6px;border-radius:999px;background:var(--ink);color:var(--bg);font:600 11px/16px var(--mono);font-style:normal;text-align:center}
-.nav{display:flex;flex-direction:column;gap:2px}
-.nav h6{margin:14px 8px 4px;font:600 12px/1 var(--body);color:var(--muted)}
-.rail a:not(.brand){display:flex;align-items:center;gap:10px;min-height:40px;padding:0 10px;border-radius:9px;color:var(--muted);font:600 14px var(--body);text-decoration:none;white-space:nowrap;transition:background-color .15s var(--ease),color .15s var(--ease)}
-.rail a:not(.brand):hover{color:var(--ink)}
-.rail a.on{background:var(--track);color:var(--ink)}
-.rail a:focus-visible,.brand:focus-visible,.sbtn:focus-visible,.tabs a:focus-visible,.tabs button:focus-visible,.more a:focus-visible{outline:2px solid var(--on);outline-offset:1px}
-.foot{margin-top:auto;display:flex;flex-direction:column;gap:6px;padding-top:12px;border-top:1px solid var(--line)}
-.svc{display:flex;align-items:center;gap:8px;padding:6px 12px;font:500 12px var(--body);color:var(--muted);white-space:nowrap}.svc small{font-size:12px}
+.sbtn:focus-visible,.tabs a:focus-visible,.tabs button:focus-visible,.more a:focus-visible{outline:2px solid var(--on);outline-offset:1px}
 .dot{width:10px;height:10px;border-radius:50%;flex:none;background:var(--bad)}
 .dot.ok{background:var(--on)}
 .bar,.tabs,.more{display:none}
-.bar .brand{padding:0;flex:none}
-.body{grid-column:2;grid-row:2;min-width:0;min-height:0;display:flex;flex-direction:column;width:100%;padding:16px 20px}
-.embed .body{grid-column:1;grid-row:1;padding:12px}
+.body{grid-column:1;grid-row:2;min-width:0;min-height:0;display:flex;flex-direction:column;width:100%;padding:16px 20px 16px 16px}
+.embed .body{grid-row:1;padding:12px}
 .body > :deep(*){min-height:0}
 .fixed .body{overflow:hidden}
 .fixed .body > :deep(.anv),.fixed .body > :deep(.wt),.fixed .body > :deep(.fp),.fixed .body > :deep(.hk),.fixed .body > :deep(.rp),.fixed .body > :deep(.st){flex:1}
@@ -173,24 +165,22 @@ watch(page, () => { menu.value = false; });
 .pg-enter-from,.pg-leave-to{opacity:0}
 .sh-enter-active,.sh-leave-active{transition:transform .3s cubic-bezier(.2,.8,.2,1),opacity .2s var(--ease)}
 .sh-enter-from,.sh-leave-to{transform:translateY(100%);opacity:0}
-/* 768-1279: the rail folds to 64 px icons, names on hover (title) */
-@media (max-width:1279px){
-  .shell{grid-template-columns:64px minmax(0,1fr)}
-  .rail{padding:14px 10px;align-items:center}
-  .rail span,.nav h6,.find kbd{display:none}
-  .rail a:not(.brand){position:relative}.rail .cnt{position:absolute;top:2px;right:0;margin:0;min-width:16px;padding:0 4px;font-size:10px;line-height:16px}
-  .find{width:44px;height:44px;padding:0;justify-content:center}
-  .nav{align-items:center}
-  .rail a:not(.brand){width:44px;height:44px;padding:0;justify-content:center}
-  .rail .brand{padding:0 0 12px;max-width:44px;overflow:hidden}
-  .foot{align-items:center}.svc{padding:6px 0}.svc span{display:none}
+/* The page box spans the whole window in both states and only its left inset makes room for the fixed sidebar, so the
+   fold transition slides the old and new picture from the same origin. Folded, the Agents map also runs to the window's
+   left edge under the floating icons, so nothing is cut beside them; its own fit and bottom strip keep clear (--bleed). */
+@media (min-width:761px){
+  .shell:not(.embed) > .body{padding-left:320px}
+  .shell.folded:not(.embed) > .body{padding-left:80px}
+  .shell.folded .body :deep(.fm),.shell.folded .body :deep(.o3){--bleed:80px;margin-left:-80px;border-color:transparent;border-left:0;border-top-left-radius:0;border-bottom-left-radius:0}
+  /* the 2D canvas takes the page's own colour there: no edge runs under or beside the icons */
+  .shell.folded .body :deep(.fm){--cv:var(--bg);background:var(--bg)}
+  .folded .body :deep(.anv){overflow-clip-margin:80px !important}
 }
 /* phone: top bar + four bottom tabs, More is a half sheet with no backdrop */
 @media (max-width:760px){
-  .shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr auto}
+  .shell{grid-template-rows:auto 1fr auto}
   .shell.embed{grid-template-rows:1fr}
-  .rail{display:none}
-  .bar{display:flex;align-items:center;gap:12px;grid-column:2;grid-column:1;grid-row:1;height:var(--bar-h);padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel-2);position:sticky;top:0;z-index:50}
+  .bar{display:flex;align-items:center;gap:12px;grid-column:1;grid-row:1;height:var(--bar-h);padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel-2);position:sticky;top:0;z-index:50}
   .bar .sbtn{all:unset;box-sizing:border-box;cursor:pointer;margin-left:auto;display:grid;place-items:center;width:44px;height:44px;border-radius:10px;color:var(--ink)}
   .ptitle{margin:0;font:700 20px/1 var(--head,var(--body));color:var(--ink)}
   .body :deep(h1){display:none}

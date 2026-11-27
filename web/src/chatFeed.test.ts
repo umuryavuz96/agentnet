@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "bun:test";
-import { RUN_MS, buildRows, doneWord, groupCalls, railSteps, squares, feedItems, harnessNote, lastStep, monogram, ownerKey, picProblem, promptHistory, rail, runs, splitImages, ticks, turns, withImages, workLine, workSum, type FeedItem, type PlanBit, type Row } from "./chatFeed";
+import { RUN_MS, buildRows, doneWord, groupCalls, railSteps, squares, feedItems, pendingSends, waitingSends, harnessNote, lastStep, monogram, ownerKey, picProblem, promptHistory, rail, runs, splitImages, ticks, turns, withImages, workLine, workSum, type FeedItem, type PlanBit, type Row } from "./chatFeed";
 import type { Msg } from "./net";
 
 const step = (n: number, status: FeedItem["status"] = "ok"): FeedItem => ({ id: `t${n}`, ts: 1000 + n, kind: "step", title: `Step ${n}`, status });
@@ -74,6 +74,32 @@ describe("feedItems", () => {
     const items = new Map<string, FeedItem>([["u0", { id: "u0", ts: 1_000, kind: "owner", text: "yes" }]]);
     const pending: FeedItem[] = [{ id: "sending:n1", ts: 60_000, kind: "owner", text: "yes", nonce: "n1", sending: true }];
     expect(feedItems(items, pending).map((i) => i.id)).toEqual(["u0", "sending:n1"]);
+  });
+});
+
+describe("pendingSends", () => {
+  const item = (nonce: string, extra: Partial<FeedItem> = {}): FeedItem => ({ id: `sending:${nonce}`, ts: 1, kind: "owner", text: nonce, nonce, ...extra });
+  test("the page's copy wins, and a send the server says was dropped turns failed", () => {
+    const out = pendingSends([item("a", { sending: false }), item("b", { sending: false })], [item("a", { failed: true }), item("b", { sending: true }), item("c", { sending: true })], new Set());
+    expect(out.map((i) => [i.nonce, !!i.failed, !!i.sending])).toEqual([["a", true, false], ["b", false, false], ["c", false, false]]);
+  });
+  test("a retry on its way is not failed again by the server's older answer; discarded sends stay away", () => {
+    expect(pendingSends([item("a", { sending: true })], [item("a", { failed: true })], new Set())[0]!.failed).toBeUndefined();
+    expect(pendingSends([], [item("a", { failed: true })], new Set(["a"]))).toEqual([]);
+  });
+});
+
+describe("waitingSends", () => {
+  test("the sends that wait for the turn to end: sent, not held for a plugin, not failed or shown", () => {
+    const items: FeedItem[] = [
+      { id: "u1", ts: 1, kind: "owner", text: "shown" },
+      { id: "sending:a", ts: 2, kind: "owner", text: "a", nonce: "a", sending: false },
+      { id: "sending:b", ts: 3, kind: "owner", text: "b", nonce: "b", sending: false },
+      { id: "sending:c", ts: 4, kind: "owner", text: "c", nonce: "c", sending: true },
+      { id: "sending:d", ts: 5, kind: "owner", text: "d", nonce: "d", failed: true },
+      { id: "sending:e", ts: 6, kind: "owner", text: "e", nonce: "e", sending: false },
+    ];
+    expect(waitingSends(buildRows([], items, "all"), new Set(["b"]))).toEqual(["a", "e"]);
   });
 });
 

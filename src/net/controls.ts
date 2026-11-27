@@ -9,6 +9,9 @@ import { nextRun } from "./cron";
 import { emit, flush, get, type Snapshot } from "./store";
 import { byName, enqueueMessage, PANEL, resolveTo, retireAgent, subjectOf, NAME_RE, type AgentRow } from "./routes";
 import { hasSession, interrupt, realTmux, sessionOf, type Tmux } from "./windows";
+import { sent } from "./feed";
+import { cutTurn } from "./ownerPlugin";
+import { mcpSwitch, mcpView } from "./mcpControl";
 
 export interface Schedule {
   id: string; kind: "session-cron" | "monitor" | "cron-job"; label: string; cron?: string; nextRunAt?: number; startedAt?: number;
@@ -134,14 +137,33 @@ export function agentControlRoutes(api: Hono<Env>, deps: RunDeps = realRun) {
     audit(c.get("actor"), "agentnet.run-now", `${t.name}:${id}`, "ok", c.get("trace"));
     return c.json({ agent: t.name, id, kind: sched.kind, started: true, told });
   });
+  api.get("/agentnet/agents/:name/mcp", (c) => {
+    const t = find(String(c.req.param("name")));
+    if (!t) return problem(c, 404, "Not Found", "no live agent by that name");
+    return c.json({ agent: t.name, ...mcpView(t.name, t.id) });
+  });
+  api.post("/agentnet/agents/:name/mcp", async (c) => {
+    const t = find(String(c.req.param("name")));
+    if (!t) return problem(c, 404, "Not Found", "no live agent by that name");
+    const b = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (typeof b.server !== "string" || typeof b.on !== "boolean") return problem(c, 422, "Can't do that", "server and on are required");
+    if (!mcpSwitch(t.name, t.id, b.server, b.on)) return problem(c, 409, "Can't switch", "this agent's plugin cannot switch that server now");
+    audit(c.get("actor"), "agentnet.mcp", `${t.name}:${b.server}:${b.on ? "on" : "off"}`, "ok", c.get("trace"));
+    return c.json({ agent: t.name, ...mcpView(t.name, t.id) });
+  });
   api.post("/agentnet/agents/:name/stop", (c) => {
     const name = String(c.req.param("name")), t = find(name);
     if (name === "root") return problem(c, 403, "Forbidden", "root cannot be stopped from the panel");
     if (!t) return problem(c, 404, "Not Found", "no live agent by that name");
-    const session = sessionOf(t.name);
-    if (!hasSession(session, deps.tmux)) return problem(c, 404, "Not Found", `no tmux session ${session}`);
-    const wasWorking = get(t.id)?.state === "working";
-    if (!interrupt(session, deps.tmux)) return problem(c, 500, "Stop failed", "tmux refused the keys");
+    const now = get(t.id), wasWorking = now?.state === "working";
+    // Through the plugin when it can: the turn ends and queued owner messages still run. Only an older plugin gets the Escape
+    // key, and that drops what Claude Code holds for it, so those sends are marked as not sent.
+    if (!cutTurn(t.name, t.id, now?.turn?.id ?? "")) {
+      const session = sessionOf(t.name);
+      if (!hasSession(session, deps.tmux)) return problem(c, 404, "Not Found", `no tmux session ${session}`);
+      if (!interrupt(session, deps.tmux)) return problem(c, 500, "Stop failed", "tmux refused the keys");
+      if (now && now.state !== "idle") for (const e of sent.pending(t.name)) if (e.nonce) sent.fail(t.name, e.nonce);
+    }
     const told = adminAction(t, "stop", "");
     audit(c.get("actor"), "agentnet.stop", t.id, "ok", c.get("trace"));
     return c.json({ agent: t.name, stopped: true, wasWorking, told });

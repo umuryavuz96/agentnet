@@ -22,6 +22,9 @@ const st = await import("./store");
 const rt = await import("./routes");
 const ct = await import("./controls");
 const { nextRun } = await import("./cron");
+const op = await import("./ownerPlugin");
+const { pollOpened } = await import("./liveness");
+const { sent } = await import("./feed");
 
 const spawned: string[] = [], exits: ((code: number) => void)[] = [], keys: string[][] = [], sessions = new Set<string>(["agentnet-ctl-agent"]);
 const tmux: import("./windows").Tmux = { run: (a) => { keys.push(a); if (a[0] === "has-session") return { code: sessions.has(a[2]!.replace(/^=/, "")) ? 0 : 1, out: "" }; return { code: 0, out: "" }; } };
@@ -136,6 +139,27 @@ describe("routes", () => {
     expect(inbox(aid("lead-1")).at(-1)!.body).toMatch(/^The owner stopped ctl-agent from the agentnet panel at /);
     expect(st.get(aid("ctl-agent"))!.life).not.toBe("gone");
     sessions.clear(); expect((await req("POST", "/stop")).status).toBe(404); // no session, nothing sent
+  });
+  test("Stop with a plugin that can end the turn: the plugin gets it, no key is pressed, queued owner messages stay", async () => {
+    op.ownerReset(); op.setOwnerCapable("ctl-agent", true); op.setOwnerAbortable("ctl-agent", true); pollOpened(aid("ctl-agent"));
+    st.emit({ agent: aid("ctl-agent"), type: "TurnStarted", data: { turn: "t9" }, source: "mod", ts: Date.now() }); st.flush();
+    sent.add("ctl-agent", "queued", "stop-1"); sessions.clear(); // no tmux session needed
+    const r = await req("POST", "/stop"); expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ stopped: true, wasWorking: true });
+    expect(op.ownerTakeCut("ctl-agent")).toBe("t9");
+    expect(keys.filter((k) => k[0] === "send-keys")).toEqual([]);
+    expect(sent.pending("ctl-agent").find((e) => e.nonce === "stop-1")!.failed).toBeUndefined();
+    expect(inbox(aid("lead-1")).at(-1)!.subject).toBe("admin: stop ctl-agent");
+    op.ownerReset(); sent.drop("ctl-agent", "stop-1");
+  });
+  test("Stop by Escape (an older plugin) drops what the agent had queued: those sends show as failed", async () => {
+    op.ownerReset();
+    st.emit({ agent: aid("ctl-agent"), type: "TurnStarted", data: { turn: "t9" }, source: "mod", ts: Date.now() }); st.flush();
+    sent.add("ctl-agent", "queued", "stop-2");
+    expect((await req("POST", "/stop")).status).toBe(200);
+    expect(keys.filter((k) => k[0] === "send-keys")).toHaveLength(1);
+    expect(sent.pending("ctl-agent").find((e) => e.nonce === "stop-2")!.failed).toBe(true);
+    sent.drop("ctl-agent", "stop-2");
   });
   test("Close: despawns the agent, boss and root hear about it, event log has the action", async () => {
     const id = aid("ctl-agent");

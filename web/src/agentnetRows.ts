@@ -72,7 +72,7 @@ export function agentnetFeed(msgs: Msg[], items: FeedItem[], filter: Filter, age
       out.push(row);
     } else if (it.kind === "delivery") {
       if (it.msg != null && ids.has(it.msg)) continue; // the message's own row says it
-      out.push({ id: it.id, kind: "step", ts: it.ts, status: "ok", tool: "agentnet", title: `Message #${it.msg ?? "?"} delivered` });
+      out.push({ id: it.id, kind: "step", ts: it.ts, status: "ok", tool: "agentnet", title: `Message #${it.msg ?? "?"} delivered`, ...(it.msg != null ? { msg: it.msg } : {}) });
     } else if (filter !== "messages") out.push(it);
   }
   if (filter !== "terminal") {
@@ -81,9 +81,9 @@ export function agentnetFeed(msgs: Msg[], items: FeedItem[], filter: Filter, age
       if (m.from === agent) { // the agent sent it: its send call already is the row
         const to = (c: FeedItem) => callInput(c.inp).to;
         const call = sends.find((c) => !used.has(c) && c.ts >= m.at - SEND_EARLY && c.ts <= m.at + SEND_LATE && (!to(c) || to(c) === m.to));
-        if (call) { used.add(call); continue; }
+        if (call) { used.add(call); if (m.id != null) call.msg = m.id; continue; }
       }
-      out.push({ id: `an:m:${m.id ?? `local:${m.at}`}`, kind: "step", ts: m.at, status: m.id == null ? "running" : "ok", tool: "agentnet", title: msgLabel(m, agent),
+      out.push({ id: `an:m:${m.id ?? `local:${m.at}`}`, kind: "step", ts: m.at, status: m.id == null ? "running" : "ok", tool: "agentnet", ...(m.id != null ? { msg: m.id } : {}), title: msgLabel(m, agent),
         inp: `${m.from} to ${m.to} · ${m.kind}${m.id != null ? ` · #${m.id}` : ""}${m.reply_to ? ` · answers #${m.reply_to}` : ""}${m.subject ? `\n${m.subject}` : ""}`, out: m.body });
     }
   }

@@ -6,7 +6,7 @@ const drafts = new Map<string, string>();
 <script setup lang="ts">
 // Chat tab of the agent panel: one timeline of the agent's agentnet messages and its live terminal (owner prompts, agent text,
 // thinking, tool calls), merged by time (web/src/chatFeed.ts). The terminal comes from GET v1/panel/agents/:name/feed (SSE, only
-// while this tab is open). The box talks as YOU by typing into the agent's terminal (POST .../prompt), or sends an agentnet
+// while this tab is open). The box talks as YOU through the agent's agentnet plugin (POST .../prompt), or sends an agentnet
 // message as root.
 // Reading: the agent's replies are flowing text with no bubble; the owner is a bubble on the right. Thinking and tool calls
 // between two replies fold into one line (ChatWork.vue opens it). A reply can hold agent-chosen UI blocks (chatBlocks.ts).
@@ -22,6 +22,11 @@ import AgentnetChatBody from "./AgentnetChatBody.vue";
 import ChatWork from "./ChatWork.vue";
 import FocusView from "./chat/FocusView.vue";
 import StepDetail from "./chat/StepDetail.vue";
+import RefCard from "./chat/RefCard.vue";
+import CommitDetail from "./chat/CommitDetail.vue";
+import { useRefChips } from "./chat/useRefChips";
+import { messageTarget, planTarget } from "../refLookup";
+import { planFocus } from "../net";
 import { usePicFocus } from "./chat/picFocus";
 import TrailFold from "./TrailFold.vue";
 import { curJob, planSteps } from "../plan";
@@ -32,12 +37,12 @@ import Skel from "../ui/Skel.vue";
 import { net, type Msg } from "../net";
 import { serviceDown } from "../agentClosed";
 import { api, url } from "../ui/api";
-import { FILTERS, buildRows, feedItems, railLinks, lastStep, promptHistory, rail, runs, speaker, picProblem, splitImages, withImages, workLine, workSum, type FeedItem, type Filter, type PlanBit, type Row } from "../chatFeed";
+import { FILTERS, buildRows, feedItems, pendingSends, waitingSends, railLinks, lastStep, promptHistory, rail, runs, speaker, picProblem, splitImages, withImages, workLine, workSum, type FeedItem, type Filter, type PlanBit, type Row } from "../chatFeed";
 import { prefs } from "../chatPrefs";
 import { agentnetFeed } from "../agentnetRows";
 
 const props = defineProps<{ name: string; isRoot: boolean; gone: boolean; connected: boolean; working: boolean; wide?: boolean; /** the step side panel is offered (only the full view has room for it); defaults to `wide` */ panel?: boolean; /** the agent's id on the map, to take its card colour */ agentId?: string }>();
-const emit = defineEmits<{ wide: [on: boolean] }>();
+const emit = defineEmits<{ wide: [on: boolean]; /** a step or job chip: the agent's panel opens (planFocus says where) */ plan: [] }>();
 
 // ---------- view state ----------
 const FKEY = "agentnet.chat.filter";
@@ -48,7 +53,7 @@ const KINDS = ["info", "task", "question"] as const;
 const SIZES = [{ id: "s", label: "Small" }, { id: "m", label: "Medium" }, { id: "l", label: "Large" }] as const;
 const kind = ref<(typeof KINDS)[number]>("info");
 const mode = ref<"you" | "agentnet">("you");
-const text = ref(drafts.get(props.name) ?? ""), err = ref(""), noTerm = ref(""), stopping = ref(false);
+const text = ref(drafts.get(props.name) ?? ""), err = ref(""), stopping = ref(false);
 const list = ref<HTMLElement | null>(null), inner = ref<HTMLElement | null>(null), ta = ref<HTMLTextAreaElement | null>(null);
 const open = ref(new Set<string>());
 // the trails turned away from their default (folded, or open with "Tool calls start expanded"); the setting resets them
@@ -78,6 +83,7 @@ const serverPending = shallowRef<FeedItem[]>([]);
 const local = shallowRef<FeedItem[]>([]);
 const localMsgs = shallowRef<Msg[]>([]);
 const hidden = ref(new Set<string>()); // failed sends the owner discarded
+const waits = ref(new Set<string>()); // sends held until the agent's plugin connects
 let es: EventSource | null = null;
 function connect() {
   es?.close(); es = null;
@@ -102,7 +108,7 @@ function connect() {
 }
 watch(() => props.name, (n, o) => {
   if (o !== undefined) { drafts.set(o, text.value); text.value = drafts.get(n) ?? ""; }
-  stick.value = true; open.value = new Set(); flip.value = new Set(); seen.value = new Set(); err.value = ""; noTerm.value = ""; mode.value = "you"; hist = -1;
+  stick.value = true; open.value = new Set(); flip.value = new Set(); seen.value = new Set(); err.value = ""; mode.value = "you"; hist = -1;
   connect();
 }, { immediate: true });
 watch(text, (t) => { if (t) drafts.set(props.name, t); else drafts.delete(props.name); });
@@ -126,11 +132,7 @@ const realMsgs = computed<Msg[]>(() => net.messages.filter((m) => (m.from === pr
 // A local copy of a root message leaves the moment the real one is in the stream.
 const waitingMsgs = computed(() => localMsgs.value.filter((l) => !realMsgs.value.some((m) => m.from === "root" && m.body === l.body && m.at >= l.at - 5000)));
 const msgs = computed<Msg[]>(() => [...realMsgs.value, ...waitingMsgs.value]);
-// The page's own copy wins over the server's for the same nonce. A send the server lists is already typed into the terminal.
-const pend = computed(() => {
-  const s = new Set<string>();
-  return [...local.value, ...serverPending.value.map((p) => ({ ...p, sending: false }))].filter((p) => p.nonce && !hidden.value.has(p.nonce) && !s.has(p.nonce) && s.add(p.nonce));
-});
+const pend = computed(() => pendingSends(local.value, serverPending.value, hidden.value));
 // agentnet traffic (messages, notices, deliveries, the agent's own agentnet calls) comes in as trail rows (agentnetRows.ts):
 // only the owner's prompts and the agent's own words are chat rows.
 // A run that holds only thoughts whose text the transcript did not keep says nothing: it is left out.
@@ -173,27 +175,11 @@ const toggle = (k: string) => { const s = new Set(open.value); s.has(k) ? s.dele
 // (kept in `flip`) until reload.
 watch(() => prefs.toolsOpen, () => { flip.value = new Set(); });
 const isOpen = (w: Extract<Row, { type: "work" }>) => flip.value.has(w.key) !== prefs.toolsOpen;
-// Canvas Motion "Trail or a call row opens": the new content fades up 6 px and everything below slides from its old place,
-// 190 ms on cubic-bezier(.23,1,.32,1), transform and opacity only (FLIP); reduced motion: no slide.
-const OPEN_MOTION: KeyframeAnimationOptions = { duration: 190, easing: "cubic-bezier(.23,1,.32,1)" };
-function slideBelow(k: string, change: () => void) {
-  const row = list.value?.querySelector<HTMLElement>(`[data-k="${CSS.escape(k)}"]`);
-  if (!row || !list.value || matchMedia("(prefers-reduced-motion: reduce)").matches) { change(); return; }
-  const below = Array.from(list.value.querySelectorAll<HTMLElement>("[data-k], .ac-th"))
-    .filter((e) => row.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING && !row.contains(e) && !e.parentElement?.closest("[data-k]"));
-  const tops = below.map((e) => e.getBoundingClientRect().top);
-  change();
-  nextTick(() => {
-    // only rows on screen before or after move; the rest would animate unseen
-    below.forEach((e, i) => { const now = e.getBoundingClientRect().top, d = Math.round(tops[i]! - now); if (d && Math.min(tops[i]!, now) < innerHeight) e.animate([{ transform: `translateY(${d}px)` }, { transform: "none" }], OPEN_MOTION); });
-    row.querySelector<HTMLElement>(".ac-gb.is-open > div")?.animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], OPEN_MOTION);
-  });
-}
 const toggleWork = (w: Extract<Row, { type: "work" }>) => {
   const k = w.key;
   if (!seen.value.has(k)) seen.value = new Set(seen.value).add(k);
   if (!isOpen(w)) stick.value = false;
-  slideBelow(k, () => { const s = new Set(flip.value); s.has(k) ? s.delete(k) : s.add(k); flip.value = s; });
+  const s = new Set(flip.value); s.has(k) ? s.delete(k) : s.add(k); flip.value = s;
 };
 const empty = computed(() => !rows.value.length);
 /** Show more / Show less on a long body. Opening lets go of the bottom so the reader keeps their place; closing brings the bubble back into view. */
@@ -203,7 +189,7 @@ function toggleBody(k: string) {
   if (opening) { stick.value = false; return; }
   nextTick(() => list.value?.querySelector(`[data-k="${CSS.escape(k)}"]`)?.scrollIntoView({ block: "nearest" }));
 }
-const SEND_LABEL = { sending: "Sending", sent: "Delivered to the terminal", shown: "In the terminal", failed: "Not sent" } as const;
+const SEND_LABEL = { sending: "Sending", sent: "Sent", shown: "Received", failed: "Not sent" } as const;
 
 // Only the reader lets go of the bottom: a scroll with no wheel, touch, key or pointer just before it is ours (a smooth
 // follow passes through "far from the bottom" on its way down) and must not unstick the list.
@@ -322,7 +308,7 @@ watch(() => props.wide, async () => {
   if (props.wide) { addEventListener("keydown", onEsc, true); ta.value?.focus({ preventScroll: true }); } else removeEventListener("keydown", onEsc, true);
 }, { flush: "pre" });
 /** Esc brings the expanded chat back to the panel; the page's own Esc (close the panel) must not also fire. Open settings take it first (onCfgEsc). */
-function onEsc(e: KeyboardEvent) { if (e.key !== "Escape" || e.defaultPrevented || cfg.value || (e.target instanceof Element && e.target.closest(".fv"))) return; e.preventDefault(); e.stopPropagation(); if (pickedId.value) pickedId.value = null; else askWide(false); }
+function onEsc(e: KeyboardEvent) { if (e.key !== "Escape" || e.defaultPrevented || cfg.value || (e.target instanceof Element && e.target.closest(".fv"))) return; e.preventDefault(); e.stopPropagation(); if (commitId.value) commitId.value = null; else if (pickedId.value) pickedId.value = null; else askWide(false); }
 onMounted(() => { if (props.wide) addEventListener("keydown", onEsc, true); });
 
 // ---------- the rail and the step beside it ----------
@@ -341,7 +327,39 @@ const liveHead = computed(() => { if (!props.working) return ""; let k = ""; for
 const pickedId = ref<string | null>(null);
 const canPanel = computed(() => props.panel ?? !!props.wide);
 const picked = computed(() => { const id = pickedId.value; if (!id) return null; for (const w of works.value) for (const i of w.items) if (i.id === id) return i; return null; });
-const pick = (i: FeedItem) => { pickedId.value = pickedId.value === i.id ? null : i.id; };
+const pick = (i: FeedItem) => { commitId.value = null; pickedId.value = pickedId.value === i.id ? null : i.id; };
+// ---------- reference chips ----------
+/** The commit a chip opened, shown in the side pane in every size of the chat. */
+const commitId = ref<string | null>(null);
+/** The trail row a message chip asked for. */
+const shown = ref<{ key: string; item: string } | null>(null);
+function showMessage(at: { key: string; item: string }) {
+  const w = works.value.find((x) => x.key === at.key); if (!w) return;
+  const wait = isOpen(w) ? 0 : 240; // a fold that opens now has its full height after TrailFold's .22 s
+  if (wait) toggleWork(w);
+  stick.value = false; shown.value = null;
+  void nextTick(() => {
+    shown.value = at;
+    setTimeout(() => {
+      const row = list.value?.querySelector<HTMLElement>(`[data-row="${CSS.escape(at.item)}"]`);
+      if (!row) return;
+      row.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      flash.value = at.key; setTimeout(() => { if (flash.value === at.key) flash.value = ""; }, 1600);
+    }, wait);
+  });
+}
+const chipRoot = ref<HTMLElement | null>(null);
+const refs = useRefChips(chipRoot, {
+  agent: () => props.name,
+  openCommit: (id) => { pickedId.value = null; commitId.value = id; },
+  local: (kind, id) => {
+    if (kind === "msg") { const at = messageTarget(works.value, Number(id)); return at ? () => showMessage(at) : null; }
+    const at = planTarget(agentRow.value?.jobs, kind, id);
+    return at ? () => { Object.assign(planFocus, { agent: props.name, job: at.job, step: at.step, n: planFocus.n + 1, at: Date.now() }); emit("plan"); } : null;
+  },
+}, () => [works.value, agentRow.value?.jobs]);
+const refCard = refs.card;
+watch(() => props.name, () => { commitId.value = null; shown.value = null; pickedId.value = null; });
 const took = (ms: number) => (ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60_000)} min`);
 const slot = ref(false); // the panel's tab row has a place for the filter and Collapse in the large view
 onMounted(() => { slot.value = !!document.getElementById("ap-tab-extra"); });
@@ -356,7 +374,7 @@ onBeforeUnmount(() => clearTimeout(offT));
 
 // ---------- the box ----------
 const agentnetOff = computed(() => (props.gone ? "Retired: read-only history" : !props.connected ? "Not connected" : null));
-const youOff = computed(() => (props.gone ? "Retired: read-only history" : noTerm.value || null));
+const youOff = computed(() => (props.gone ? "Retired: read-only history" : null));
 const off = computed(() => (mode.value === "you" ? youOff.value : agentnetOff.value));
 const cut = computed(() => props.working && prefs.busy === "interrupt" && !props.isRoot && mode.value === "you");
 const placeholder = computed(() => off.value ?? (mode.value === "agentnet" ? `Message ${props.name} as root` : !props.working ? `Message ${props.name} as you` : cut.value ? `Message ${props.name} (stops the turn first)` : `Message ${props.name} (queued)`));
@@ -407,25 +425,24 @@ function onAway(e: PointerEvent) { const t = e.target as Node; if (!cfgEl.value?
 // Esc closes the settings first (before the large view or the panel hears it) and gives the focus back to the button.
 function onCfgEsc(e: KeyboardEvent) { if (e.key !== "Escape") return; e.preventDefault(); e.stopImmediatePropagation(); cfg.value = false; cfgBtn.value?.focus(); }
 watch(cfg, (on) => { for (const [ev, fn] of [["pointerdown", onAway], ["keydown", onCfgEsc]] as const) (on ? addEventListener : removeEventListener)(ev, fn as EventListener, true); });
-watch(mode, () => { err.value = ""; noTerm.value = ""; });
+watch(mode, () => { err.value = ""; });
 const base = () => encodeURIComponent(props.name);
 /** Works on plain http too, where crypto.randomUUID is missing. */
 const newNonce = () => { const a = new Uint32Array(4); crypto.getRandomValues(a); return [...a].map((n) => n.toString(36)).join("-"); };
 const patch = (nonce: string, p: Partial<FeedItem>) => { local.value = local.value.map((i) => (i.nonce === nonce ? { ...i, ...p } : i)); };
 
-/** Type into the agent's terminal. The bubble is already on screen; this only moves its state. */
+/** Hand the text to the agent's plugin. The bubble is already on screen; this only moves its state. */
 async function post(agent: string, nonce: string, body: string) {
   const mineStill = () => agent === props.name;
   try {
     const r = await fetch(url(`v1/panel/agents/${encodeURIComponent(agent)}/prompt`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: body, nonce }) });
     if (!mineStill()) return;
-    if (r.ok) { patch(nonce, { sending: false }); return; }
-    const j = (await r.json().catch(() => ({}))) as { detail?: string; title?: string; code?: string };
-    if (j.code === "NO_TERMINAL") noTerm.value = j.detail ?? "This agent runs in a terminal agentnet cannot type into.";
+    const j = (await r.json().catch(() => ({}))) as { detail?: string; title?: string; waiting?: string };
+    if (r.ok) { if (j.waiting) waits.value = new Set(waits.value).add(nonce); patch(nonce, { sending: false }); return; }
     patch(nonce, { sending: false, failed: true, error: j.detail ?? j.title ?? `HTTP ${r.status}` });
   } catch { if (mineStill()) patch(nonce, { sending: false, failed: true, error: "agentnet did not answer" }); }
 }
-/** Interrupt, then type: the owner chose that a send while the agent works stops the turn first. A stop that fails still sends (the terminal queues it). */
+/** Interrupt, then send: the owner chose that a send while the agent works stops the turn first. A stop that fails still sends (it waits for the turn to end). */
 async function stopThen(agent: string, nonce: string, body: string) {
   try { await api(`v1/panel/agents/${encodeURIComponent(agent)}/stop`, { method: "POST" }); await new Promise((r) => setTimeout(r, 350)); } catch { /* queued instead */ }
   await post(agent, nonce, body);
@@ -448,7 +465,8 @@ function send(asked?: string, how: "you" | "mode" = "you") {
 }
 function retry(r: Extract<Row, { type: "owner" }>) {
   if (!r.nonce) return;
-  noTerm.value = "";
+  waits.value.delete(r.nonce);
+  serverPending.value = serverPending.value.filter((p) => p.nonce !== r.nonce); // its "dropped" answer is about the send before this one
   if (local.value.some((i) => i.nonce === r.nonce)) patch(r.nonce, { sending: true, failed: false, error: undefined });
   else local.value = [...local.value, { id: `sending:${r.nonce}`, ts: r.at, kind: "owner", text: r.text, nonce: r.nonce, sending: true }];
   void post(props.name, r.nonce, r.text);
@@ -472,15 +490,16 @@ async function sendMsg(body: string, k: string) {
     if (!text.value) text.value = body;
   }
 }
-/** Send now: the message waits in the agent's queue. The server stops the step (the Stop key) and Claude Code then takes the queued text. */
-const nowing = ref(new Set<string>()), nowErr = ref(new Map<string, string>());
-async function sendNow(r: Extract<Row, { type: "owner" }>) {
-  const n = r.nonce;
-  if (!n || nowing.value.has(n)) return;
-  nowing.value = new Set(nowing.value).add(n); nowErr.value.delete(n);
+/** Send now: messages wait in the agent's queue while it works. The agent's plugin ends the turn and all of them go in. */
+const queued = computed(() => (props.working && !props.gone ? waitingSends(plain.value, waits.value) : []));
+const nowing = ref(false), nowErr = ref<{ nonce: string; text: string } | null>(null);
+async function sendNow() {
+  const n = queued.value.at(-1);
+  if (!n || nowing.value) return;
+  nowing.value = true; nowErr.value = null;
   try { await api(`v1/panel/agents/${base()}/send-now`, { body: { nonce: n } }); }
-  catch (e) { if (!/already/i.test((e as Error).message)) nowErr.value = new Map(nowErr.value).set(n, `Not sent now: ${(e as Error).message}`); }
-  finally { const s = new Set(nowing.value); s.delete(n); nowing.value = s; }
+  catch (e) { if (!/already/i.test((e as Error).message)) nowErr.value = { nonce: n, text: `Not sent now: ${(e as Error).message}` }; }
+  finally { nowing.value = false; }
 }
 async function stop() {
   if (stopping.value) return;
@@ -510,7 +529,7 @@ const rowKey = (r: Row) => r.key;
 </script>
 
 <template>
-  <div :class="['ac', 'sz-' + prefs.size, { wide }]" :style="{ '--hue': hue, '--box-h': boxH + 'px' }">
+  <div ref="chipRoot" :class="['ac', 'sz-' + prefs.size, { wide }]" :style="{ '--hue': hue, '--box-h': boxH + 'px' }">
     <Teleport defer to="#ap-tab-extra" :disabled="!wide || !slot">
       <div :class="['ac-top', { tp: wide && slot }]">
         <div class="ac-seg" role="radiogroup" aria-label="Show">
@@ -522,7 +541,7 @@ const rowKey = (r: Row) => r.key;
       </div>
     </Teleport>
 
-    <div :class="['ac-main', { det: canPanel && !!picked }]">
+    <div :class="['ac-main', { det: !!commitId || (canPanel && !!picked) }]">
       <div class="ac-col">
         <div class="ac-wrap">
           <p v-if="offline && !gone" class="ac-off" role="status"><span class="ac-offi" aria-hidden="true"><Icon name="triangle-alert" :size="16" /></span><b>No connection to the agentnet service</b><span>Replies below are as of the last update. New ones show when the connection is back.</span></p>
@@ -544,7 +563,7 @@ const rowKey = (r: Row) => r.key;
                     <AgentnetChatBody v-if="splitImages(row.text).text" :text="splitImages(row.text).text" :open="open.has(row.key)" fold @toggle="toggleBody(row.key)" />
                     <span class="ac-tick" role="img" :aria-label="SEND_LABEL[row.state]" :title="SEND_LABEL[row.state]"><Icon :name="row.state === 'sending' ? 'clock' : row.state === 'failed' ? 'triangle-alert' : 'check'" :size="13" /></span>
                   </article>
-                  <p v-if="row.state === 'sent' && working && !gone" class="ac-wait" aria-live="polite"><span>{{ nowing.has(row.nonce ?? "") ? "Stopping the step to send it" : nowErr.get(row.nonce ?? "") ?? `Waits for ${name} to finish its step` }}</span><button v-if="!isRoot" type="button" :disabled="nowing.has(row.nonce ?? '')" title="Stop the current step and send this now" @click="sendNow(row)"><Icon name="arrow-up" :size="13" />Send now</button></p>
+                  <p v-if="row.state === 'sent' && waits.has(row.nonce ?? '') && !gone" class="ac-wait" aria-live="polite"><span>Waiting for {{ name }} to connect</span></p>
                   <p v-if="row.state === 'failed'" class="ac-fail" role="alert"><span>Not sent{{ row.error ? `: ${row.error}` : "" }}</span><button type="button" @click="retry(row)"><Icon name="rotate-ccw" :size="13" />Retry</button><button type="button" @click="discard(row)">Discard</button></p>
                 </div>
 
@@ -559,10 +578,9 @@ const rowKey = (r: Row) => r.key;
                   </div>
 
                   <div v-else-if="row.type === 'work'" :data-k="row.key" :class="['ac-w', 'rl', { end: rl.end, running: row.running, bad: row.failed > 0, flash: flash === row.key }]">
-                    <TrailFold :items="row.items" :running="row.running" :failed="row.failed" :ms="row.ms" :word="workLine(row)" :open="isOpen(row)" :controls="'w-' + row.key" :title="time(row.at)" @toggle="toggleWork(row)" />
-                    <div :id="'w-' + row.key" class="ac-gb" :class="{ 'is-open': isOpen(row) }" :inert="!isOpen(row) || undefined">
-                      <div><ChatWork v-if="row.running || isOpen(row) || seen.has(row.key)" :items="row.items" :plan="plan" :cont="links.get(row.key)?.cont" :tail="links.get(row.key)?.tail ?? true" :pick="canPanel" :picked="pickedId" :agent="name" @pick="pick" /></div>
-                    </div>
+                    <TrailFold :items="row.items" :running="row.running" :failed="row.failed" :ms="row.ms" :word="workLine(row)" :open="isOpen(row)" :controls="'w-' + row.key" :title="time(row.at)" @toggle="toggleWork(row)">
+                      <ChatWork v-if="row.running || isOpen(row) || seen.has(row.key)" :items="row.items" :plan="plan" :cont="links.get(row.key)?.cont" :tail="links.get(row.key)?.tail ?? true" :pick="canPanel" :picked="pickedId" :agent="name" :show="shown?.key === row.key ? shown.item : null" @pick="pick" />
+                    </TrailFold>
                   </div>
 
                   <div v-else-if="row.type === 'note'" :data-k="row.key" :class="['ac-note', 'rl', { end: rl.end }]">
@@ -582,6 +600,10 @@ const rowKey = (r: Row) => r.key;
         <form ref="box" :class="['ac-box', { off: !!off, pop: cfg }]" @submit.prevent="send()">
           <div :class="['ac-field', { drag: dragging }]" @dragover="onDragOver" @dragleave="dragging = false" @drop="onDrop">
             <p v-if="working && !gone" class="ac-now" aria-live="polite" :title="nowLine || undefined"><i class="ac-arc" aria-hidden="true" /><b>Working</b><span v-if="nowLine">{{ nowLine }}</span></p>
+            <div v-if="queued.length" class="ac-q" aria-live="polite">
+              <span v-if="nowErr && queued.includes(nowErr.nonce)" role="alert">{{ nowErr.text }}</span>
+              <button type="button" :disabled="nowing" title="Stop the current step and send the waiting messages" @click="sendNow"><Icon name="arrow-up" :size="13" />Send now</button>
+            </div>
             <ul v-if="pics.length" class="ac-pics" aria-label="Pictures to send">
               <li v-for="p in pics" :key="p.id" :class="{ wait: !p.path && !p.error, bad: !!p.error }" :title="p.error ?? (p.path ? 'Ready to send' : 'Saving the picture')">
                 <img :src="p.src" alt="Pasted picture" />
@@ -597,7 +619,7 @@ const rowKey = (r: Row) => r.key;
               <button type="button" class="ac-ib" :disabled="!!off" title="Attach a picture" aria-label="Attach a picture" @click="fileIn?.click()"><Icon name="image" :size="16" /></button>
               <button ref="cfgBtn" type="button" class="ac-ib" :aria-expanded="cfg" aria-controls="ac-cfg" title="Composer settings" aria-label="Composer settings" @click="cfg = !cfg"><Icon name="sliders" :size="16" /></button>
               <button v-if="working && !isRoot && !gone" type="button" class="ac-ib ac-stop" :disabled="stopping" title="Stop the current turn" aria-label="Stop the current turn" @click="stop"><Icon name="square" :size="11" /></button>
-              <button class="ac-ib ac-send" type="submit" aria-label="Send" :disabled="!!off || (!text.trim() && !picsReady.length) || picsBusy || bytes > LIMIT" :title="picsBusy ? 'Saving the picture' : mode === 'agentnet' ? `Send as a ${kind} message from root` : 'Type it into the terminal'"><Icon name="arrow-up" :size="16" /></button>
+              <button class="ac-ib ac-send" type="submit" aria-label="Send" :disabled="!!off || (!text.trim() && !picsReady.length) || picsBusy || bytes > LIMIT" :title="picsBusy ? 'Saving the picture' : mode === 'agentnet' ? `Send as a ${kind} message from root` : 'Send it as you'"><Icon name="arrow-up" :size="16" /></button>
             </div>
           </div>
           <Transition name="ac-pop">
@@ -635,12 +657,15 @@ const rowKey = (r: Row) => r.key;
         </form>
       </div>
 
-      <Transition name="ac-det"><aside v-if="canPanel && picked" class="ac-det" aria-label="Step output">
+      <Transition name="ac-det"><aside v-if="commitId" class="ac-det" aria-label="Commit">
+        <CommitDetail :agent="name" :id="commitId" @close="commitId = null" />
+      </aside><aside v-else-if="canPanel && picked" class="ac-det" aria-label="Step output">
         <h3><span>{{ picked.title }}</span><time>{{ time(picked.ts) }}</time><button type="button" class="ac-dx" aria-label="Close the step" title="Close (Esc)" @click="pickedId = null"><Icon name="x" :size="15" /></button></h3>
         <dl><dt>Result</dt><dd :class="picked.status">{{ picked.status === "error" ? "failed" : picked.status === "running" ? "running" : "ok" }}</dd><template v-if="picked.ms != null && picked.status !== 'running'"><dt>Took</dt><dd>{{ took(picked.ms) }}</dd></template></dl>
         <a v-if="picked.img" class="ac-di" :href="imgUrl(picked.img)" target="_blank" rel="noopener" role="button" aria-haspopup="dialog" :title="picked.img" @click="pf.open($event, imgUrl(picked.img!), picked.img!)" @keydown.space.prevent="pf.open($event, imgUrl(picked.img!), picked.img!)"><img :src="imgUrl(picked.img)" :alt="picked.title ?? 'The image this step read'" /></a>
         <StepDetail :item="picked" :agent="name" />
       </aside></Transition>
+      <RefCard :card="refCard" @enter="refs.keep" @leave="refs.hideSoon" />
       <FocusView v-if="pf.pic.value" :path="pf.pic.value.path" :image-src="pf.pic.value.src" :origin="pf.pic.value.origin" @close="pf.close" />
     </div>
   </div>
@@ -716,13 +741,16 @@ const rowKey = (r: Row) => r.key;
 .st-failed .ac-bub{border-color:color-mix(in srgb,var(--bad) 60%,transparent);background:color-mix(in srgb,var(--bad) 14%,var(--panel))}
 .ac-fail{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px 8px;margin:0;padding:0 2px;color:var(--bad);font-size:12.5px;line-height:1.3}
 .ac-fail span{overflow-wrap:anywhere}
-/* the sent message waits in the agent's queue until its step ends: a muted line under the bubble, faded in late so a quick take never flashes it */
+/* a muted line under a bubble held for a plugin, faded in late so a quick take never flashes it */
 .ac-wait{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px 8px;margin:0;padding:0 2px;color:var(--muted);font-size:12.5px;line-height:1.3;animation:acfade .2s var(--ease) .5s both}
 .ac-wait span{overflow-wrap:anywhere}
-.ac-wait button{display:inline-flex;align-items:center;gap:4px;min-height:26px;padding:0 9px;border:1px solid var(--hair);border-radius:8px;background:transparent;color:var(--ink);font:600 12px/1 var(--body);cursor:pointer;transition:background .15s var(--ease)}
-.ac-wait button:hover{background:color-mix(in srgb,var(--ink) 9%,transparent)}
-.ac-wait button:disabled{opacity:.55;cursor:progress}
-.ac-wait button:focus-visible{outline:2px solid color-mix(in srgb,var(--ink) 45%,transparent);outline-offset:1px}
+/* one Send now for everything that waits for the turn to end; faded in late so a quick take never flashes it */
+.ac-q{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px 10px;padding:8px 12px 0;color:var(--bad);font-size:12.5px;line-height:1.3;animation:acfade .2s var(--ease) .5s both}
+.ac-q span{overflow-wrap:anywhere}
+.ac-q button{display:inline-flex;align-items:center;gap:4px;min-height:26px;padding:0 9px;border:1px solid var(--hair);border-radius:8px;background:transparent;color:var(--ink);font:600 12px/1 var(--body);cursor:pointer;transition:background .15s var(--ease)}
+.ac-q button:hover{background:color-mix(in srgb,var(--ink) 9%,transparent)}
+.ac-q button:disabled{opacity:.55;cursor:progress}
+.ac-q button:focus-visible{outline:2px solid color-mix(in srgb,var(--ink) 45%,transparent);outline-offset:1px}
 .ac-fail button{display:inline-flex;align-items:center;gap:4px;min-height:26px;padding:0 9px;border:1px solid var(--hair);border-radius:8px;background:transparent;color:var(--ink);font:600 12px/1 var(--body);cursor:pointer}
 /* a bubble the owner just sent is simply there: no entrance, nothing between the key and the paint */
 .ac-m.is-new:not(.you){animation:acin .28s var(--e-out) both}
@@ -743,8 +771,6 @@ const rowKey = (r: Row) => r.key;
 .ac-bad{flex:none;padding:2px 8px;border-radius:999px;background:var(--bad-bg);color:var(--bad);font:650 11.5px/1.4 var(--body)}
 .ac-cv{flex:none;color:var(--muted);transform:rotate(-90deg);transition:transform .22s var(--e-out)}
 .ac-wh[aria-expanded="true"] .ac-cv{transform:none}
-.ac-gb{display:none}
-.ac-gb.is-open{display:block}
 @media (hover:hover) and (pointer:fine){
   .ac-wh:hover{background:color-mix(in srgb,var(--ink) 6%,transparent)}
   .ac-xp:hover,.ac-fail button:hover{background:color-mix(in srgb,var(--ink) 9%,transparent)}
@@ -862,7 +888,6 @@ const rowKey = (r: Row) => r.key;
 .ac-wh .ac-cv{opacity:0;transition:opacity .22s var(--e-hv),transform .22s var(--e-out)}
 .ac-wh:hover .ac-cv,.ac-wh:focus-visible .ac-cv,.ac-wh[aria-expanded="true"] .ac-cv{opacity:1}
 .ac-wh:hover{color:var(--ink)}
-.ac-gb.is-open > div{margin-top:8px;padding:6px 8px 4px;border-radius:12px;background:var(--tool-fill);box-shadow:0 0 0 1px var(--tool-edge)}
 
 /* ---------- expanded: one centred column; a picked step opens beside it and pushes it over ---------- */
 .ac.wide{--col:780px;--text:680px}
@@ -903,5 +928,5 @@ const rowKey = (r: Row) => r.key;
 .ac-det dd.ok{color:var(--on)}.ac-det dd.error{color:var(--bad)}
 .ac-di{flex:0 1 auto;min-height:0;display:block;border-radius:12px;overflow:hidden;background:var(--soft)}
 .ac-di img{display:block;width:100%;height:auto;max-height:46vh;object-fit:contain}
-@media (prefers-reduced-motion:reduce){.ac.wide .ac-col{transition:none}.ac-det-enter-active,.ac-det-leave-active{animation:none}.ac-wait{animation:none}.ac-arc,.ac-tk i.run{animation:none}.ac-ib,.ac-xp,.ac-seg button,.ac-cv,.ac-wh,.ac-field,.ac-w{transition:none}.ac-m.is-new:not(.you){animation:acfade .2s var(--ease) both}.ac-m.flash,.ac-w.flash{animation:none;box-shadow:0 0 0 6px color-mix(in srgb,var(--you) 26%,transparent)}.ac-pill-enter-active,.ac-pill-leave-active,.ac-pop-enter-active,.ac-pop-leave-active{transition:opacity .16s var(--ease)}.ac-pill-enter-from,.ac-pill-leave-to{transform:translateX(-50%)}.ac-pop-enter-from,.ac-pop-leave-to{transform:none}}
+@media (prefers-reduced-motion:reduce){.ac.wide .ac-col{transition:none}.ac-det-enter-active,.ac-det-leave-active{animation:none}.ac-wait,.ac-q{animation:none}.ac-arc,.ac-tk i.run{animation:none}.ac-ib,.ac-xp,.ac-seg button,.ac-cv,.ac-wh,.ac-field,.ac-w{transition:none}.ac-m.is-new:not(.you){animation:acfade .2s var(--ease) both}.ac-m.flash,.ac-w.flash{animation:none;box-shadow:0 0 0 6px color-mix(in srgb,var(--you) 26%,transparent)}.ac-pill-enter-active,.ac-pill-leave-active,.ac-pop-enter-active,.ac-pop-leave-active{transition:opacity .16s var(--ease)}.ac-pill-enter-from,.ac-pill-leave-to{transform:translateX(-50%)}.ac-pop-enter-from,.ac-pop-leave-to{transform:none}}
 </style>

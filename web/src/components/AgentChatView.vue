@@ -278,7 +278,7 @@ defineExpose({ el, fly });
         <button type="button" class="acv-b ico" :title="full ? 'Close chat' : 'Close chat (Esc)'" aria-label="Close chat" @click="emit('close')"><Icon name="x" :size="16" /></button>
       </div>
     </header>
-    <AgentnetChat class="acv-chat" :name="name" :is-root="isRoot" :gone="(gone || closed.closed) && !isRoot" :inert="cover || undefined" :connected="!!r && r.life === 'live' && !!r.connectedAt" :working="!!r && r.life === 'live' && r.state === 'working'" :wide="true" :panel="full" :agent-id="r?.id" @wide="onWide" />
+    <AgentnetChat class="acv-chat" :name="name" :is-root="isRoot" :gone="(gone || closed.closed) && !isRoot" :inert="cover || undefined" :connected="!!r && r.life === 'live' && !!r.connectedAt" :working="!!r && r.life === 'live' && r.state === 'working'" :wide="true" :panel="full" :agent-id="r?.id" @wide="onWide" @plan="emit('details')" />
     <Transition name="acv-cl" appear>
       <div v-if="cover" class="acv-cl" role="dialog" aria-modal="false" aria-labelledby="acv-cl-t" aria-describedby="acv-cl-d">
         <div class="acv-clc">

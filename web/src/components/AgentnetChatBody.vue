@@ -17,6 +17,7 @@ import AgentMention from "./chat/AgentMention.vue";
 import { mentionNames } from "../mentionNames";
 import { checkFileChips } from "../chatMarkers";
 import { fileUrl } from "./chat/fileApi";
+import { copy } from "../ui/copy";
 import { parsePathRef, splitBlocks, type Segment } from "../chatBlocks";
 
 const props = defineProps<{ text: string; open: boolean; fold?: boolean; blocks?: boolean; answer?: string | null; canSend?: boolean; /** who wrote it: named on a live-UI frame */ from?: string }>();
@@ -73,16 +74,6 @@ onMounted(() => {
 });
 onBeforeUnmount(() => { ro?.disconnect(); for (const el of chips) render(null, el); chips.clear(); });
 
-async function copy(text: string): Promise<boolean> {
-  try { if (navigator.clipboard) { await navigator.clipboard.writeText(text); return true; } } catch { /* blocked: try the old way */ }
-  const ta = document.createElement("textarea");
-  ta.value = text; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
-  document.body.appendChild(ta); ta.select();
-  let ok = false;
-  try { ok = document.execCommand("copy"); } catch { ok = false; }
-  ta.remove();
-  return ok;
-}
 const focus = ref<{ path: string; lines?: string; origin: { x: number; y: number; w: number; h: number } } | null>(null);
 async function onClick(e: MouseEvent) {
   const t = e.target as HTMLElement;

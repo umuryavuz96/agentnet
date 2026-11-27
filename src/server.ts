@@ -34,6 +34,7 @@ import { webRoutes } from "./net/web";
 import { ownerChatRoutes } from "./net/ownerChat";
 import { chatImageRoutes } from "./net/chatImages";
 import { chatFileRoutes } from "./net/chatFiles";
+import { chatRefRoutes } from "./net/chatRefs";
 import { agentnetWindowRoutes, healRootSession, startSessionReaper } from "./net/windows";
 import { agentControlRoutes } from "./net/controls";
 import { startUpdateTimers, updateRoutes } from "./net/update";
@@ -58,7 +59,7 @@ export function buildApp(): Hono<Env> {
   api.use("*", (c, next) => (isPanelWrite(c.req.method, c.req.path) ? rootOnly(c, next) : next())); // panel writes: loopback or the root token
   // Page routes before agentnetRoutes, as in the original server.
   agentnetStreamRoutes(api); agentnetUsageRoutes(api); agentnetPanelSendRoute(api); agentnetTeamPanelRoutes(api);
-  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); ownerChatRoutes(api); chatImageRoutes(api); chatFileRoutes(api); agentControlRoutes(api); checksPanelRoutes(api); asksPanelRoutes(api); linesPanelRoutes(api); metricsRoute(api);
+  trailsPanelRoute(api); trailStatsRoute(api); agentnetWindowRoutes(api); ownerChatRoutes(api); chatImageRoutes(api); chatFileRoutes(api); chatRefRoutes(api); agentControlRoutes(api); checksPanelRoutes(api); asksPanelRoutes(api); linesPanelRoutes(api); metricsRoute(api);
   summaryRoute(api); bgjobRoutes(api); arsenalRoutes(api); brainsRoutes(api); evalsRoutes(api); routingRoutes(api); compactRoutes(api); hooksRoutes(api); updateRoutes(api); directorRoutes(api); adoptRoutes(api); importRoutes(api);
   loginApiRoutes(api); accountRoutes(api); pairPanelRoutes(api);
   agentnetRoutes(api);

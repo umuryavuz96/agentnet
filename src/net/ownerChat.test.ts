@@ -16,77 +16,84 @@ const st = await import("./store");
 const rt = await import("./routes");
 const oc = await import("./ownerChat");
 const wn = await import("./windows");
+const op = await import("./ownerPlugin");
+const lv = await import("./liveness");
 const { projectDir, sent } = await import("./feed");
 
 const calls: string[][] = [], sessions = new Set<string>(["agentnet-oc-1"]);
-let failPaste = false;
 const tmux: import("./windows").Tmux = { run: (a) => {
   calls.push(a);
   if (a[0] === "has-session") return { code: sessions.has(a[2]!.replace(/^=/, "")) ? 0 : 1, out: "" };
-  if (a[0] === "paste-buffer" && failPaste) return { code: 1, out: "" };
   return { code: 0, out: "" };
 } };
 const app = new Hono<Env>(); app.use("*", tracing); const api = new Hono<Env>(); oc.ownerChatRoutes(api, { tmux, sleep: async () => {}, tickMs: 20 }); app.route("/api/v1", api);
 const post = (name: string, body: unknown) => app.request(`/api/v1/agentnet/agents/${name}/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 beforeEach(() => {
-  useDatabase(new Database(":memory:")); st._reset(); calls.length = 0; failPaste = false; sessions.clear(); sessions.add("agentnet-oc-1");
+  useDatabase(new Database(":memory:")); st._reset(); calls.length = 0; op.ownerReset(); sessions.clear(); sessions.add("agentnet-oc-1");
   rt.createAgent({ name: "oc-1", boss: "root", job: "t", by: "test", project: "/work/oc-proj" });
 });
 
-describe("POST /prompt", () => {
-  test("types with a bracketed paste, then Enter, into the exact session", async () => {
-    const r = await post("oc-1", { text: "line one\nline two", nonce: "n-1" });
-    expect(r.status).toBe(200); expect(await r.json()).toMatchObject({ sent: true, nonce: "n-1" });
-    await oc.settled("oc-1");
-    expect(calls.filter((c) => c[0] !== "has-session")).toEqual([
-      ["set-buffer", "-b", expect.stringContaining("agentnet-prompt"), "--", "line one\nline two"],
-      ["paste-buffer", "-p", "-d", "-b", expect.stringContaining("agentnet-prompt"), "-t", "=agentnet-oc-1:"],
-      ["send-keys", "-t", "=agentnet-oc-1:", "Enter"],
-    ]);
+describe("POST /prompt: the agentnet plugin is the only way in", () => {
+  const ev = (name: string, type: string) => { const a = st.live().find((x) => x.name === name)!; st.emit({ agent: a.id, type, data: { session: "s", pid: 1, turn: "t1" }, source: "mod", ts: Date.now() } as never); st.flush(); };
+  const queued = () => ({ sent: true, via: "plugin" });
+  /** Nothing at all asked of tmux: no paste, no keys, not even a session lookup. */
+  const noTmux = () => expect(calls).toEqual([]);
+
+  test("idle agent in tmux: queued for its plugin, nothing typed, the page sees it as sending", async () => {
+    op.setOwnerCapable("oc-1", true); ev("oc-1", "AgentConnected");
+    const r = await post("oc-1", { text: "line one\r\nline two", nonce: "n-1" });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ agent: "oc-1", nonce: "n-1", ...queued() });
+    noTmux();
     expect(sent.pending("oc-1").map((e) => e.nonce)).toContain("n-1");
+    expect(op.ownerTake("oc-1")).toMatchObject([{ nonce: "n-1", text: "line one\nline two" }]);
   });
-  test("NO_TERMINAL (409) when the agent has no tmux session; nothing is typed", async () => {
-    sessions.clear();
-    const r = await post("oc-1", { text: "hi" });
-    expect(r.status).toBe(409); const j = await r.json() as { code: string; detail: string };
-    expect(j.code).toBe("NO_TERMINAL"); expect(j.detail).toContain("cannot type into");
-    expect(calls.some((c) => c[0] === "paste-buffer")).toBe(false);
+  test("mid-turn: queued for the plugin too, never typed into the running turn", async () => {
+    op.setOwnerCapable("oc-1", true); ev("oc-1", "AgentConnected"); ev("oc-1", "TurnStarted");
+    const r = await post("oc-1", { text: "while you work", nonce: "b-1", via: "tmux" }); // an old page's `via` changes nothing
+    expect(await r.json()).toEqual({ agent: "oc-1", nonce: "b-1", ...queued() });
+    noTmux();
+    expect(op.ownerTake("oc-1")).toMatchObject([{ nonce: "b-1", text: "while you work" }]);
   });
-  test("the director with no tmux session is NO_TERMINAL and offers Move director", async () => {
-    const r = await post("root", { text: "hi" });
-    expect(r.status).toBe(409); expect((await r.json() as { detail: string }).detail).toContain("Move director");
+  test("the director, with an agentnet-root session or without one: through its plugin", async () => {
+    op.setOwnerCapable("root", true);
+    for (const inTmux of [false, true]) {
+      if (inTmux) sessions.add(wn.rootSession());
+      const r = await post("root", { text: `status ${inTmux}`, nonce: `r-${inTmux}` });
+      expect(r.status).toBe(200); expect(await r.json()).toEqual({ agent: "root", nonce: `r-${inTmux}`, ...queued() });
+      expect(op.ownerTake("root").map((i) => i.text)).toEqual([`status ${inTmux}`]);
+    }
+    noTmux();
   });
-  test("the director in agentnet-root gets the text", async () => {
-    sessions.add(wn.rootSession());
-    expect((await post("root", { text: "as the owner" })).status).toBe(200);
-    expect(calls.find((c) => c[0] === "paste-buffer")).toContain(`=${wn.rootSession()}:`);
+  test("plugin not connected: 200 with a `waiting` sentence, held until a plugin that can take it connects", async () => {
+    const r = await post("oc-1", { text: "are you there", nonce: "w-1" });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ agent: "oc-1", nonce: "w-1", ...queued(), waiting: oc.NO_PLUGIN });
+    noTmux();
+    expect(op.ownerTake("oc-1")).toEqual([]); // an old plugin's poll must not swallow it
+    expect(sent.pending("oc-1").map((e) => e.nonce)).toContain("w-1");
+    op.setOwnerCapable("oc-1", true);
+    expect(op.ownerTake("oc-1")).toMatchObject([{ nonce: "w-1", text: "are you there" }]);
   });
-  test("404 unknown agent, 422 empty / over 8 kB / bad name, 502 when tmux refuses", async () => {
+  test("a director that has gone is waiting, even though its plugin once connected", async () => {
+    rt.createAgent({ name: "root", boss: "root", job: "d", by: "test", project: "/work/oc-proj" });
+    op.setOwnerCapable("root", true); ev("root", "AgentConnected"); ev("root", "AgentGone");
+    expect(await (await post("root", { text: "wake up", nonce: "g-1" })).json()).toMatchObject({ waiting: oc.NO_PLUGIN });
+  });
+  test("a retry of a nonce that still waits replaces it: the agent gets it once", async () => {
+    await post("oc-1", { text: "once only", nonce: "re-1" });
+    await post("oc-1", { text: "once only", nonce: "re-1" });
+    op.setOwnerCapable("oc-1", true);
+    expect(op.ownerTake("oc-1").map((i) => i.text)).toEqual(["once only"]);
+    expect(sent.pending("oc-1").filter((e) => e.nonce === "re-1")).toHaveLength(1);
+  });
+  test("404 unknown agent, 422 empty / over 8 kB / bad name; none of them queues", async () => {
     expect((await post("nobody", { text: "x" })).status).toBe(404);
     expect((await post("oc-1", { text: "   " })).status).toBe(422);
     expect((await post("oc-1", { text: "x".repeat(8193) })).status).toBe(422);
     expect((await post("BAD_NAME", { text: "x" })).status).toBe(422);
-    failPaste = true; expect((await post("oc-1", { text: "x" })).status).toBe(502);
-  });
-  test("answers after the paste, before the Enter wait; two prompts never interleave; a refused Enter marks the send failed", async () => {
-    const app2 = new Hono<Env>(); app2.use("*", tracing); const api2 = new Hono<Env>();
-    let failEnter = false;
-    const t2: import("./windows").Tmux = { run: (a) => { calls.push(a); return { code: a[0] === "send-keys" && failEnter ? 1 : 0, out: "" }; } };
-    oc.ownerChatRoutes(api2, { tmux: t2, sleep: (ms) => Bun.sleep(ms), tickMs: 20 }); app2.route("/api/v1", api2);
-    const p2 = (body: unknown) => app2.request("/api/v1/agentnet/agents/oc-1/prompt", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const t0 = performance.now();
-    const r = await p2({ text: "first", nonce: "q-1" });
-    const ms = performance.now() - t0;
-    expect(r.status).toBe(200); expect(ms).toBeLessThan(oc.ENTER_WAIT / 2);
-    expect(calls.some((c) => c[0] === "send-keys")).toBe(false); // Enter has not been pressed yet
-    failEnter = true;
-    await p2({ text: "second", nonce: "q-2" }); // waits for the first Enter, then pastes
-    const order = calls.filter((c) => c[0] === "paste-buffer" || c[0] === "send-keys").map((c) => c[0]);
-    expect(order).toEqual(["paste-buffer", "send-keys", "paste-buffer"]);
-    await oc.settled("oc-1");
-    expect(sent.pending("oc-1").find((e) => e.nonce === "q-2")).toMatchObject({ failed: true });
-    console.log(`prompt route answered in ${ms.toFixed(1)} ms (fake tmux, real ${oc.ENTER_WAIT} ms Enter wait)`);
+    op.setOwnerCapable("oc-1", true); expect(op.ownerHas("oc-1")).toBe(false); noTmux();
   });
 });
 
@@ -134,123 +141,69 @@ describe("GET /feed", () => {
   });
 });
 
-describe("POST /send-now", () => {
-  const RULE = "─".repeat(40);
-  const paneWith = (box: string) => `⏺ working on it\n${RULE} oc-1 ─\n❯ ${box}\n${RULE}\n  Sonnet`;
-  let pane = paneWith("Press up to edit queued messages");
-  const t3: import("./windows").Tmux = { run: (a) => {
-    calls.push(a);
-    if (a[0] === "has-session") return { code: sessions.has(a[2]!.replace(/^=/, "")) ? 0 : 1, out: "" };
-    if (a[0] === "capture-pane") return { code: 0, out: pane };
-    return { code: 0, out: "" };
-  } };
-  const app3 = new Hono<Env>(); app3.use("*", tracing); const api3 = new Hono<Env>(); oc.ownerChatRoutes(api3, { tmux: t3, sleep: async () => {}, tickMs: 20 }); app3.route("/api/v1", api3);
-  const now = (name: string, body: unknown) => app3.request(`/api/v1/agentnet/agents/${name}/send-now`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const work = () => { const a = st.live().find((x) => x.name === "oc-1")!; st.emit({ agent: a.id, type: "AgentConnected", data: { session: "s", pid: 1 }, source: "mod", ts: Date.now() }); st.emit({ agent: a.id, type: "TurnStarted", data: { turn: "t1" }, source: "mod", ts: Date.now() }); st.flush(); };
-  const keys = () => calls.filter((c) => c[0] === "send-keys").map((c) => c[3]);
+describe("POST /send-now: the plugin ends the turn, nothing is pressed", () => {
+  const now = (name: string, body: unknown) => app.request(`/api/v1/agentnet/agents/${name}/send-now`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const ev = (type: string, name = "oc-1") => { const a = st.live().find((x) => x.name === name)!; st.emit({ agent: a.id, type, data: { session: "s", pid: 1, turn: "t1" }, source: "mod", ts: Date.now() } as never); st.flush(); return a.id; };
+  /** A connected plugin that can end a turn, on an agent in a turn. */
+  const working = () => { op.setOwnerCapable("oc-1", true); op.setOwnerAbortable("oc-1", true); ev("AgentConnected"); lv.pollOpened(ev("TurnStarted")); };
 
-  test("queued while working: one Escape and no retype (Claude Code submits the queue itself)", async () => {
-    work(); pane = paneWith("Press up to edit queued messages");
-    sent.add("oc-1", "what is 2+2", "sn-1");
+  test("working: one cut for the running turn, no tmux at all", async () => {
+    working(); sent.add("oc-1", "what is 2+2", "sn-1");
     const r = await now("oc-1", { nonce: "sn-1" });
-    expect(r.status).toBe(200); expect(await r.json()).toMatchObject({ interrupted: true, entered: false });
-    expect(keys()).toEqual(["Escape"]);
-    expect(calls.some((c) => c[0] === "paste-buffer" || c[0] === "set-buffer")).toBe(false);
+    expect(r.status).toBe(200); expect(await r.json()).toEqual({ agent: "oc-1", nonce: "sn-1", interrupted: true });
+    expect(op.ownerTakeCut("oc-1")).toBe("t1");
+    expect(calls).toEqual([]);
   });
-  test("the text left in the input box after the Escape gets one Enter", async () => {
-    work(); pane = paneWith("what is 2+2");
-    sent.add("oc-1", "what is 2+2", "sn-2");
-    expect(await (await now("oc-1", { nonce: "sn-2" })).json()).toMatchObject({ interrupted: true, entered: true });
-    expect(keys()).toEqual(["Escape", "Enter"]);
+  test("two clicks end one turn", async () => {
+    working(); sent.add("oc-1", "twice", "sn-2");
+    await now("oc-1", { nonce: "sn-2" }); op.ownerTakeCut("oc-1");
+    expect(await (await now("oc-1", { nonce: "sn-2" })).json()).toMatchObject({ interrupted: false, already: true });
+    expect(op.ownerTakeCut("oc-1")).toBeNull();
   });
-  test("idle agent: no Escape; an empty box gets nothing", async () => {
-    pane = paneWith("");
+  test("idle agent: nothing to end", async () => {
+    op.setOwnerCapable("oc-1", true); op.setOwnerAbortable("oc-1", true); lv.pollOpened(ev("AgentConnected"));
     sent.add("oc-1", "hello", "sn-3");
-    expect(await (await now("oc-1", { nonce: "sn-3" })).json()).toMatchObject({ interrupted: false, entered: false });
-    expect(keys()).toEqual([]);
+    expect(await (await now("oc-1", { nonce: "sn-3" })).json()).toEqual({ agent: "oc-1", nonce: "sn-3", interrupted: false });
+    expect(op.ownerTakeCut("oc-1")).toBeNull();
   });
-  test("409 TAKEN once the transcript has the message, so a late click never stops the turn that answers it", async () => {
-    work(); sent.add("oc-1", "taken one", "sn-4"); sent.claim("oc-1", "taken one", Date.now());
+  test("a plugin that cannot end a turn: 409 NO_ABORT and no Escape, which would drop the message", async () => {
+    op.setOwnerCapable("oc-1", true); ev("AgentConnected"); lv.pollOpened(ev("TurnStarted"));
+    sent.add("oc-1", "old", "sn-4");
     const r = await now("oc-1", { nonce: "sn-4" });
-    expect(r.status).toBe(409); expect((await r.json() as { code: string }).code).toBe("TAKEN");
-    expect(keys()).toEqual([]);
+    expect(r.status).toBe(409); expect(await r.json()).toMatchObject({ code: "NO_ABORT", detail: oc.NO_ABORT });
+    expect(calls).toEqual([]);
+    expect(sent.pending("oc-1").find((e) => e.nonce === "sn-4")!.failed).toBeUndefined();
   });
-  test("two clicks at once send one Escape (a second would open the rewind menu)", async () => {
-    work(); pane = paneWith("Press up to edit queued messages");
-    const slow = new Hono<Env>(); const sa = new Hono<Env>(); oc.ownerChatRoutes(sa, { tmux: t3, sleep: (ms) => Bun.sleep(ms), tickMs: 20 }); slow.route("/api/v1", sa);
-    sent.add("oc-1", "twice", "sn-5");
-    const go = () => slow.request("/api/v1/agentnet/agents/oc-1/send-now", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nonce: "sn-5" }) });
-    await Promise.all([go(), go()]);
-    expect(keys()).toEqual(["Escape"]);
+  test("the director too: its plugin ends the turn, nothing reaches its terminal", async () => {
+    op.setOwnerCapable("root", true); op.setOwnerAbortable("root", true); lv.pollOpened(rt.ADMIN.id);
+    sent.add("root", "to the director", "sn-5");
+    expect(await (await now("root", { nonce: "sn-5" })).json()).toMatchObject({ interrupted: true });
+    expect(op.ownerTakeCut("root")).toBe(""); // no card: whatever turn runs
+    expect(calls).toEqual([]);
   });
-  test("root 403, bad nonce 422, unknown agent 404", async () => {
-    expect((await now("root", { nonce: "x" })).status).toBe(403);
+  test("409 TAKEN once the transcript has the message or Claude Code dropped it", async () => {
+    working(); sent.add("oc-1", "taken one", "sn-6"); sent.claim("oc-1", "taken one", Date.now());
+    sent.add("oc-1", "dropped one", "sn-7"); sent.fail("oc-1", "sn-7");
+    for (const nonce of ["sn-6", "sn-7"]) { const r = await now("oc-1", { nonce }); expect(r.status).toBe(409); expect((await r.json() as { code: string }).code).toBe("TAKEN"); }
+    expect(op.ownerTakeCut("oc-1")).toBeNull();
+  });
+  test("bad nonce 422, unknown agent 404", async () => {
     expect((await now("oc-1", {})).status).toBe(422);
     expect((await now("nobody", { nonce: "x" })).status).toBe(404);
   });
-  test("inputHolds reads the box between the bottom rules", () => {
-    expect(oc.inputHolds(paneWith("[Pasted text #1 +6 lines]"), "a\nb")).toBe(true);
-    expect(oc.inputHolds(paneWith("Press up to edit queued messages"), "x")).toBe(false);
-    expect(oc.inputHolds(paneWith("something else"), "what is 2+2")).toBe(false);
-    expect(oc.inputHolds("no rules here\n❯ hi", "hi")).toBe(false);
-  });
 });
 
-describe("owner chat via the plugin (default on, AGENTNET_OWNER_VIA_PLUGIN=0 = off)", () => {
-  const op = () => import("./ownerPlugin");
-  test("flag 0: tmux as before, even for a capable plugin", async () => {
-    const o = await op(); o.ownerReset(); o.setOwnerCapable("oc-1", true); process.env.AGENTNET_OWNER_VIA_PLUGIN = "0";
-    try {
-      const r = await post("oc-1", { text: "hi", nonce: "t-1" }); await oc.settled("oc-1");
-      expect(await r.json()).not.toHaveProperty("via"); expect(calls.some((c) => c[0] === "paste-buffer")).toBe(true); expect(o.ownerHas("oc-1")).toBe(false);
-    } finally { delete process.env.AGENTNET_OWNER_VIA_PLUGIN; o.ownerReset(); }
-  });
-  test("flag unset + capable: the plugin path by default", async () => {
-    const o = await op(); o.ownerReset(); o.setOwnerCapable("oc-1", true); delete process.env.AGENTNET_OWNER_VIA_PLUGIN;
-    try {
-      const r = await post("oc-1", { text: "by default", nonce: "d-1" });
-      expect(await r.json()).toMatchObject({ via: "plugin" }); expect(calls.some((c) => c[0] === "paste-buffer")).toBe(false);
-      expect(o.ownerTake("oc-1")).toMatchObject([{ nonce: "d-1", text: "by default" }]);
-    } finally { o.ownerReset(); }
-  });
-  test("routes by state: idle goes to the plugin, mid-turn goes to tmux so it lands in the turn; via plugin still forces it", async () => {
-    const o = await op(); o.ownerReset(); o.setOwnerCapable("oc-1", true); delete process.env.AGENTNET_OWNER_VIA_PLUGIN;
-    const ev = (type: string) => { const a = st.live().find((x) => x.name === "oc-1")!; st.emit({ agent: a.id, type, data: { session: "s", pid: 1, turn: "t1" }, source: "mod", ts: Date.now() } as never); st.flush(); };
-    try {
-      ev("AgentConnected"); ev("TurnStarted");
-      const busy = await post("oc-1", { text: "while you work", nonce: "b-1" }); await oc.settled("oc-1");
-      expect((await busy.json() as { via?: string }).via).toBeUndefined();
-      expect(calls.some((c) => c[0] === "paste-buffer")).toBe(true); expect(o.ownerHas("oc-1")).toBe(false);
-      calls.length = 0;
-      const forced = await post("oc-1", { text: "A/B", nonce: "b-2", via: "plugin" });
-      expect(await forced.json()).toMatchObject({ via: "plugin" }); expect(o.ownerTake("oc-1")).toHaveLength(1);
-      ev("TurnEnded");
-      const idle = await post("oc-1", { text: "now idle", nonce: "b-3" });
-      expect(await idle.json()).toMatchObject({ via: "plugin" }); expect(calls.some((c) => c[0] === "paste-buffer")).toBe(false);
-      expect(o.ownerTake("oc-1")).toMatchObject([{ nonce: "b-3", text: "now idle" }]);
-    } finally { o.ownerReset(); }
-  });
-  test("root stays on tmux even when it is capable", async () => {
-    const o = await op(); o.ownerReset(); o.setOwnerCapable("root", true); delete process.env.AGENTNET_OWNER_VIA_PLUGIN;
-    try { await post("root", { text: "to the director" }); expect(o.ownerHas("root")).toBe(false); }
-    finally { o.ownerReset(); }
-  });
-  test("flag list + capable: queued for the plugin, nothing typed, page sees it as sending; via tmux overrides", async () => {
-    const o = await op(); o.ownerReset(); o.setOwnerCapable("oc-1", true); process.env.AGENTNET_OWNER_VIA_PLUGIN = "oc-1";
-    try {
-      const r = await post("oc-1", { text: "hello there", nonce: "p-1" });
-      expect(await r.json()).toMatchObject({ sent: true, nonce: "p-1", via: "plugin" });
-      expect(calls.filter((c) => c[0] !== "has-session")).toEqual([]);
-      expect(sent.pending("oc-1").map((e) => e.nonce)).toContain("p-1");
-      expect(o.ownerTake("oc-1")).toMatchObject([{ nonce: "p-1", text: "hello there" }]);
-      await post("oc-1", { text: "by tmux", via: "tmux" }); await oc.settled("oc-1");
-      expect(calls.some((c) => c[0] === "paste-buffer")).toBe(true); expect(o.ownerHas("oc-1")).toBe(false);
-    } finally { delete process.env.AGENTNET_OWNER_VIA_PLUGIN; o.ownerReset(); }
-  });
-  test("flag on, plugin never said it can: tmux", async () => {
-    const o = await op(); o.ownerReset(); process.env.AGENTNET_OWNER_VIA_PLUGIN = "1";
-    try { await post("oc-1", { text: "hi" }); await oc.settled("oc-1"); expect(calls.some((c) => c[0] === "paste-buffer")).toBe(true); }
-    finally { delete process.env.AGENTNET_OWNER_VIA_PLUGIN; }
+describe("a dropped send", () => {
+  test("shows in the feed as failed, not as sending", async () => {
+    sent.add("oc-1", "dropped by a stop", "dr-1"); sent.fail("oc-1", "dr-1");
+    const res = await app.request("/api/v1/agentnet/agents/oc-1/feed");
+    const reader = res.body!.getReader(), dec = new TextDecoder(); let buf = "";
+    const end = Date.now() + 3000;
+    while (!/event: reset[^\n]*\n[^\n]*dr-1/.test(buf) && Date.now() < end) { const { value, done } = await reader.read(); if (done) break; buf += dec.decode(value); }
+    await reader.cancel();
+    const data = JSON.parse(buf.split("event: reset")[1]!.split("\n").find((l) => l.startsWith("data: "))!.slice(6)) as { pending: Record<string, unknown>[] };
+    const item = data.pending.find((i) => i.nonce === "dr-1")!;
+    expect(item.failed).toBe(true); expect(item.sending).toBeUndefined();
   });
 });
 

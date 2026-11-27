@@ -14,7 +14,7 @@ export interface FeedItem {
 export type Filter = "all" | "messages" | "terminal";
 export const FILTERS: { id: Filter; label: string }[] = [{ id: "all", label: "All" }, { id: "messages", label: "Messages" }, { id: "terminal", label: "Terminal" }];
 
-/** sending = on its way to the terminal, sent = typed into the terminal, shown = the transcript has it, failed = not typed. */
+/** sending = on its way to the server, sent = queued for the agent, shown = the transcript has it, failed = not sent or dropped. */
 export type SendState = "sending" | "sent" | "shown" | "failed";
 export type Row =
   | { key: string; at: number; type: "msg"; m: Msg }
@@ -42,6 +42,17 @@ export function feedItems(items: Map<string, FeedItem>, pending: FeedItem[]): Fe
 }
 const SEND_SKEW = 5_000;
 const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/** The page's own copy of a send wins over the server's for the same nonce, except that a send the server says Claude Code
+ *  dropped turns failed (a retry on its way does not). A send the server lists is already queued there. */
+export function pendingSends(local: FeedItem[], server: FeedItem[], hidden: ReadonlySet<string>): FeedItem[] {
+  const lost = new Set(server.filter((p) => p.failed).map((p) => p.nonce)), s = new Set<string>();
+  return [...local.map((l) => (!l.sending && lost.has(l.nonce) ? { ...l, failed: true } : l)), ...server.map((p) => ({ ...p, sending: false }))]
+    .filter((p) => p.nonce && !hidden.has(p.nonce) && !s.has(p.nonce) && s.add(p.nonce));
+}
+/** The sends that wait for the running turn to end: one Send now button stands for all of them. `held` wait for a plugin instead. */
+export const waitingSends = (rows: Row[], held: ReadonlySet<string>): string[] =>
+  rows.flatMap((r) => (r.type === "owner" && r.state === "sent" && r.nonce && !held.has(r.nonce) ? [r.nonce] : []));
 
 /** One key for an owner prompt from the first keystroke to the transcript line, so its bubble is never rebuilt. */
 export const ownerKey = (i: FeedItem) => (i.nonce ? `o:n:${i.nonce}` : `o:${i.id}`);

@@ -20,7 +20,7 @@ import { url } from "../ui/api";
 import FocusView from "./chat/FocusView.vue";
 import { usePicFocus } from "./chat/picFocus";
 
-const props = defineProps<{ items: FeedItem[]; pick?: boolean; picked?: string | null; /** the agent: a step that read an image shows it, asked for in its name */ agent?: string; /** the plan steps, to group the calls under */ plan?: PlanBit[]; /** the run before ended in this run's first step: no header for it, the rail goes on */ cont?: boolean; /** draw the plan's next nodes after the last step (off when a later run goes on in it) */ tail?: boolean }>();
+const props = defineProps<{ items: FeedItem[]; pick?: boolean; picked?: string | null; /** the agent: a step that read an image shows it, asked for in its name */ agent?: string; /** the plan steps, to group the calls under */ plan?: PlanBit[]; /** the run before ended in this run's first step: no header for it, the rail goes on */ cont?: boolean; /** draw the plan's next nodes after the last step (off when a later run goes on in it) */ tail?: boolean; /** a row a reference chip asked for: its step and the row open */ show?: string | null }>();
 const emit = defineEmits<{ pick: [item: FeedItem] }>();
 const lines = computed(() => props.items.filter((i) => i.kind !== "thinking" || !!i.text));
 const stepped = computed(() => railSteps(lines.value, props.plan ?? [], props.tail !== false));
@@ -43,6 +43,12 @@ const ct = (gi: number) => !!props.cont && gi === 0 && !!stepped.value && !!grou
 const folded = (g: CallGroup) => !!stepped.value && !!g.items.length && shuts(g) && !unshut.value.has(gn(g)) && groups.value.length > 1 && !(props.cont && g === groups.value[0]);
 const toggleGroup = (g: CallGroup) => { if (g.items.length) flip2(gn(g)); };
 const flip2 = (n: number) => { const s = new Set(unshut.value); s.has(n) ? s.delete(n) : s.add(n); unshut.value = s; };
+watch(() => props.show, (id) => {
+  const g = id ? groups.value.find((x) => x.items.some((i) => i.id === id)) : undefined;
+  if (!g) return;
+  unshut.value = new Set(unshut.value).add(gn(g));
+  open.value = new Set(open.value).add(id!);
+}, { immediate: true });
 const dur = (ms?: number) => (ms == null ? "" : ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60_000)} min`);
 // an agentnet row (a message, a delivery) says when it happened, not how long it took
 const clock = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -119,7 +125,7 @@ const rowDelay = (g: CallGroup, i: number) => (fin.value && fin.value.next === g
         <div v-if="g.items.length && !folded(g)" class="br">
           <svg v-if="stepped && !ct(gi)" class="cu out" width="22" height="20" viewBox="0 0 22 20" fill="none" stroke-width="2" aria-hidden="true"><path d="M1 0A10 10 0 0 0 11 10A10 10 0 0 1 21 20" /></svg>
           <ol class="rows">
-            <li v-for="(it, i) in g.items" :key="it.id" :class="['row', it.kind, { run: it.status === 'running', bad: it.status === 'error', sel: picked === it.id, tail: gi === groups.length - 1 && i === g.items.length - 1 }]" :style="{ '--d': rowDelay(g, i) }">
+            <li v-for="(it, i) in g.items" :key="it.id" :data-row="it.id" :class="['row', it.kind, { run: it.status === 'running', bad: it.status === 'error', sel: picked === it.id, tail: gi === groups.length - 1 && i === g.items.length - 1 }]" :style="{ '--d': rowDelay(g, i) }">
             <component :is="can(it) ? 'button' : 'p'" :type="can(it) ? 'button' : undefined" class="rh" :aria-expanded="can(it) ? isOpen(it) : undefined" @click="can(it) && clickRow(it)">
               <ToolTile :kind="tile(it)" :icon="glyph(it)" :run="it.status === 'running'" />
               <span class="rt"><b>{{ words(it)[0] }}</b><span v-if="words(it)[1]" class="tg">{{ words(it)[1] }}</span></span>

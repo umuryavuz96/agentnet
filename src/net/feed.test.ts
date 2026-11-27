@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "feed-"));
 process.env.AGENTNET_CLAUDE_HOME = home;
-const { FeedParser, Sent, stepTitle, toolKind, transcriptFor, projectDir } = await import("./feed");
+const { FeedParser, Sent, stepTitle, toolKind, transcriptFor, projectDir, mcpOf } = await import("./feed");
 const fx = join(import.meta.dir, "fixtures", "feed-session.jsonl");
 const none = () => null;
 
@@ -81,6 +81,12 @@ describe("dedupe of typed prompts", () => {
     expect(s.claim("a", "hello there", t0 + 1500)).toEqual({ nonce: "n2" });
     expect(s.claim("a", "hello there", t0 + 2000)).toBeNull();
   });
+  test("a waiting send keeps its lines, so a picture line shows as the picture from the first frame", () => {
+    const s = new Sent(); const t0 = Date.parse("2026-11-10T10:00:00Z"), text = "look at this\n[image: /tmp/shots/a.png]";
+    s.add("a", text, "n1", t0);
+    expect(s.pending("a", t0)[0]!.text).toBe(text);
+    expect(s.claim("a", "look at this [image: /tmp/shots/a.png]", t0 + 500)).toEqual({ nonce: "n1" }); // spacing still does not matter to a claim
+  });
   test("the owner item carries the nonce of its send", () => {
     const f = join(home, "n.jsonl"); writeFileSync(f, JSON.stringify({ type: "user", uuid: "m1", timestamp: "2026-11-10T10:00:01Z", origin: { kind: "human" }, message: { content: "do it" } }) + "\n");
     const s = new Sent(); s.add("a", "do it", "nx", Date.parse("2026-11-10T10:00:00Z"));
@@ -119,6 +125,17 @@ test("stepTitle words", () => {
   expect(stepTitle("Write", { file_path: "/a/b.ts" })).toBe("Writing b.ts");
   expect(stepTitle("mcp__claude-in-chrome__navigate", {})).toBe("Chrome · navigate");
   expect(stepTitle("Bash", { command: "ls", description: "List files" })).toBe("List files");
+});
+
+test("a step through an MCP connector says which one; agentnet's own tools do not", () => {
+  expect(mcpOf("mcp__claude_ai_Notion__search")).toEqual({ server: "Notion", tool: "search" });
+  expect(mcpOf("Bash")).toBeNull();
+  const file = join(home, "mcp.jsonl");
+  const use = (id: string, name: string) => ({ type: "tool_use", id, name, input: {} });
+  require("node:fs").writeFileSync(file, JSON.stringify({ type: "assistant", uuid: "u1", timestamp: "2026-11-10T10:00:00Z", message: { role: "assistant", content: [use("t1", "mcp__slack__send_message"), use("t2", "mcp__agentnet__send")] } }) + "\n");
+  const p = new FeedParser(file, "a", none, 0); p.update();
+  const steps = p.items.filter((i) => i.kind === "step");
+  expect(steps.map((i) => i.mcp)).toEqual([{ server: "slack", tool: "send_message" }, undefined]);
 });
 
 describe("pictures and history", () => {

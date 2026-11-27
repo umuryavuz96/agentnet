@@ -118,6 +118,11 @@ describe("moveDirector (a hand-started director goes into agentnet-root)", () =>
     const r = await moveDirector({ pid: () => process.pid, cwd: () => "/work/x", stop: () => calls.push("stop"), gone: async () => true, start: (d) => (calls.push("start " + d), ok) });
     expect(r).toBe(ok); expect(calls).toEqual(["stop", "start /work/x"]);
   });
+  test("resumes the conversation it had, so the owner stays in the same chat", async () => {
+    const calls: string[] = [];
+    await moveDirector({ pid: () => process.pid, cwd: () => "/work/x", session: () => "abc-123", stop: () => {}, gone: async () => true, start: (d, s) => (calls.push(`start ${d} ${s}`), ok) });
+    expect(calls).toEqual(["start /work/x abc-123"]);
+  });
   test("not running: nothing is stopped or started", async () => {
     const calls: string[] = [];
     const r = await moveDirector({ pid: () => null, cwd: () => null, stop: () => calls.push("stop"), gone: async () => true, start: () => (calls.push("start"), ok) });

@@ -15,7 +15,9 @@ import { problem, type Env } from "../core/http";
 import { summarize as summarizeBg, enabled as bgSumEnabled } from "./bgsum";
 import { emit, flush, get, live, all, events, doing, progressPct, lastSeq, ensureSchema, goneKey, BG_KINDS, BG_STATES, type Snapshot, type Source } from "./store";
 import { pollOpened, pollClosed } from "./liveness";
-import { ownerHas, ownerTake, setOwnerCapable, setOwnerWaker } from "./ownerPlugin";
+import { sent } from "./feed";
+import { ownerReady, ownerTake, ownerTakeCut, setOwnerAbortable, setOwnerCapable, setOwnerWaker } from "./ownerPlugin";
+import { mcpReady, mcpReported, mcpTake, setMcpCapable, setMcpWaker } from "./mcpControl";
 import { realTmux, createdOf, hasSession, sessionOf, SCAN_AGENT, type Tmux } from "./windows";
 import { sameTeam, getTeam, addMember, leaveTeams, createTeam, gatePasses, leadGate, teamsOf, goalError } from "./teams";
 import { teamRoutes, sendTeam } from "./teamRoutes";
@@ -74,7 +76,7 @@ export const byName = (n: string) => (ensureSchema(), db().query("SELECT * FROM 
 
 /** The agent endpoints, listed explicitly: the panel's requireAuth lets only these through to this module's own bearer
  *  check (unknown token = 401 here). snapshot and stream are not listed: they stay behind panel auth. */
-export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|send|inbox|report|status|events|bg|checks|gate|plan|steps(\/done|\/\d+\/drop)?|jobs|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|adopt\/(facts|report|apply)|keep|review|pick|self-upgrade|upgrade-proof(\/agent)?|propose-(skill|rule)|agent-lines(\/proposals\/[a-z0-9]+\/(approve|reject)|\/[a-z0-9-]+(\/(retire|fork|activate))?)?|agent\/upgrade|owner-goals(\/\d+\/(link|drop))?|owner-items\/\d+\/(link|done)|agents(\/[a-z0-9-]+(\/(placement|grade|confirm|prepare-config|handover|asks\/\d+\/close))?)?)$/.test(p);
+export const agentPath = (p: string) => /^(?:\/api\/v1)?\/agentnet\/(hello|bye|poll|ack|owner-drop|mcp|send|inbox|report|status|events|bg|checks|gate|plan|steps(\/done|\/\d+\/drop)?|jobs|spawn|plan-spawn|despawn|teams(\/[a-z0-9-]+(\/(archive|members|messages|tasks(\/\d+\/(start|done|claim))?))?)?|tasks(\/\d+\/(start|done))?|trail\/(search|inject)|adopt\/(facts|report|apply)|keep|review|pick|self-upgrade|upgrade-proof(\/agent)?|propose-(skill|rule)|agent-lines(\/proposals\/[a-z0-9]+\/(approve|reject)|\/[a-z0-9-]+(\/(retire|fork|activate))?)?|agent\/upgrade|owner-goals(\/\d+\/(link|drop))?|owner-items\/\d+\/(link|done)|agents(\/[a-z0-9-]+(\/(placement|grade|confirm|prepare-config|handover|asks\/\d+\/close))?)?)$/.test(p);
 
 // ---------- the one hierarchy check: boss, own reports, teammates under the same boss; root outbound exempt ----------
 export const isRoot = (a: { name: string }) => a.name === "root";
@@ -102,7 +104,8 @@ const waiters = new Map<string, Set<() => void>>();
 const msgSubs = new Set<(id: number) => void>();
 export function onMessage(fn: (id: number) => void) { msgSubs.add(fn); return () => msgSubs.delete(fn); }
 const wake = (agent: string) => { for (const w of waiters.get(agent) ?? []) w(); };
-setOwnerWaker((name) => { const a = byName(name); if (a) wake(a.id); }); // owner chat via the plugin (ownerPlugin.ts, flag off by default)
+setOwnerWaker((name) => { const a = byName(name); if (a) wake(a.id); }); // owner chat via the plugin (ownerPlugin.ts)
+setMcpWaker((name) => { const a = byName(name); if (a) wake(a.id); }); // the per-session MCP switch (mcpControl.ts)
 const snippet = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 120);
 /** Queue one message; `state` tells the sender what happened. Gone by despawn/failed = refused; other gone = held 24 h (cap 100). */
 export function enqueueMessage(from: AgentRow, to: AgentRow, body: string, kind: Kind, replyTo: number | null, subject = subjectOf(undefined, body), now = Date.now()): { id: number | null; state: "queued" | "held" | "gone"; lost?: true } {
@@ -353,7 +356,8 @@ export function agentnetRoutes(api: Hono<Env>) {
     const session = typeof b.session === "string" ? b.session : null;
     emit({ agent: a.id, type: "AgentConnected", data: { session, pid: goodPid(b.pid), version: b.version ?? null, model: b.model ?? null, client: b.client ?? "claude-code" }, source: "mod", ts: now, dedup: session ? `hello:${a.id}:${session}:${b.pid ?? ""}:${prev?.life === "gone" ? prev.lifeSince : 0}` : undefined });
     releaseHeld(a.id, now); flush();
-    setOwnerCapable(a.name, Array.isArray(b.caps) && b.caps.includes("owner-chat"));
+    const caps: unknown[] = Array.isArray(b.caps) ? b.caps : [];
+    setOwnerAbortable(a.name, caps.includes("owner-abort")); setOwnerCapable(a.name, caps.includes("owner-chat")); setMcpCapable(a.name, caps.includes("mcp"));
     audit(`agent:${a.name}`, "agentnet.hello", a.id, "ok", c.get("trace"));
     const snap = get(a.id); // null for the root pseudo-row (root.token): it has no card
     return c.json({ agent: snap ? viewOf(snap) : null, root: isRoot(a), scan: isScan(a), lines: eligible(whoOf(a)), poll_max_s: POLL_MAX_S });
@@ -369,16 +373,29 @@ export function agentnetRoutes(api: Hono<Env>) {
     let msgs = pending(a);
     pollOpened(a.id);
     try {
-      if (!msgs.length && !ownerHas(a.name) && wait > 0) {
+      if (!msgs.length && !ownerReady(a.name) && !mcpReady(a.name) && wait > 0) {
         await new Promise<void>((res) => { const set = waiters.get(a.id) ?? waiters.set(a.id, new Set()).get(a.id)!; const w = () => { set.delete(w); clearTimeout(t); res(); }; set.add(w); const t = setTimeout(w, wait * 1000); c.req.raw.signal.addEventListener("abort", w); });
-        if (!c.req.raw.signal.aborted && !ownerHas(a.name)) await new Promise((res) => setTimeout(res, BURST_MS)); // gather the rest of a burst; the owner's words never wait for agent mail
+        if (!c.req.raw.signal.aborted && !ownerReady(a.name) && !mcpReady(a.name)) await new Promise((res) => setTimeout(res, BURST_MS)); // gather the rest of a burst; the owner's words never wait for agent mail
         msgs = pending(a);
       }
     } finally { pollClosed(a.id); }
     if (c.req.raw.signal.aborted) return c.body(null, 499 as 400); // the client went away mid-poll (killed, or reconnecting): the sweep decides
-    const own = ownerTake(a.name);
+    const own = ownerTake(a.name), cut = ownerTakeCut(a.name), mcp = mcpTake(a.name);
     const names = nameMap(), out = msgs.map((m) => pub(m, names));
-    return c.json({ messages: out, text: out.length ? deliveryText(out) : null, ...(own.length ? { owner: own.map(({ nonce, text }) => ({ nonce, text })) } : {}) });
+    return c.json({ messages: out, text: out.length ? deliveryText(out) : null, ...(own.length ? { owner: own.map(({ nonce, text }) => ({ nonce, text })) } : {}), ...(cut === null ? {} : { abort: cut }), ...(mcp ? { mcp } : {}) });
+  });
+  // The session's MCP servers as the plugin reads them (after hello, a switch, or the panel asking).
+  r.post("/mcp", async (c: Ctx) => {
+    const a = c.get("agent"), b = await body(c);
+    mcpReported(a.name, b.servers);
+    return c.body(null, 204);
+  });
+  // Claude Code dropped an owner prompt the mod submitted (a stop in the terminal, a hook's refusal): the page shows it as not sent.
+  r.post("/owner-drop", async (c: Ctx) => {
+    const a = c.get("agent"), b = await body(c);
+    if (typeof b.nonce === "string") sent.fail(a.name, b.nonce);
+    audit(`agent:${a.name}`, "agentnet.owner-drop", a.id, "ok", c.get("trace"));
+    return c.body(null, 204);
   });
   r.post("/ack", async (c: Ctx) => { // the mod has handed the message to the model (submit resolved, or the pointer is stored)
     const a = c.get("agent"), b = await body(c), ids = Array.isArray(b.ids) ? b.ids.map(Number).filter(Number.isFinite) : [];

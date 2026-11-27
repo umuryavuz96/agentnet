@@ -101,7 +101,7 @@ async function answer(label: string) {
     <ol v-else :class="['tr-list', { dead: v.mode === 'closed', pk: peek, wide: !!job && job.steps.some((x) => x.n > 9) }]" :aria-label="job ? `Plan of job ${job.id}` : 'Trail'">
       <i class="tr-head"><i /></i>
       <li v-if="peek && from > 0" class="tr-more">{{ from }} done before</li>
-      <li v-for="s in steps" :key="s.t.id" :data-i="s.i"
+      <li v-for="s in steps" :key="s.t.id" :data-i="s.i" :data-no="s.no || undefined"
         :class="['tr-step', kind(s.t, s.i), tint(s.i), { 'tr-branch': isCur(s.i) && branched, just: s.i === just, enter: s.i === enter, add1: s.i === firstAdded && s.i > 0, 'pre-add': s.i + 1 === firstAdded }]"
         :style="isCur(s.i) && branched ? { '--rows': branch.length } : undefined">
         <span v-if="s.i === firstAdded && s.i > 0" class="tr-div">Added later</span>

@@ -16,7 +16,7 @@ import AgentnetScore from "./AgentnetScore.vue";
 import { phrase } from "../trail";
 import { short, trailView } from "../trailView";
 import { earlierJobs, openAsks, planCount, type PlanCount } from "../plan";
-import { net, hooks, teams, humanDoing, ctxView, windows, type AgentRow, type HookFire, type Job } from "../net";
+import { net, hooks, teams, humanDoing, ctxView, windows, planFocus, type AgentRow, type HookFire, type Job } from "../net";
 import { api, toast } from "../ui/api";
 
 const props = defineProps<{ row: AgentRow | null; name: string; sheet: boolean; startTab?: "trail" }>();
@@ -159,6 +159,22 @@ onMounted(() => {
   hdRo.observe(h);
 });
 onBeforeUnmount(() => hdRo?.disconnect());
+// A step or job chip in a chat opens this panel on it: the Trail tab, the earlier job unfolded, the row brought into view.
+function showPlan() {
+  if (planFocus.agent !== props.name || Date.now() - planFocus.at > 5000) return;
+  const { job: id, step } = planFocus, old = earlier.value.some((e) => e.j.id === id);
+  setTab("trail");
+  if (old) { openEarlier.value = true; openJob.value = id; seenJobs.value.add(id); }
+  // after the panel has slid in and the fold has opened
+  setTimeout(() => {
+    const row = el.value?.querySelector<HTMLElement>(step != null ? `[data-no="${id}.${step}"]` : old ? `[aria-controls="ap-ej-${id}"]` : ".trh");
+    if (!row) return;
+    row.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    row.animate([{ backgroundColor: "color-mix(in srgb,var(--sel) 26%,transparent)" }, { backgroundColor: "transparent" }], { duration: 1600, easing: "ease-out" });
+  }, 340);
+}
+watch(() => planFocus.n, showPlan);
+onMounted(showPlan);
 defineExpose({ el });
 </script>
 

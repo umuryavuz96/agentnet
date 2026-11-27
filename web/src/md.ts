@@ -45,10 +45,10 @@ export function mdParse(src: string, agents: readonly string[] = []): string {
 
 const PURIFY = {
   ALLOWED_TAGS: ["p", "br", "strong", "em", "del", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "code", "pre", "a", "hr", "table", "thead", "tbody", "tr", "th", "td", "div", "span", "button", "b", "svg", "path", "circle", "rect", "line"],
-  ALLOWED_ATTR: ["href", "title", "class", "target", "rel", "type", "align", "start", "role", "aria-label", "data-n", "data-path", "data-pq", "data-ag", "viewBox", "width", "height", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "d", "cx", "cy", "r", "x", "y", "x1", "x2", "y1", "y2", "rx", "ry", "aria-hidden"],
+  ALLOWED_ATTR: ["href", "title", "class", "target", "rel", "type", "align", "start", "role", "aria-label", "data-n", "data-path", "data-pq", "data-ag", "data-ref", "data-id", "viewBox", "width", "height", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "d", "cx", "cy", "r", "x", "y", "x1", "x2", "y1", "y2", "rx", "ry", "aria-hidden"],
   ALLOWED_URI_REGEXP: SAFE_URL,
   // DOMPurify drops any attribute value that fails ALLOWED_URI_REGEXP unless it is listed here; only href is a URL.
-  ADD_URI_SAFE_ATTR: ["start", "align", "type", "target", "rel", "data-n", "data-path", "data-pq", "data-ag", "viewBox", "width", "height", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "d", "cx", "cy", "r", "x", "y", "x1", "x2", "y1", "y2", "rx", "ry", "aria-hidden"],
+  ADD_URI_SAFE_ATTR: ["start", "align", "type", "target", "rel", "data-n", "data-path", "data-pq", "data-ag", "data-ref", "data-id", "viewBox", "width", "height", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "d", "cx", "cy", "r", "x", "y", "x1", "x2", "y1", "y2", "rx", "ry", "aria-hidden"],
   ALLOW_DATA_ATTR: false,
 };
 let hooked = false;

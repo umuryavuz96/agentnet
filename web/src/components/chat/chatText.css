@@ -21,6 +21,10 @@
 :root[data-theme="light"] .cx-ref{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ink) 16%,transparent)}
 :root[data-theme="light"] .cx-jira{box-shadow:none}
 button.cx-chip{font-family:var(--mono)}
+/* a reference chip that opens something: pointer, a firmer edge on hover (colour only, so nothing moves) */
+.cx-ref.cx-act{cursor:pointer;transition:background-color .15s var(--ease),box-shadow .15s var(--ease)}
+.cx-ref.cx-act:hover,.cx-ref.cx-act[aria-describedby]{background:color-mix(in srgb,var(--ink) 9%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ink) 38%,transparent)}
+@media (prefers-reduced-motion:reduce){.cx-ref.cx-act{transition:none}}
 button.cx-chip:focus-visible,.cx-ref:focus-visible{outline:2px solid var(--on);outline-offset:1px}
 
 /* Coloured text and key line, in the speaking agent's hue (darker in light mode, set by --agl) */
