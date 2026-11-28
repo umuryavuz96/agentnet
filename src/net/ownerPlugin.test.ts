@@ -1,6 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { CUT_TTL, cutLately, cutTurn, ownerCapable, ownerHas, ownerPush, ownerReady, ownerReset, ownerTake, ownerTakeCut, setOwnerAbortable, setOwnerCapable, setOwnerWaker } from "./ownerPlugin";
 import { pollOpened } from "./liveness";
+
+const routesWaker = setOwnerWaker(() => {}); afterAll(() => { setOwnerWaker(routesWaker); }); // the routes tests run in this process too
 
 describe("owner queue", () => {
   test("push wakes the poll; take empties (at most once)", () => {
