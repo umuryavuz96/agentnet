@@ -20,7 +20,7 @@ export const CUT_TTL = 10_000;
 export const CUT_GAP = 3_000;
 let waker: (name: string) => void = () => {};
 
-export const setOwnerWaker = (fn: (name: string) => void) => { waker = fn; };
+export const setOwnerWaker = (fn: (name: string) => void) => { const was = waker; waker = fn; return was; };
 /** A hello that can take owner chat wakes the poll for what waited. */
 export const setOwnerCapable = (name: string, on: boolean) => { if (!on) { capable.delete(name); return; } capable.add(name); if (ownerHas(name)) waker(name); };
 export const ownerCapable = (name: string) => capable.has(name);
